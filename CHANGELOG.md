@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.0.2 — 2026-05-22
+
+### 迁移引擎重构
+- 移除 rename 备份策略，改为复制完成后直接删除源目录，彻底解决 Shell 已知文件夹（桌面、视频、Chrome 缓存等）迁移时 `PermissionDenied` 失败的问题
+- 新流程 `copy → delete(source) → symlink` 消除了旧方案中"rename 成功但 symlink 失败且 rename-back 也失败"的双重失败极端情况
+- 新增 `remove_directory_robust`：自动清除只读属性后删除，解决只读文件导致目录删除失败的问题
+
+### 迁移文件占用检测增强
+- 新增智能占用检测：根据源目录是否含 exe 自动选择检测策略
+  - 含 exe（应用目录）→ 进程 exe 路径前缀匹配（解决 exe/dll 内存映射不阻塞独占打开的问题）
+  - 不含 exe（数据/缓存目录）→ 文件独占锁探测 `FILE_SHARE_NONE`（解决进程 exe 不在目录内的问题）
+- `copy_file_with_cancel` 中 PermissionDenied 从静默跳过改为中断迁移，防止数据不完整
+- `remove_directory_robust` 中文件删除失败不再忽略，避免源目录删除不完整导致 symlink 失败
+
+### 恢复流程重构
+- 恢复前新增进程占用检测（步骤 3.5），在删除 Junction 之前拒绝恢复，避免 move_dir 失败后回滚破坏数据的连锁事故
+- `move_dir` 失败回滚改为检查 target 完整性后才重建 Junction；target 不完整时给出手动合并指引，避免指向残缺数据
+- 普通目录保护区分"上次恢复未完成（target 存在，可修复）"和"数据已恢复完毕（target 不存在）"两种情况，给出具体修复指引
+- 大文件夹恢复统一入口改为 `restore_app`，通过 record_type 自动分发，确保 history 记录状态正确更新
+- 新增 `update_record_status_by_id` 按 ID 精确更新记录状态
+- 新增 `restore_large_folder_by_history` 含完整恢复逻辑和回滚保护
+
+### UI 增强
+- 迁移历史链接状态从单一"损坏"扩展为 "可修复（数据完整）"和"严重损坏（数据丢失）"，以不同颜色和提示文字区分
+- 进程锁检测阶段点击"取消迁移"和 X 按钮即时关闭弹窗，不再无响应
+- 进程锁检测阶段关闭弹窗不再弹出不必要的"确定取消"确认对话框
+
+### 说明
+- 本版包含超过 500 行的核心引擎安全加固，强烈建议升级
+
+---
+
 ## v1.0.1 — 2026-05-21
 
 ### 安装包修复
