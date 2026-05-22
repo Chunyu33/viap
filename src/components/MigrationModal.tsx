@@ -263,7 +263,8 @@ export default function MigrationModal({
               </button>
             )}
 
-            {hasProcessLocks && onForceContinue && (
+            {/* 不提供强制迁移按钮，避免用户误操作 */}
+            {/* {hasProcessLocks && onForceContinue && (
               <button
                 onClick={onForceContinue}
                 className="btn btn-sm"
@@ -275,7 +276,7 @@ export default function MigrationModal({
               >
                 强制继续
               </button>
-            )}
+            )} */}
 
             {canClose && (
               <button

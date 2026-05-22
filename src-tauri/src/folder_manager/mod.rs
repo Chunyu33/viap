@@ -458,3 +458,143 @@ fn restore_large_folder_inner(
         new_path: Some(junction_str),
     })
 }
+
+/// 通过 history 记录 ID 恢复大文件夹（供 restore_app 统一入口分发）
+/// 与 restore_large_folder 核心逻辑相同，但末尾按 ID 更新 history 记录状态，
+/// 确保 MigrationHistory 页面的记录能被正确标记为 restored
+pub fn restore_large_folder_by_history(
+    history_id: String,
+    record: crate::models::MigrationRecord,
+) -> Result<MigrationResult, String> {
+    #[cfg(windows)]
+    {
+        let junction_path = std::path::PathBuf::from(&record.original_path);
+        let target_path = std::path::PathBuf::from(&record.target_path);
+
+        if !utils::is_junction(&junction_path) {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "原路径 {} 不是目录联接，拒绝恢复以保护数据安全。",
+                    record.original_path
+                ),
+                new_path: None,
+            });
+        }
+
+        if !target_path.exists() {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!("目标路径不存在: {}，可能已被手动删除", record.target_path),
+                new_path: None,
+            });
+        }
+
+        // 还原前空间检查
+        let file_size = utils::get_dir_size_safe(&target_path);
+        let original_parent = junction_path.parent()
+            .ok_or("无法获取原路径的父目录")?;
+        utils::check_disk_space_for_restore(original_parent, file_size)?;
+
+        // 进程占用检测
+        {
+            let mut sys = sysinfo::System::new_all();
+            sys.refresh_all();
+            let original_lower = record.original_path.to_lowercase();
+            let target_lower = record.target_path.to_lowercase();
+            let running: Vec<String> = sys.processes().values()
+                .filter_map(|p| {
+                    p.exe().and_then(|exe| {
+                        let exe_lower = exe.to_string_lossy().to_lowercase();
+                        if exe_lower.starts_with(&original_lower)
+                            || exe_lower.starts_with(&target_lower)
+                        {
+                            Some(p.name().to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+
+            if !running.is_empty() {
+                return Ok(MigrationResult {
+                    success: false,
+                    message: format!(
+                        "检测到以下程序正在运行，请关闭后重试：\n{}\n\n\
+                         恢复前必须关闭相关程序，否则文件移动可能失败并导致数据损坏。",
+                        running.join("、")
+                    ),
+                    new_path: None,
+                });
+            }
+        }
+
+        // 删除 Junction
+        fs::remove_dir(&junction_path).map_err(|e| {
+            format!("无法删除目录联接: {}", e)
+        })?;
+
+        // 移动文件回原位置
+        let mut options = CopyOptions::new();
+        options.overwrite = false;
+        options.copy_inside = false;
+
+        move_dir(&target_path, original_parent, &options).map_err(|e| {
+            let target_intact = target_path.exists()
+                && std::fs::read_dir(&target_path)
+                    .map(|mut d| d.next().is_some())
+                    .unwrap_or(false);
+
+            if target_intact {
+                let _ = symlink_dir(&target_path, &junction_path);
+                format!(
+                    "移动文件失败: {}。\n已恢复链接，数据完好保存在：{}\n请关闭相关程序后重试。",
+                    e, target_path.display()
+                )
+            } else {
+                format!(
+                    "严重警告：移动文件过程中发生错误（{}），文件处于中间状态。\n\n\
+                     部分文件已移至：{}\n\
+                     剩余文件在：{}\n\n\
+                     请手动将 {} 目录下所有内容合并到 {}，\n\
+                     然后删除空的 {} 目录。",
+                    e,
+                    record.original_path,
+                    record.target_path,
+                    record.target_path,
+                    record.original_path,
+                    record.target_path,
+                )
+            }
+        })?;
+
+        // 防御性清理 target 残留
+        if target_path.exists() {
+            let _ = fs::remove_dir_all(&target_path);
+        }
+
+        // 按 ID 更新 history 记录状态
+        if let Err(e) = crate::storage::history::update_record_status_by_id(&history_id, "restored") {
+            eprintln!("警告: 更新大文件夹恢复记录状态失败: {}", e);
+        }
+
+        Ok(MigrationResult {
+            success: true,
+            message: format!(
+                "恢复成功！文件夹已从 {} 移回 {}",
+                record.target_path, record.original_path
+            ),
+            new_path: Some(record.original_path),
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(MigrationResult {
+            success: false,
+            message: "恢复功能仅支持 Windows 系统".to_string(),
+            new_path: None,
+        })
+    }
+}

@@ -669,7 +669,12 @@ export default function AppMigration() {
 
   // 取消当前迁移
   async function handleCancelMigration() {
-    // 立即给出视觉反馈，避免用户觉得按钮无效
+    // 进程锁检测阶段（迁移尚未启动）：直接关闭弹窗，无需通知后端
+    if (migrationStep === 'checking' && lockedProcesses.length > 0) {
+      handleCloseMigrationModal();
+      return;
+    }
+    // 迁移进行中：通知后端取消
     setMigrationMessage('正在取消迁移，请稍候...');
     try {
       await invoke('cancel_migration');
@@ -690,6 +695,12 @@ export default function AppMigration() {
 
   // 迁移进行中点击 X → 二次确认后取消迁移并关闭弹窗
   async function handleRequestCloseDuringMigration() {
+    // 进程锁检测阶段（迁移尚未启动）：直接关闭弹窗，无需确认
+    if (migrationStep === 'checking' && lockedProcesses.length > 0) {
+      handleCloseMigrationModal();
+      return;
+    }
+
     const confirmed = await confirm(
       '确定要取消当前迁移吗？\n\n已复制的文件将被清理，操作不可撤销。',
       { title: '取消迁移', kind: 'warning', okLabel: '取消迁移', cancelLabel: '继续迁移' }

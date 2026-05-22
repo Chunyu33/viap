@@ -483,6 +483,11 @@ export default function LargeFolders() {
 
   /** 取消当前迁移 */
   async function handleCancelMigration() {
+    // 进程锁检测阶段（迁移尚未启动）：直接关闭弹窗
+    if (migrationStep === 'checking' && lockedProcesses.length > 0) {
+      handleCloseMigrationModal();
+      return;
+    }
     try {
       await invoke('cancel_migration');
       showToast('正在取消迁移...', 'info');
@@ -503,6 +508,12 @@ export default function LargeFolders() {
 
   /** 迁移进行中点击 X → 二次确认后取消 */
   async function handleRequestCloseDuringMigration() {
+    // 进程锁检测阶段（迁移尚未启动）：直接关闭弹窗，无需确认
+    if (migrationStep === 'checking' && lockedProcesses.length > 0) {
+      handleCloseMigrationModal();
+      return;
+    }
+
     const confirmed = await confirm(
       '确定要取消当前迁移吗？\n\n已复制的文件将被清理，操作不可撤销。',
       { title: '取消迁移', kind: 'warning', okLabel: '取消迁移', cancelLabel: '继续迁移' }

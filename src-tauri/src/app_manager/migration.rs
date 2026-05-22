@@ -85,18 +85,22 @@ fn emit_progress(
 
 /// 分块复制单个文件，在每 64KB 块之间检查取消标志
 /// 避免大文件（数 GB）的 fs::copy 阻塞期间无法取消和上报进度
-/// 权限拒绝时跳过该文件并返回 0，不中断整体迁移
+/// 权限拒绝时中断迁移（步骤 0.5 已做预检，此处不应再出现被锁文件）
 fn copy_file_with_cancel(
     src: &Path,
     dest: &Path,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<u64, String> {
-    // 无法打开的文件（权限拒绝/被锁定）静默跳过，不中断整体迁移
+    // 被锁文件：步骤 0.5 已做预检，此处出现说明文件在复制过程中被新进程锁定，直接中断
     let file = match fs::File::open(src) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            log_warn!("migration", "跳过无权限文件: {}", src.display());
-            return Ok(0);
+            // 步骤 0.5 已做预检，到这里说明文件在复制过程中被新进程锁定
+            // 不能静默跳过（会导致数据不完整），直接中断迁移
+            return Err(format!(
+                "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
+                src.display()
+            ));
         }
         Err(e) => return Err(format!("打开源文件失败 {}: {}", src.display(), e)),
     };
@@ -108,8 +112,10 @@ fn copy_file_with_cancel(
     if file_size < 1024 * 1024 {
         if let Err(e) = fs::copy(src, dest) {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
-                log_warn!("migration", "跳过无权限小文件: {}", src.display());
-                return Ok(0);
+                return Err(format!(
+                    "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
+                    src.display()
+                ));
             }
             return Err(format!("复制文件失败 {}: {}", src.display(), e));
         }
@@ -234,6 +240,89 @@ fn copy_dir_with_progress(
     Ok((total_size, skipped_size))
 }
 
+/// 检测目录内文件是否被其他进程独占持有（适用于数据目录，如浏览器缓存）
+///
+/// 原理：以独占模式（FILE_SHARE_NONE）尝试打开每个文件。
+/// 若其他进程持有写锁（如 Chrome 正在写 Cache），此调用返回
+/// ERROR_SHARING_VIOLATION(32) 或 ERROR_ACCESS_DENIED(5)。
+///
+/// 注意：此方法不适用于应用目录——exe/dll 被内存映射时不阻塞独占打开，
+/// 应用目录需用进程 exe 路径匹配检测。
+///
+/// 返回：被占用文件的相对路径列表，最多 10 条；空列表表示无占用。
+#[cfg(windows)]
+fn check_directory_file_locks(dir: &Path) -> Vec<String> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let mut locked_files: Vec<String> = Vec::new();
+
+    for entry in WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+
+        // FILE_SHARE_NONE = 0，独占打开。若其他进程持有该文件句柄则失败。
+        let result = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path);
+
+        if let Err(e) = result {
+            let os_err = e.raw_os_error().unwrap_or(0);
+            // 32 = ERROR_SHARING_VIOLATION（文件被其他进程打开且不允许共享）
+            // 5  = ERROR_ACCESS_DENIED（无访问权限，通常也意味着被占用）
+            if os_err == 32 || os_err == 5 {
+                let rel = path
+                    .strip_prefix(dir)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                locked_files.push(rel);
+                if locked_files.len() >= 10 {
+                    locked_files.push("...（更多文件被占用）".to_string());
+                    return locked_files;
+                }
+            }
+            // 其他错误（文件消失等竞态）忽略，不视为占用
+        }
+    }
+
+    locked_files
+}
+
+/// 强制删除目录，处理只读文件导致 PermissionDenied 的情况
+/// Windows 上部分目录（Shell 已知文件夹、Chrome 缓存等）包含只读文件，
+/// fs::remove_dir_all 直接调用会因权限不足失败。
+/// 此函数先遍历清除只读属性，再逐个删除文件和子目录。
+fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
+    match fs::remove_dir_all(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() != std::io::ErrorKind::PermissionDenied => return Err(e),
+        Err(_) => {}
+    }
+    // 因只读文件导致失败：遍历清除只读属性后逐个删除
+    for entry in WalkDir::new(path).contents_first(true).into_iter().filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        // 清除只读属性，否则 remove_file / remove_dir 会失败
+        if let Ok(mut perms) = fs::metadata(entry_path).map(|m| m.permissions()) {
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(entry_path, perms);
+        }
+        if entry_path.is_file() || entry_path.is_symlink() {
+            // 文件删除失败不能忽略：说明文件仍被进程持有，整个删除操作必须中止
+            // 否则源目录删除不完整，后续 symlink_dir 因目标已存在而失败
+            if let Err(e) = fs::remove_file(entry_path) {
+                return Err(e);
+            }
+        } else if entry_path.is_dir() && entry_path != path {
+            // 子目录删除失败可忽略（contents_first 保证子项先删，空目录才轮到自己）
+            let _ = fs::remove_dir(entry_path);
+        }
+    }
+    fs::remove_dir(path)
+}
+
 /// 核心迁移命令
 /// 将应用从源路径迁移到目标路径，并创建 Windows 目录联接（Junction）
 ///
@@ -338,17 +427,41 @@ pub fn migrate_app(
                 ))?;
         }
 
-        // 步骤 0.5: 检测源路径是否被进程占用（占用时 symlink_dir 必然失败）
-        // 前端 AppMigration.tsx 已有独立的 check_process_locks 调用，
-        // 此处作为后端兜底保护，同时覆盖文件夹迁移等未在前端检测的入口
-        {
+        // 步骤 0.5: 智能文件占用检测
+        // 根据源目录类型选择检测策略：
+        //   - 含 exe（应用目录）→ 进程 exe 路径前缀匹配
+        //     原因：exe/dll 被 Windows 内存映射，独占锁探测打开会成功，检测不到
+        //   - 不含 exe（数据/缓存目录）→ 文件独占锁探测
+        //     原因：数据文件有真实写锁，而进程 exe 不在该目录内，路径匹配无效
+        emit_progress(app_handle, &source, 0.0, "checking", "正在检测文件占用...", 0, 0);
+
+        let has_exe_in_source = WalkDir::new(source_path)
+            .max_depth(2)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_type().is_file()
+                    && e.path()
+                        .extension()
+                        .map(|ext| ext.eq_ignore_ascii_case("exe"))
+                        .unwrap_or(false)
+            });
+
+        if has_exe_in_source {
+            // 应用目录：用进程 exe 路径前缀匹配
             let mut sys = sysinfo::System::new_all();
             sys.refresh_all();
             let source_lower = source.to_lowercase();
-            let running: Vec<String> = sys.processes().values()
+            let running: Vec<String> = sys
+                .processes()
+                .values()
                 .filter_map(|p| {
                     p.exe().and_then(|exe| {
-                        if exe.to_string_lossy().to_lowercase().starts_with(&source_lower) {
+                        if exe
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .starts_with(&source_lower)
+                        {
                             Some(p.name().to_string_lossy().to_string())
                         } else {
                             None
@@ -361,9 +474,27 @@ pub fn migrate_app(
                 return Ok(MigrationResult {
                     success: false,
                     message: format!(
-                        "检测到以下程序正在使用该目录：\n{}\n\n\
-                         请关闭上述程序后重试。",
+                        "检测到以下程序正在运行，请关闭后重试：\n{}",
                         running.join("、")
+                    ),
+                    new_path: None,
+                });
+            }
+        } else {
+            // 数据目录：用文件独占锁探测（独占打开每个文件，检测 SHARING_VIOLATION）
+            let locked_files = check_directory_file_locks(source_path);
+            if !locked_files.is_empty() {
+                return Ok(MigrationResult {
+                    success: false,
+                    message: format!(
+                        "目录中有文件正被其他程序占用，无法迁移。\n\n\
+                         被占用的文件：\n{}\n\n\
+                         请关闭正在使用这些文件的程序（如浏览器、游戏、编辑器等）后重试。",
+                        locked_files
+                            .iter()
+                            .map(|f| format!("  • {}", f))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ),
                     new_path: None,
                 });
@@ -444,59 +575,34 @@ pub fn migrate_app(
             });
         }
 
-        // 步骤 4: 备份原目录
+        // 步骤 4: 删除源目录（数据已完整复制到 target，直接原地删除）
+        // 不再使用 rename 备份方案：Shell 已知文件夹（Desktop、Videos 等）和
+        // Chrome 缓存等目录被 Windows Shell / 索引服务持有引用，fs::rename 会
+        // 因 ACCESS_DENIED 失败。新方案直接删除源目录，消除了 rename 成功但
+        // symlink 失败且 rename-back 也失败的双重失败极端情况。
         emit_progress(app_handle, &source, 93.0, "linking", "正在创建目录链接...", source_size, source_size);
 
-        let backup_path = source_path.with_file_name(format!("{}_viap_backup", folder_name));
-        let backup_path_str = backup_path.to_string_lossy().to_string();
-
-        // 清理上一次失败残留的备份目录，避免 rename 时触发 ERROR_DIR_NOT_EMPTY
-        if backup_path.exists() {
-            let _ = fs::remove_dir_all(&backup_path);
-        }
-
-        // 尝试快速路径：同卷 rename（原子操作，0 开销）
-        match fs::rename(source_path, &backup_path) {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = fs::remove_dir_all(&target_path);
-                let msg = match e.kind() {
-                    std::io::ErrorKind::PermissionDenied => format!(
-                        "无法备份原目录：权限不足 (拒绝访问)。\n\
-                         路径: {}\n\
-                         原因: 该目录位于系统保护区域（如 Program Files），重命名需要管理员权限。\n\
-                         请以管理员身份重新运行应用后重试。",
-                        source
-                    ),
-                    _ => format!(
-                        "无法备份原目录: {} (os error {})。\n\
-                         路径: {}\n\
-                         可能原因: 目录被其他程序占用或有残留文件，请重启后重试。",
-                        e,
-                        e.raw_os_error().unwrap_or(0),
-                        source
-                    ),
-                };
-                return Ok(MigrationResult {
-                    success: false,
-                    message: msg,
-                    new_path: None,
-                });
-            }
+        if let Err(e) = remove_directory_robust(source_path) {
+            // 删除源目录失败，说明复制过程中有新进程锁定了文件
+            // 必须清理 target，将状态恢复到迁移前（source 完整，target 不存在）
+            let _ = fs::remove_dir_all(&target_path);
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "迁移中止：原目录中有文件在复制期间被程序重新锁定。\n\
+                     路径: {}\n原因: {}\n\n\
+                     已自动清理目标副本，原数据完好无损。\n\
+                     请关闭相关程序（如浏览器、游戏等）后重试。",
+                    source, e
+                ),
+                new_path: None,
+            });
         }
 
         // 步骤 5: 创建目录联接
         match symlink_dir(&target_path, source_path) {
             Ok(_) => {
-                // 步骤 6: 清理备份
-                emit_progress(app_handle, &source, 97.0, "linking", "正在清理临时文件...", source_size, source_size);
-
-                let backup_cleanup_err = fs::remove_dir_all(&backup_path).err();
-                if let Some(ref e) = backup_cleanup_err {
-                    log_warn!("migration", "无法删除备份目录 {}: {}", backup_path_str, e);
-                }
-
-                // 步骤 7: 写入迁移历史
+                // 步骤 6: 写入迁移历史
                 let is_app = matches!(record_type, MigrationRecordType::App);
                 if let Err(e) = crate::storage::history::add_migration_record(
                     &app_name,
@@ -516,14 +622,7 @@ pub fn migrate_app(
 
                 emit_progress(app_handle, &source, 100.0, "done", "迁移完成", source_size, source_size);
 
-                // 备份清理失败时在成功消息中附加提示，避免用户以为已释放空间
-                let mut success_msg = format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str);
-                if backup_cleanup_err.is_some() {
-                    success_msg.push_str(&format!(
-                        "\n注意：临时备份目录未能自动删除，请手动清理以释放空间：\n{}",
-                        backup_path_str
-                    ));
-                }
+                let success_msg = format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str);
 
                 Ok(MigrationResult {
                     success: true,
@@ -532,49 +631,22 @@ pub fn migrate_app(
                 })
             }
             Err(e) => {
-                // 回滚语义：还原到迁移前状态，不留中间状态
-                let source_restored = fs::rename(&backup_path, source_path).is_ok();
-
-                if !source_restored {
-                    // 原目录恢复失败：target 是唯一数据副本，绝对不能删
-                    return Ok(MigrationResult {
-                        success: false,
-                        message: format!(
-                            "严重错误：创建链接失败（{}），且无法自动恢复原目录。\n\n\
-                             您的数据完整保存在：{}\n\
-                             请手动将该目录移回：{}\n\
-                             备份目录位于：{}",
-                            e, target_path_str, source, backup_path_str
-                        ),
-                        new_path: None,
-                    });
-                }
-
-                // 原目录已恢复，安全删除 target 副本，还原到迁移前状态
-                if let Err(cleanup_err) = fs::remove_dir_all(&target_path) {
-                    // 删除失败：两边都有数据，提示用户手动清理
-                    log_warn!("migration", "回滚时无法删除目标目录 {}: {}", target_path_str, cleanup_err);
-                    return Ok(MigrationResult {
-                        success: false,
-                        message: format!(
-                            "创建目录链接失败：{}\n\
-                             原目录已自动恢复，数据完好无损。\n\n\
-                             但目标位置的副本未能自动删除，请手动清理以释放空间：\n{}\n\n\
-                             可能原因：应用正在后台运行，请完全关闭后重试。",
-                            e, target_path_str
-                        ),
-                        new_path: None,
-                    });
-                }
-
-                // 回滚完成：原目录恢复，target 副本已删，状态与迁移前完全一致
+                // source 已删除，target 是唯一数据副本，无法自动回滚
+                // 相比旧方案（rename 备份），新方案消除了 rename 成功但 symlink
+                // 失败且 rename-back 也失败的双重失败极端情况
                 Ok(MigrationResult {
                     success: false,
                     message: format!(
-                        "创建目录链接失败：{}\n\
-                         原目录已自动恢复，数据完好无损，未产生任何残留。\n\n\
-                         可能原因：应用正在后台运行，请完全关闭后重试。",
-                        e
+                        "创建目录链接失败：{}\n\n\
+                         您的数据完整保存在：{}\n\
+                         请手动处理：\n\
+                         1. 将 {} 目录移回 {}\n\
+                         2. 或手动创建从 {} 到 {} 的目录联接\n\
+                         （以管理员身份运行 cmd：mklink /J \"{}\" \"{}\"）",
+                        e, target_path_str,
+                        target_path_str, source,
+                        target_path_str, source,
+                        source, target_path_str
                     ),
                     new_path: None,
                 })

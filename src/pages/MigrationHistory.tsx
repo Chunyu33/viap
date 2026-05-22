@@ -13,7 +13,9 @@ import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
 
-type LinkStatus = 'checking' | 'healthy' | 'broken' | 'unknown';
+// broken_fixable: Junction 损坏但 target 存在，数据完整，可手动修复
+// broken_lost: target 不存在，数据已丢失
+type LinkStatus = 'checking' | 'healthy' | 'broken_fixable' | 'broken_lost' | 'unknown';
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return '--';
@@ -78,7 +80,9 @@ function HistoryRow({
 
   const rowStyle: React.CSSProperties = {
     borderBottom: '1px solid var(--border-color)',
-    background: linkStatus === 'broken' ? 'var(--color-danger-light)' : 'transparent',
+    background: linkStatus === 'broken_lost' ? 'var(--color-danger-light)'
+      : linkStatus === 'broken_fixable' ? 'var(--color-warning-light)'
+      : 'transparent',
   } as React.CSSProperties;
 
   return (
@@ -88,10 +92,10 @@ function HistoryRow({
         style={{ height: 'var(--row-height)', padding: '0 8px' }}
         onClick={() => setExpanded(!expanded)}
         onMouseEnter={(e) => {
-          if (linkStatus !== 'broken') (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)';
+          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost') (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)';
         }}
         onMouseLeave={(e) => {
-          if (linkStatus !== 'broken') (e.currentTarget as HTMLElement).style.background = 'var(--rowStyle-background, transparent)';
+          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost') (e.currentTarget as HTMLElement).style.background = 'var(--rowStyle-background, transparent)';
         }}
       >
         {/* icon */}
@@ -124,10 +128,11 @@ function HistoryRow({
         </div>
 
         {/* status */}
-        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken' ? '损坏' : ''}>
+        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '链接损坏但数据完整' : linkStatus === 'broken_lost' ? '数据丢失' : ''}>
           {linkStatus === 'checking' && <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-tertiary)' }} />}
           {linkStatus === 'healthy' && <CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--color-success)' }} />}
-          {linkStatus === 'broken' && <AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} />}
+          {linkStatus === 'broken_fixable' && <span title="链接损坏但数据完整，可恢复"><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--color-warning)' }} /></span>}
+          {linkStatus === 'broken_lost' && <span title="目标数据已丢失"><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} /></span>}
         </div>
 
         {/* size */}
@@ -187,9 +192,15 @@ function HistoryRow({
             <span style={{ color: 'var(--text-tertiary)' }}>链接状态</span>
             <p style={{
               color: linkStatus === 'healthy' ? 'var(--color-success)'
-                : linkStatus === 'broken' ? 'var(--color-danger)' : 'var(--text-secondary)'
+                : linkStatus === 'broken_fixable' ? 'var(--color-warning)'
+                : linkStatus === 'broken_lost' ? 'var(--color-danger)'
+                : 'var(--text-secondary)'
             }}>
-              {linkStatus === 'healthy' ? '正常' : linkStatus === 'broken' ? '损坏' : linkStatus === 'checking' ? '检查中' : '未知'}
+              {linkStatus === 'healthy' ? '正常'
+                : linkStatus === 'broken_fixable' ? '链接损坏（数据完整，可点击恢复）'
+                : linkStatus === 'broken_lost' ? '严重损坏（目标数据丢失）'
+                : linkStatus === 'checking' ? '检查中'
+                : '未知'}
             </p>
           </div>
           <div>
@@ -252,7 +263,14 @@ export default function MigrationHistory() {
       runWithConcurrency(needCheck, 5, async (record) => {
         try {
           const result = await invoke<{ healthy: boolean; target_exists: boolean }>('check_link_status', { recordId: record.id });
-          const status: LinkStatus = result.healthy ? 'healthy' : 'broken';
+          let status: LinkStatus;
+          if (result.healthy) {
+            status = 'healthy';
+          } else if (result.target_exists) {
+            status = 'broken_fixable'; // target 存在，junction 损坏，可修复
+          } else {
+            status = 'broken_lost';    // target 不存在，数据丢失
+          }
           setCachedStatus(record.id, status);
           setLinkStatuses(prev => ({ ...prev, [record.id]: status }));
         } catch {
@@ -265,23 +283,19 @@ export default function MigrationHistory() {
     } finally { setLoading(false); }
   }
 
-  async function handleRestore(historyId: string, recordType: string) {
+  async function handleRestore(historyId: string, _recordType: string) {
     try {
       setRestoringId(historyId);
-      const record = records.find(r => r.id === historyId);
-      let result: MigrationResult;
-
-      if (recordType === 'LargeFolder' && record) {
-        result = await invoke<MigrationResult>('restore_large_folder', { junctionPath: record.original_path });
-      } else {
-        result = await invoke<MigrationResult>('restore_app', { historyId });
-      }
+      // 统一使用 restore_app，后端根据 record_type 自动分发恢复逻辑
+      // 避免 restore_large_folder 不更新 history 状态导致记录残留的问题
+      const result = await invoke<MigrationResult>('restore_app', { historyId });
 
       if (result.success) {
         showToast('已成功恢复', 'success');
+        // 清除该条记录的健康状态缓存，避免缓存过期前显示旧状态
+        setCachedStatus(historyId, 'unknown' as LinkStatus);
         await loadHistory();
       } else {
-        // 并发恢复场景：message 包含"另一个恢复任务"时给出友好提示
         if (result.message.includes('另一个恢复任务')) {
           showToast('请等待当前恢复任务完成后再操作', 'info');
         } else {
@@ -296,7 +310,7 @@ export default function MigrationHistory() {
   useEffect(() => { loadHistory(); }, []);
 
   const totalSize = records.reduce((sum, r) => sum + r.size, 0);
-  const brokenCount = Object.values(linkStatuses).filter(s => s === 'broken').length;
+  const brokenCount = Object.values(linkStatuses).filter(s => s === 'broken_fixable' || s === 'broken_lost').length;
 
   const filteredRecords = useMemo(() => {
     let result = [...records];
