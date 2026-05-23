@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 
+    BinlockX 应用图标
+    设计理念：结合锁和盾牌元素，体现安全、加密的核心功能
+    主色调：微信绿 #07C160
+  -->
+  <defs>
+    <!-- 主渐变 - 微信绿色调 -->
+    <linearGradient id="mainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0AD06A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#07C160;stop-opacity:1" />
+    </linearGradient>
+    <!-- 深色渐变 - 用于阴影效果 -->
+    <linearGradient id="darkGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#06a854;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#058f48;stop-opacity:1" />
+    </linearGradient>
+    <!-- 高光渐变 -->
+    <linearGradient id="highlightGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 背景圆角矩形 -->
+  <rect x="32" y="32" width="448" height="448" rx="96" ry="96" fill="url(#mainGradient)"/>
+  
+  <!-- 盾牌外形 -->
+  <path d="M256 96 
+           C 160 96 96 128 96 128 
+           L 96 256 
+           C 96 352 176 416 256 432 
+           C 336 416 416 352 416 256 
+           L 416 128 
+           C 416 128 352 96 256 96 Z" 
+        fill="url(#darkGradient)" 
+        opacity="0.3"/>
+  
+  <!-- 盾牌主体 -->
+  <path d="M256 112 
+           C 168 112 112 140 112 140 
+           L 112 256 
+           C 112 344 184 400 256 416 
+           C 328 400 400 344 400 256 
+           L 400 140 
+           C 400 140 344 112 256 112 Z" 
+        fill="#ffffff" 
+        opacity="0.95"/>
+  
+  <!-- 锁图标 - 锁体 -->
+  <rect x="208" y="248" width="96" height="80" rx="12" ry="12" fill="url(#mainGradient)"/>
+  
+  <!-- 锁图标 - 锁环 -->
+  <path d="M224 248 
+           L 224 208 
+           C 224 176 240 160 256 160 
+           C 272 160 288 176 288 208 
+           L 288 248" 
+        fill="none" 
+        stroke="url(#mainGradient)" 
+        stroke-width="20" 
+        stroke-linecap="round"/>
+  
+  <!-- 锁孔 -->
+  <circle cx="256" cy="284" r="12" fill="#ffffff"/>
+  <rect x="252" y="284" width="8" height="24" rx="4" fill="#ffffff"/>
+  
+  <!-- 高光效果 -->
+  <path d="M256 112 
+           C 168 112 112 140 112 140 
+           L 112 200 
+           C 200 180 312 180 400 200 
+           L 400 140 
+           C 400 140 344 112 256 112 Z" 
+        fill="url(#highlightGradient)"/>
+</svg>

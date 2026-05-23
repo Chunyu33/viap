@@ -49,7 +49,7 @@ export default function MigrationModal({
   progress,
   title = '应用迁移',
   onCancel,
-  onForceContinue,
+  // onForceContinue,
   onClose,
   onRequestClose,
 }: MigrationModalProps) {

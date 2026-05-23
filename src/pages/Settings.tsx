@@ -11,13 +11,14 @@ import {
   FolderCog, ChevronRight, User, Mail,
   FolderArchive, Trash2, RefreshCw,
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
-  Github, Video, ExternalLink, BookOpen, Heart,
+  Github, Video, ExternalLink, BookOpen, Heart, Rocket,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
 import Toast, { useToast } from '../components/Toast';
 import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
+import ProjectPromoModal from '../components/ProjectPromoModal';
 import type { DataDirConfig, GhostLinkPreview } from '../types';
 
 interface MigrationStats {
@@ -51,7 +52,7 @@ const APP_INFO = {
 
 const ABOUT_ITEMS = [
   { label: '作者', value: APP_INFO.author, icon: User },
-  { label: '联系邮箱', value: APP_INFO.email, icon: Mail },
+  { label: '邮箱', value: APP_INFO.email, icon: Mail },
 ];
 
 const SETTINGS_KEY = 'viap_settings';
@@ -130,6 +131,7 @@ export default function Settings() {
   const [ghostScanning, setGhostScanning] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [donateModalOpen, setDonateModalOpen] = useState(false);
+  const [promoModalOpen, setPromoModalOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('...');
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
@@ -600,6 +602,22 @@ export default function Settings() {
                 <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
               </div>
             </a>
+            {/* 更多实用工具 */}
+            <button
+              onClick={() => setPromoModalOpen(true)}
+              className="setting-item w-full text-left"
+              style={{ padding: '10px 14px', cursor: 'pointer' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-primary-light)' }}>
+                  <Rocket className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div>
+                  <p className="setting-label">更多实用工具</p>
+                  <p className="setting-desc">LightC × BinlockX — Windows 本地痛点一站式解决方案</p>
+                </div>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
+            </button>
             {/* 支持作者 */}
             <button
               onClick={() => setDonateModalOpen(true)}
@@ -626,6 +644,7 @@ export default function Settings() {
       </div>
 
       <UserManual isOpen={manualOpen} onClose={() => setManualOpen(false)} />
+      <ProjectPromoModal isOpen={promoModalOpen} onClose={() => setPromoModalOpen(false)} />
       <DonateModal isOpen={donateModalOpen} onClose={() => setDonateModalOpen(false)} />
       <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
     </div>
