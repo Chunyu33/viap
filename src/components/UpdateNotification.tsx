@@ -21,33 +21,40 @@ export default function UpdateNotification() {
     return () => clearTimeout(timer);
   }, [checkForUpdate]);
 
-  if (status === 'idle' || status === 'checking' || status === 'up-to-date') {
+  // error 也静默忽略：自动检测失败不打扰用户
+  if (['idle', 'checking', 'up-to-date', 'error'].includes(status)) {
     return null;
   }
 
+  // 外层容器隔离父级布局穿透，确保横幅独立渲染
   return (
-    <>
+    <div style={{ flexShrink: 0, width: '100%' }}>
       {/* 新版本可用 */}
       {status === 'available' && updateInfo && (
-        <div className="update-banner" style={{
+        <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '8px 16px', background: 'var(--color-primary-light)',
           borderBottom: '1px solid var(--color-primary)',
+          width: '100%',
         }}>
-          <div className="flex items-center gap-3 min-w-0">
-            <ArrowDownToLine className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
-            <div className="min-w-0">
-              <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+            <ArrowDownToLine style={{ width: 16, height: 16, flexShrink: 0, color: 'var(--color-primary)' }} />
+            <div style={{ minWidth: 0 }}>
+              <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>
                 发现新版本 v{updateInfo.version}
               </span>
               {updateInfo.notes && (
-                <span className="text-[11px] ml-2 truncate" style={{ color: 'var(--text-tertiary)' }}>
+                <span style={{
+                  fontSize: 'var(--font-size-xs)', marginLeft: 8, color: 'var(--text-tertiary)',
+                  maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  display: 'inline-block', verticalAlign: 'bottom',
+                }}>
                   {updateInfo.notes}
                 </span>
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <button onClick={dismiss} className="btn h-7 text-[11px]">稍后再说</button>
             <button onClick={() => downloadAndInstall()} className="btn btn-primary h-7 text-[11px]">
               立即更新
@@ -58,45 +65,61 @@ export default function UpdateNotification() {
 
       {/* 下载中 */}
       {status === 'downloading' && (
-        <div className="update-banner" style={{
+        <div style={{
           display: 'flex', alignItems: 'center', gap: '12px',
           padding: '8px 16px', background: 'var(--color-primary-light)',
           borderBottom: '1px solid var(--color-primary)',
+          width: '100%',
         }}>
-          <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
-          <div className="flex-1 min-w-0">
-            <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-              正在下载更新
-            </span>
+          <Loader2 style={{ width: 16, height: 16, flexShrink: 0, color: 'var(--color-primary)' }} className="animate-spin" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
+                正在下载更新
+              </span>
+              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-tertiary)' }}>
+                {downloadProgress}%
+              </span>
+            </div>
             {/* 进度条 */}
-            <div className="mt-1 h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-row-hover)' }}>
-              <div className="h-full rounded-full transition-all duration-300" style={{
+            <div style={{ marginTop: 4, height: 4, borderRadius: 2, overflow: 'hidden', background: 'var(--bg-row-hover)' }}>
+              <div style={{
+                height: '100%', borderRadius: 2,
+                transition: 'width 300ms ease-out',
                 width: `${downloadProgress > 0 ? downloadProgress : 5}%`,
                 background: 'var(--color-primary)',
               }} />
             </div>
           </div>
-          <button onClick={dismiss} className="btn btn-ghost btn-icon flex-shrink-0" title="取消">
-            <X className="w-3.5 h-3.5" />
+          <button onClick={dismiss} className="btn btn-ghost btn-icon flex-shrink-0" title="取消下载">
+            <X style={{ width: 14, height: 14 }} />
           </button>
         </div>
       )}
 
-      {/* 安装中 */}
+      {/* 安装中 — relaunch 正常会在安装完成后立即重启，此状态仅短暂出现 */}
       {status === 'installing' && (
-        <div className="update-banner" style={{
+        <div style={{
           display: 'flex', alignItems: 'center', gap: '8px',
           padding: '8px 16px', background: 'var(--color-success-light)',
           borderBottom: '1px solid var(--color-success)',
+          width: '100%',
+          justifyContent: 'space-between',
         }}>
-          <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" style={{ color: 'var(--color-success)' }} />
-          <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>
-            正在安装，完成后将自动重启...
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Loader2 style={{ width: 16, height: 16, flexShrink: 0, color: 'var(--color-success)' }} className="animate-spin" />
+            <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
+              正在安装，完成后将自动重启...
+            </span>
+          </div>
+          {/* relaunch 失败后的兜底关闭入口 */}
+          <button onClick={dismiss} className="btn btn-ghost btn-icon flex-shrink-0" title="关闭">
+            <X style={{ width: 14, height: 14 }} />
+          </button>
         </div>
       )}
 
       {/* 自动检测失败时静默忽略，不展示任何提示 */}
-    </>
+    </div>
   );
 }

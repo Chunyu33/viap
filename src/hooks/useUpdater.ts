@@ -28,8 +28,11 @@ export function useUpdater() {
   const [error, setError] = useState<string | null>(null);
   // 保存 Update 对象引用，避免 downloadAndInstall 闭包过期
   const updateRef = useRef<Update | null>(null);
+  // 取消标志：用户 dismiss 后阻止后台下载完成后的 relaunch
+  const cancelRef = useRef(false);
 
   const checkForUpdate = useCallback(async (): Promise<Update | null> => {
+    cancelRef.current = false; // 新一次检测/下载流程开始，重置取消标志
     setStatus('checking');
     setError(null);
     try {
@@ -64,23 +67,34 @@ export function useUpdater() {
     setError(null);
     try {
       let downloaded = 0;
+      // 记录总大小，用于计算百分比；可能为 null（服务器不返回 Content-Length）
+      let contentLength: number | null = null;
 
       await target.downloadAndInstall((event) => {
         switch (event.event) {
           case 'Started':
-            // contentLength 可能为 null，此时不显示百分比
+            contentLength = event.data.contentLength ?? null;
             break;
           case 'Progress':
+            // 用户取消后不再更新进度，避免界面状态残留
+            if (cancelRef.current) return;
             downloaded += event.data.chunkLength;
+            if (contentLength && contentLength > 0) {
+              setDownloadProgress(Math.round((downloaded / contentLength) * 100));
+            }
+            // 无 contentLength 时不更新进度值，保持默认的 0%（进度条显示 5% 初始态）
             break;
           case 'Finished':
+            // 用户已取消，不触发安装和重启
+            if (cancelRef.current) return;
             setDownloadProgress(100);
             setStatus('installing');
             break;
         }
       });
 
-      // 安装完成后重启应用
+      // 用户取消后不再重启应用
+      if (cancelRef.current) return;
       await relaunch();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -90,6 +104,7 @@ export function useUpdater() {
   }, []);
 
   const dismiss = useCallback(() => {
+    cancelRef.current = true; // 通知后台下载回调终止，阻止 relaunch
     setStatus('idle');
     setUpdateInfo(null);
     setError(null);
