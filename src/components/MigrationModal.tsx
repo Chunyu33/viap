@@ -84,11 +84,12 @@ export default function MigrationModal({
   if (!visible) return null;
 
   const stepText = stepLabel[step] || stepLabel.idle;
-  const isLoading = ['checking', 'counting', 'copying', 'verifying', 'linking'].includes(step);
-  const canClose = step === 'success' || step === 'error';
+  // 进程占用视为终止状态：非 loading，可关闭，无需确认
+  const hasProcessLocks = lockedProcesses.length > 0 && step === 'checking';
+  const isLoading = !hasProcessLocks && ['checking', 'counting', 'copying', 'verifying', 'linking'].includes(step);
+  const canClose = step === 'success' || step === 'error' || hasProcessLocks;
   const isSuccess = step === 'success';
   const isError = step === 'error';
-  const hasProcessLocks = lockedProcesses.length > 0 && step === 'checking';
   const displayProgress = progress >= 0 && progress <= 100 ? progress : 0;
 
   return (
@@ -148,20 +149,23 @@ export default function MigrationModal({
 
           {/* 当前步骤标识 */}
           <div className="flex items-center justify-center gap-2 mb-3">
+            {hasProcessLocks && <AlertTriangle className="h-3.5 w-3.5" style={{ color: 'var(--color-warning)' }} />}
             {isLoading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-primary)' }} />}
             {isSuccess && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'var(--color-success)' }} />}
             {isError && <AlertCircle className="h-3.5 w-3.5" style={{ color: 'var(--color-danger)' }} />}
             <span
               className="text-xs font-medium"
               style={{
-                color: isSuccess
+                color: hasProcessLocks
+                  ? 'var(--color-warning)'
+                  : isSuccess
                   ? 'var(--color-success)'
                   : isError
                   ? 'var(--color-danger)'
                   : 'var(--text-secondary)',
               }}
             >
-              {stepText}
+              {hasProcessLocks ? '检测到进程占用' : stepText}
             </span>
           </div>
 
@@ -248,7 +252,8 @@ export default function MigrationModal({
               background: 'var(--bg-toolbar)',
             }}
           >
-            {isLoading && onCancel && (
+            {/* 迁移进行中：取消按钮 */}
+            {isLoading && onCancel && !hasProcessLocks && (
               <button
                 onClick={onCancel}
                 className="btn btn-sm inline-flex items-center gap-1.5"
@@ -262,21 +267,6 @@ export default function MigrationModal({
                 取消迁移
               </button>
             )}
-
-            {/* 不提供强制迁移按钮，避免用户误操作 */}
-            {/* {hasProcessLocks && onForceContinue && (
-              <button
-                onClick={onForceContinue}
-                className="btn btn-sm"
-                style={{
-                  background: 'var(--color-primary)',
-                  color: 'var(--text-inverse)',
-                  borderColor: 'var(--color-primary)',
-                }}
-              >
-                强制继续
-              </button>
-            )} */}
 
             {canClose && (
               <button

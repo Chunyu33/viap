@@ -1,7 +1,7 @@
 // 数据迁移页面 — 桌面工具风格
 // 紧凑行布局，弱化操作视觉
 
-import { useEffect, useState, useMemo, useCallback, useContext } from 'react';
+import { useEffect, useState, useMemo, useCallback, useContext, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, confirm } from '@tauri-apps/plugin-dialog';
@@ -289,6 +289,7 @@ export default function LargeFolders() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [batchMigrating, setBatchMigrating] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  const batchCancelledRef = useRef(false);
 
   // 系统文件夹风险确认弹窗（仅 System 类型显示）
   const [riskConfirm, setRiskConfirm] = useState<{
@@ -524,6 +525,7 @@ export default function LargeFolders() {
   }
 
   /** 批量迁移：依次迁移每个选中的文件夹 */
+  /** 批量迁移：依次迁移每个选中的文件夹，复用单个迁移的进度弹窗 */
   async function handleBatchMigrate() {
     if (selectedKeys.size === 0) return;
 
@@ -534,60 +536,135 @@ export default function LargeFolders() {
     const selectedFolders = folders.filter((f) => selectedKeys.has(f.id));
     if (selectedFolders.length === 0) return;
 
-    const confirmed = await confirm(
-      `即将批量迁移 ${selectedFolders.length} 个文件夹到：\n${targetDir}\n\n是否继续？`,
-      { title: '确认批量迁移', kind: 'warning', okLabel: '开始迁移', cancelLabel: '取消' }
-    );
+    // 含系统文件夹时增加警告
+    const hasSystemFolder = selectedFolders.some(f => f.folder_type === 'System');
+    const confirmMsg = hasSystemFolder
+      ? `即将批量迁移 ${selectedFolders.length} 个文件夹（含系统文件夹）到：\n${targetDir}\n\n⚠ 系统文件夹迁移有风险，请确认已关闭相关应用。\n\n是否继续？`
+      : `即将批量迁移 ${selectedFolders.length} 个文件夹到：\n${targetDir}\n\n是否继续？`;
+
+    const confirmed = await confirm(confirmMsg, {
+      title: '确认批量迁移',
+      kind: hasSystemFolder ? 'warning' : 'info',
+      okLabel: '开始迁移',
+      cancelLabel: '取消',
+    });
     if (!confirmed) return;
 
+    // 初始化批量状态
     setBatchMigrating(true);
+    batchCancelledRef.current = false;
     setBatchProgress({ current: 0, total: selectedFolders.length });
     setSelectedKeys(new Set());
 
+    // 打开进度弹窗（复用 MigrationModal）
+    setMigrationModalOpen(true);
+    setMigrationStep('counting');
+    setMigrationMessage('准备开始批量迁移...');
+    setMigrationProgress(0);
+    setLockedProcesses([]);
+
     let successCount = 0;
     let failCount = 0;
+    const failedFolders: string[] = [];
 
     for (let i = 0; i < selectedFolders.length; i++) {
+      if (batchCancelledRef.current) break;
+
       const folder = selectedFolders[i];
       setBatchProgress({ current: i + 1, total: selectedFolders.length });
 
-      try {
-        // 进程锁检查
-        try {
-          const lockResult = await invoke<ProcessLockResult>('check_process_locks', { sourcePath: folder.path });
-          if (lockResult.is_locked) {
-            showToast(`${folder.display_name}: 文件被占用，跳过`, 'error');
-            failCount++;
-            continue;
-          }
-        } catch { /* 非关键 */ }
+      // 更新弹窗显示当前正在迁移的文件夹
+      setMigratingFolder(folder);
+      setMigrationStep('checking');
+      setMigrationProgress(0);
+      setMigrationMessage(`正在处理 (${i + 1}/${selectedFolders.length})...`);
 
+      try {
+        // 直接调用 migrate_large_folder，后端步骤 0.5 会做准确的占用检测
         const result = await invoke<MigrationResult>('migrate_large_folder', {
           sourcePath: folder.path,
           targetDir,
         });
 
+        // 处理 TARGET_EXISTS 特殊返回值（不能直接 Toast 路径字符串给用户）
+        if (!result.success && (
+          result.message.startsWith('TARGET_EXISTS_RETRY:') ||
+          result.message.startsWith('TARGET_EXISTS:')
+        )) {
+          if (batchCancelledRef.current) { failCount++; failedFolders.push(folder.display_name); continue; }
+          const isRetry = result.message.startsWith('TARGET_EXISTS_RETRY:');
+          const existingPath = result.message.replace(/^TARGET_EXISTS(?:_RETRY)?:/, '');
+          const promptMsg = isRetry
+            ? `${folder.display_name} 上次迁移未完成，目标位置存在残留目录：\n${existingPath}\n\n覆盖将清理残留并重新迁移。`
+            : `${folder.display_name} 的目标路径已存在：\n${existingPath}\n\n是否覆盖？`;
+          const overwrite = await confirm(promptMsg, {
+            title: '目标目录已存在',
+            kind: 'warning',
+            okLabel: '覆盖并迁移',
+            cancelLabel: '跳过',
+          });
+          if (overwrite) {
+            // 以 force_overwrite 重试
+            const retryResult = await invoke<MigrationResult>('migrate_large_folder', {
+              sourcePath: folder.path,
+              targetDir,
+              forceOverwrite: true,
+            });
+            if (retryResult.success) {
+              successCount++;
+            } else {
+              showToast(`${folder.display_name}: ${retryResult.message}`, 'error');
+              failCount++;
+              failedFolders.push(folder.display_name);
+            }
+          } else {
+            failCount++;
+            failedFolders.push(folder.display_name);
+          }
+          continue;
+        }
+
         if (result.success) {
           successCount++;
         } else {
+          // 后端错误消息（文件占用、空间不足等），直接显示
           showToast(`${folder.display_name}: ${result.message}`, 'error');
           failCount++;
+          failedFolders.push(folder.display_name);
         }
       } catch (error) {
-        showToast(`${folder.display_name}: ${error}`, 'error');
+        const errStr = String(error);
+        if (!errStr.includes('用户取消了迁移')) {
+          showToast(`${folder.display_name}: ${error}`, 'error');
+          failedFolders.push(folder.display_name);
+        }
         failCount++;
       }
     }
 
     setBatchMigrating(false);
     setBatchProgress({ current: 0, total: 0 });
+    handleCloseMigrationModal();
 
-    if (failCount === 0) {
+    if (batchCancelledRef.current) {
+      showToast(`批量迁移已停止，已完成 ${successCount} 个`, 'info');
+    } else if (failCount === 0) {
       showToast(`批量迁移完成：${successCount} 个全部成功`, 'success');
     } else {
-      showToast(`批量迁移完成：${successCount} 成功, ${failCount} 失败`, 'info');
+      showToast(
+        `批量迁移完成：${successCount} 成功，${failCount} 失败` +
+        (failedFolders.length > 0 ? `\n失败：${failedFolders.join('、')}` : ''),
+        'info'
+      );
     }
+
     await fetchFolders();
+  }
+
+  /** 停止批量迁移 */
+  function handleStopBatchMigrate() {
+    batchCancelledRef.current = true;
+    invoke('cancel_migration').catch(() => {});
   }
 
   async function handleRestore(folder: LargeFolder) {
@@ -660,19 +737,23 @@ export default function LargeFolders() {
             >
               {selectedKeys.size > 0 ? '取消全选' : '全选未迁移'}
             </button>
-            {selectedKeys.size > 0 && (
+            {batchMigrating ? (
+              <button
+                onClick={handleStopBatchMigrate}
+                className="btn btn-sm h-7 text-[11px]"
+                style={{ background: 'var(--color-danger)', color: 'var(--text-inverse)', borderColor: 'var(--color-danger)' }}
+              >
+                停止 ({batchProgress.current}/{batchProgress.total})
+              </button>
+            ) : selectedKeys.size > 0 ? (
               <button
                 onClick={handleBatchMigrate}
-                disabled={batchMigrating}
                 className="btn btn-primary btn-sm h-7 text-[11px]"
-                style={{ visibility: selectedKeys.size === 0 ? 'hidden' : 'visible' }}
               >
                 <ArrowRightLeft className="w-3.5 h-3.5" />
-                {batchMigrating
-                  ? `迁移中 ${batchProgress.current}/${batchProgress.total}`
-                  : `批量迁移 (${selectedKeys.size})`}
+                批量迁移 ({selectedKeys.size})
               </button>
-            )}
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={handleAddCustomFolder} className="btn h-7 text-[12px]">
@@ -771,14 +852,21 @@ export default function LargeFolders() {
       <MigrationModal
         isOpen={migrationModalOpen}
         step={migrationStep}
-        appName={migratingFolder?.display_name || ''}
+        appName={
+          batchMigrating && batchProgress.total > 0
+            ? `批量迁移 (${batchProgress.current}/${batchProgress.total}) — ${migratingFolder?.display_name || ''}`
+            : migratingFolder?.display_name || ''
+        }
         message={migrationMessage}
         lockedProcesses={lockedProcesses}
         progress={migrationProgress}
         title="数据迁移"
-        onCancel={handleCancelMigration}
+        onCancel={batchMigrating ? handleStopBatchMigrate : handleCancelMigration}
         onClose={handleCloseMigrationModal}
-        onRequestClose={handleRequestCloseDuringMigration}
+        onRequestClose={batchMigrating
+          ? async () => { handleStopBatchMigrate(); }
+          : handleRequestCloseDuringMigration
+        }
       />
 
       <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />

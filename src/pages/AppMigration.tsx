@@ -734,7 +734,9 @@ export default function AppMigration() {
   // 停止批量迁移：设置取消标志并通知后端停止当前任务
   function handleStopBatchMigrate() {
     batchCancelledRef.current = true;
+    // 同时通知后端取消当前正在执行的 migrate_app（如果有），覆盖当前 invoke 的复制/扫描阶段
     invoke('cancel_migration').catch(() => {});
+    // 列表刷新在 handleBatchMigrate 的 finally 段（handleRefresh）中处理，这里不额外刷新避免竞态
   }
 
   function handleSelectAll() {
@@ -749,11 +751,10 @@ export default function AppMigration() {
     });
   }
 
-  // 批量迁移：依次迁移每个选中的应用
+  // 批量迁移：依次迁移每个选中的应用，复用单个迁移的进度弹窗
   async function handleBatchMigrate() {
     if (selectedKeys.size === 0) return;
 
-    // 解析迁移目录（默认设置 / 引导设置 / 手动选择）
     const defaultTarget = loadAppDefaultTarget();
     const targetDir = await resolveMigrationTarget(defaultTarget, '批量迁移', setActiveTab, showTargetPicker);
     if (!targetDir) return;
@@ -769,35 +770,57 @@ export default function AppMigration() {
     );
     if (!confirmed) return;
 
+    // 初始化批量状态
     setBatchMigrating(true);
     batchCancelledRef.current = false;
     setBatchProgress({ current: 0, total: selectedApps.length });
     setSelectedKeys(new Set());
 
+    // 打开进度弹窗（复用单个迁移的 MigrationModal）
+    setMigrationModalOpen(true);
+    setMigrationStep('counting');
+    setMigrationMessage('准备开始批量迁移...');
+    setMigrationProgress(0);
+    setLockedProcesses([]);
+
+    // 注册进度事件监听器（批量期间持续监听）
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<MigrationProgressEvent>('migration-progress', (event) => {
+        const data = event.payload;
+        setMigrationProgress(data.percent);
+        switch (data.step) {
+          case 'checking': setMigrationStep('checking'); break;
+          case 'counting': setMigrationStep('counting'); break;
+          case 'copying': setMigrationStep('copying'); break;
+          case 'verifying': setMigrationStep('verifying'); break;
+          case 'linking': setMigrationStep('linking'); break;
+        }
+        setMigrationMessage(data.message);
+      });
+    } catch (error) {
+      logger.error('注册批量进度监听失败:', error);
+    }
+
     let successCount = 0;
     let failCount = 0;
+    const failedApps: string[] = [];
 
     for (let i = 0; i < selectedApps.length; i++) {
-      // 用户手动停止批量迁移
-      if (batchCancelledRef.current) {
-        showToast(`批量迁移已停止，已完成 ${successCount} 个`, 'info');
-        break;
-      }
+      if (batchCancelledRef.current) break;
 
       const app = selectedApps[i];
       setBatchProgress({ current: i + 1, total: selectedApps.length });
 
-      try {
-        // 检查进程锁
-        const lockResult = await invoke<ProcessLockResult>('check_process_locks', {
-          sourcePath: app.install_location,
-        });
-        if (lockResult.is_locked) {
-          showToast(`${app.display_name}: 文件被占用，跳过`, 'error');
-          failCount++;
-          continue;
-        }
+      // 更新弹窗标题为当前正在迁移的应用名
+      setMigratingApp(app);
+      setMigrationStep('checking');
+      setMigrationProgress(0);
+      setMigrationMessage(`正在处理 (${i + 1}/${selectedApps.length})...`);
 
+      try {
+        // 直接调用 migrate_app，后端步骤 0.5 会做准确的占用检测
+        // 不在此处调用 check_process_locks（弱检测且后端已覆盖）
         let result = await invoke<MigrationResult>('migrate_app', {
           appName: app.display_name,
           source: app.install_location,
@@ -805,19 +828,22 @@ export default function AppMigration() {
         });
 
         // 目标路径已有残留目录 → 弹出确认框，用户确认后以 force_overwrite 重试
-        if (!result.success && (result.message.startsWith('TARGET_EXISTS_RETRY:') || result.message.startsWith('TARGET_EXISTS:'))) {
-          if (batchCancelledRef.current) { failCount++; continue; }
+        if (!result.success && (
+          result.message.startsWith('TARGET_EXISTS_RETRY:') ||
+          result.message.startsWith('TARGET_EXISTS:')
+        )) {
+          if (batchCancelledRef.current) { failCount++; failedApps.push(app.display_name); continue; }
           const isRetry = result.message.startsWith('TARGET_EXISTS_RETRY:');
-          const existingPath = isRetry
-            ? result.message.replace('TARGET_EXISTS_RETRY:', '')
-            : result.message.replace('TARGET_EXISTS:', '');
+          const existingPath = result.message.replace(/^TARGET_EXISTS(?:_RETRY)?:/, '');
           const promptMsg = isRetry
             ? `${app.display_name} 上次迁移未完全完成，目标位置存在残留目录：\n${existingPath}\n\n覆盖将清理残留并重新迁移。`
-            : `${app.display_name} 的目标路径已存在残留目录：\n${existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
-          const overwrite = await confirm(
-            promptMsg,
-            { title: '目标目录已存在', kind: 'warning', okLabel: '覆盖并迁移', cancelLabel: '跳过' }
-          );
+            : `${app.display_name} 的目标路径已存在：\n${existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
+          const overwrite = await confirm(promptMsg, {
+            title: '目标目录已存在',
+            kind: 'warning',
+            okLabel: '覆盖并迁移',
+            cancelLabel: '跳过',
+          });
           if (overwrite) {
             result = await invoke<MigrationResult>('migrate_app', {
               appName: app.display_name,
@@ -826,41 +852,60 @@ export default function AppMigration() {
               forceOverwrite: true,
             });
           } else {
-            showToast(`${app.display_name}: 已跳过（目标路径已存在残留目录）`, 'info');
+            showToast(`${app.display_name}: 已跳过（目标路径已存在）`, 'info');
             failCount++;
+            failedApps.push(app.display_name);
             continue;
           }
         }
 
-        // 源路径是 Junction 且指向目标：恢复失败残留，覆盖迁移会丢失数据
+        // Junction 循环检测：原路径仍是 Junction 指向目标盘
         if (!result.success && result.message.startsWith('JUNCTION_LOOP:')) {
           showToast(`${app.display_name}: 原路径仍是链接，请先在迁移记录中恢复后重试`, 'error');
           failCount++;
+          failedApps.push(app.display_name);
           continue;
         }
 
         if (result.success) {
           successCount++;
         } else {
+          // 后端返回的错误（文件占用、空间不足、完整性校验失败等）
           showToast(`${app.display_name}: ${result.message}`, 'error');
           failCount++;
+          failedApps.push(app.display_name);
         }
       } catch (error) {
-        showToast(`${app.display_name}: ${error}`, 'error');
+        const errStr = String(error);
+        if (!errStr.includes('用户取消了迁移')) {
+          showToast(`${app.display_name}: ${error}`, 'error');
+          failedApps.push(app.display_name);
+        }
         failCount++;
       }
     }
 
+    // 清理监听器
+    if (unlisten) unlisten();
+
     setBatchMigrating(false);
     setBatchProgress({ current: 0, total: 0 });
 
-    if (!batchCancelledRef.current) {
-      if (failCount === 0) {
-        showToast(`批量迁移完成：${successCount} 个全部成功`, 'success');
-      } else {
-        showToast(`批量迁移完成：${successCount} 成功, ${failCount} 失败`, 'info');
-      }
+    // 关闭进度弹窗，显示汇总结果
+    handleCloseMigrationModal();
+
+    if (batchCancelledRef.current) {
+      showToast(`批量迁移已停止，已完成 ${successCount} 个`, 'info');
+    } else if (failCount === 0) {
+      showToast(`批量迁移完成：${successCount} 个全部成功`, 'success');
+    } else {
+      showToast(
+        `批量迁移完成：${successCount} 成功，${failCount} 失败` +
+        (failedApps.length > 0 ? `\n失败：${failedApps.join('、')}` : ''),
+        'info'
+      );
     }
+
     await handleRefresh();
   }
 
@@ -900,11 +945,15 @@ export default function AppMigration() {
       <MigrationModal
         isOpen={migrationModalOpen}
         step={migrationStep}
-        appName={migratingApp?.display_name || ''}
+        appName={
+          batchMigrating && batchProgress.total > 0
+            ? `批量迁移 (${batchProgress.current}/${batchProgress.total}) — ${migratingApp?.display_name || ''}`
+            : migratingApp?.display_name || ''
+        }
         message={migrationMessage}
         lockedProcesses={lockedProcesses}
         progress={migrationProgress}
-        onCancel={handleCancelMigration}
+        onCancel={batchMigrating ? handleStopBatchMigrate : handleCancelMigration}
         onForceContinue={handleForceContinue}
         onClose={handleCloseMigrationModal}
         onRequestClose={handleRequestCloseDuringMigration}
