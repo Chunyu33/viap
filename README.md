@@ -90,13 +90,17 @@ viap/
 │   │   ├── DiskUsageBar.tsx     # 磁盘使用率
 │   │   ├── FilterSelect.tsx     # 下拉筛选组件
 │   │   ├── MigrationModal.tsx   # 迁移进度弹窗
+│   │   ├── ProjectPromoModal.tsx # 项目推介弹窗
 │   │   ├── TitleBar.tsx         # 标题栏（集成 Tab 导航 + 磁盘状态）
-│   │   └── Toast.tsx            # 通知组件
+│   │   ├── Toast.tsx            # 通知组件
+│   │   └── UpdateNotification.tsx # 自动更新横幅
 │   ├── pages/                    # 页面
 │   │   ├── AppMigration.tsx     # 应用迁移页（还原/卸载/批量）
 │   │   ├── LargeFolders.tsx     # 数据迁移页
 │   │   ├── MigrationHistory.tsx # 迁移历史页（搜索/筛选/分页/详情面板）
 │   │   └── Settings.tsx         # 设置页（幽灵清理/导入导出）
+│   ├── hooks/                    # 自定义 Hook
+│   │   └── useUpdater.ts        # 自动更新检测（check/download/进度跟踪）
 │   ├── utils/                    # 工具函数
 │   │   └── logger.ts            # 统一日志工具
 │   ├── styles/                   # 样式系统
@@ -218,7 +222,8 @@ node scripts/generate-ico.js
 
 - **自动检测**：启动 3 秒后静默检查，有新版本时通知栏提示
 - **手动检查**：设置页点击「检测更新」按钮，结果即时反馈
-- **静默下载**：后台下载完成后提示重启安装
+- **下载进度**：横幅实时显示百分比进度条，可随时取消下载
+- **安全取消**：取消下载后立即中止后台流程，不会意外重启应用
 - 自动检查失败不影响正常使用，无弹窗打扰
 
 ### 应用图标提取
