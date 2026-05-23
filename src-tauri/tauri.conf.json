@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "zip"],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",

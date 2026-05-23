@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: '--target x86_64-pc-windows-msvc'
+            args: '--target x86_64-pc-windows-msvc --bundles nsis,zip'
 
     runs-on: ${{ matrix.platform }}
 
