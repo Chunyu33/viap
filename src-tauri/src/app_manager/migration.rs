@@ -323,69 +323,136 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
     fs::remove_dir(path)
 }
 
-/// 危险路径检测
+/// 危险路径分级
+#[derive(Debug, Clone, PartialEq)]
+enum DangerLevel {
+    Blocked,   // 绝对拦截，迁移必然导致系统级不可逆损坏
+    Warning,   // 高风险但可手动恢复，用户确认后放行
+}
+
+/// 危险路径匹配规则
+struct DangerRule {
+    pattern: &'static str,
+    level: DangerLevel,
+    category: &'static str,
+    label: &'static str,
+}
+
+/// 危险路径检测（两级：BLOCKED / WARNING）
 ///
-/// 对源路径做黑名单匹配，拦截以下三类不可迁移的目录：
+/// 对源路径做黑名单匹配，拦截以下类别的目录：
 ///
-/// 1. **系统核心目录**：Windows / Program Files / System32 等，迁移会导致系统崩溃
-/// 2. **系统级浏览器**：Edge / Chrome 安装目录。
-///    Edge 的 MicrosoftEdgeUpdate 服务会把 Junction 识别为"损坏安装"并覆盖；
-///    Chromium 把安装路径写死进扩展签名，路径变更后所有插件报损坏。
-/// 3. **GPU / 显卡驱动目录**：NVIDIA / AMD / Intel 驱动深度注册进系统服务，
-///    迁移后驱动服务找不到 DLL，轻则降级到基本显示适配器，重则蓝屏。
+/// BLOCKED — 迁移必然导致系统级不可逆损坏：
+/// 1. **系统核心目录**：Windows / Program Files / WindowsApps 等
+/// 2. **系统级浏览器**：Edge / Chrome 安装目录（自动修复服务会覆盖 Junction）
+/// 3. **GPU / 显卡驱动**：NVIDIA / AMD / Intel 驱动路径写死进服务注册表
 ///
-/// 返回 Some(错误消息) 表示命中黑名单，None 表示安全。
-fn check_dangerous_path(source: &str) -> Option<String> {
+/// WARNING — 迁移可能导致相关软件失效，但可手动恢复：
+/// 1. **虚拟化软件**：VMware / VirtualBox / Hyper-V（含绝对路径引用）
+/// 2. **数据库**：MySQL / PostgreSQL / MongoDB / Redis / SQL Server（含事务日志）
+/// 3. **安全软件**：Defender / Kaspersky / ESET（含内核级驱动）
+/// 4. **系统组件缓存**：VS Package Cache
+/// 5. **ProgramData 根目录**（包含大量系统级配置）
+///
+/// 返回 Some((level, 用户可见消息)) 或 None（安全路径）
+fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
     let source_lower = source.to_lowercase();
-    // 统一转为正斜杠，兼容用户粘贴的混合路径
     let source_normalized = source_lower.replace('/', "\\");
 
-    // ── 规则表 ──────────────────────────────────────────────────────────────
-    // 每条规则：(匹配片段, 分类标签, 用户可见原因)
-    // 匹配逻辑：source_normalized 包含该片段即命中
-    let rules: &[(&str, &str, &str)] = &[
-        // 系统核心目录
-        (r"c:\windows",             "系统目录", "Windows 系统目录"),
-        (r"c:\program files\windowsapps", "系统目录", "Windows 应用商店目录"),
-        (r"c:\programdata\microsoft\windows", "系统目录", "Windows 系统数据目录"),
+    // ── 规则表（BLOCKED 在前，WARNING 在后）──────────────────────────────
+    // 顺序至关重要：c:\programdata\microsoft\windows (BLOCKED) 必须在
+    // c:\programdata (WARNING) 之前，确保具体子路径不会被父路径规则降级
+    let rules: &[DangerRule] = &[
+        // ═══════════════════════════════════════
+        // BLOCKED — 系统核心目录
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"c:\windows",                            level: DangerLevel::Blocked, category: "系统目录", label: "Windows 系统目录" },
+        DangerRule { pattern: r"c:\program files\windowsapps",          level: DangerLevel::Blocked, category: "系统目录", label: "Windows 应用商店目录" },
+        DangerRule { pattern: r"c:\programdata\microsoft\windows",      level: DangerLevel::Blocked, category: "系统目录", label: "Windows 系统数据目录" },
 
-        // 系统级浏览器（安装目录，非缓存）
-        // Edge：MicrosoftEdgeUpdate 服务会把 Junction 识别为损坏安装并自动覆盖
-        // Chrome：Chromium 把安装路径写死进扩展签名，迁移后所有插件报损坏
-        (r"microsoft\edge\application",   "浏览器", "Microsoft Edge 安装目录"),
-        (r"microsoft\msedge\application",  "浏览器", "Microsoft Edge 安装目录"),
-        (r"google\chrome\application",     "浏览器", "Google Chrome 安装目录"),
-        (r"google\chrome beta\application","浏览器", "Google Chrome Beta 安装目录"),
-        (r"google\chrome dev\application", "浏览器", "Google Chrome Dev 安装目录"),
-        (r"bromite\application",           "浏览器", "Bromite 安装目录"),
+        // ═══════════════════════════════════════
+        // BLOCKED — 系统级浏览器安装目录
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"microsoft\edge\application",            level: DangerLevel::Blocked, category: "浏览器", label: "Microsoft Edge 安装目录" },
+        DangerRule { pattern: r"microsoft\msedge\application",          level: DangerLevel::Blocked, category: "浏览器", label: "Microsoft Edge 安装目录" },
+        DangerRule { pattern: r"microsoft\edgewebview\application",     level: DangerLevel::Blocked, category: "浏览器", label: "Microsoft WebView2 运行时目录" },
+        DangerRule { pattern: r"google\chrome\application",             level: DangerLevel::Blocked, category: "浏览器", label: "Google Chrome 安装目录" },
+        DangerRule { pattern: r"google\chrome beta\application",        level: DangerLevel::Blocked, category: "浏览器", label: "Google Chrome Beta 安装目录" },
+        DangerRule { pattern: r"google\chrome dev\application",         level: DangerLevel::Blocked, category: "浏览器", label: "Google Chrome Dev 安装目录" },
+        DangerRule { pattern: r"bromite\application",                   level: DangerLevel::Blocked, category: "浏览器", label: "Bromite 安装目录" },
 
-        // GPU / 显卡驱动（驱动 DLL 路径写死进服务注册表，迁移后驱动失效）
-        (r"nvidia corporation\installer2",   "GPU驱动", "NVIDIA 驱动安装目录"),
-        (r"nvidia\displaydriver",            "GPU驱动", "NVIDIA 显卡驱动目录"),
-        (r"\nvidia\",                        "GPU驱动", "NVIDIA 驱动目录"),
-        (r"amd\ccc2",                        "GPU驱动", "AMD 显卡控制中心目录"),
-        (r"advanced micro devices",          "GPU驱动", "AMD 驱动目录"),
-        (r"intel\graphics",                  "GPU驱动", "Intel 核显驱动目录"),
-        (r"intel\intelgraphicscontrolpanel", "GPU驱动", "Intel 显卡控制面板目录"),
+        // ═══════════════════════════════════════
+        // BLOCKED — GPU / 显卡驱动
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"nvidia corporation\installer2",         level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动安装目录" },
+        DangerRule { pattern: r"nvidia\displaydriver",                  level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 显卡驱动目录" },
+        DangerRule { pattern: r"\nvidia\",                              level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动目录" },
+        DangerRule { pattern: r"amd\ccc2",                             level: DangerLevel::Blocked, category: "GPU驱动", label: "AMD 显卡控制中心目录" },
+        DangerRule { pattern: r"advanced micro devices",               level: DangerLevel::Blocked, category: "GPU驱动", label: "AMD 驱动目录" },
+        DangerRule { pattern: r"intel\graphics",                       level: DangerLevel::Blocked, category: "GPU驱动", label: "Intel 核显驱动目录" },
+        DangerRule { pattern: r"intel\intelgraphicscontrolpanel",      level: DangerLevel::Blocked, category: "GPU驱动", label: "Intel 显卡控制面板目录" },
 
-        // Microsoft Edge WebView2 运行时（系统级组件）
-        (r"microsoft\edgewebview\application", "浏览器", "Microsoft WebView2 运行时目录"),
+        // ═══════════════════════════════════════
+        // WARNING — 虚拟化软件
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"vmware",         level: DangerLevel::Warning, category: "虚拟化", label: "VMware 目录" },
+        DangerRule { pattern: r"virtualbox",     level: DangerLevel::Warning, category: "虚拟化", label: "VirtualBox 目录" },
+        DangerRule { pattern: r"hyper-v",        level: DangerLevel::Warning, category: "虚拟化", label: "Hyper-V 目录" },
+
+        // ═══════════════════════════════════════
+        // WARNING — 数据库
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"mysql",                level: DangerLevel::Warning, category: "数据库", label: "MySQL 数据目录" },
+        DangerRule { pattern: r"postgresql",           level: DangerLevel::Warning, category: "数据库", label: "PostgreSQL 数据目录" },
+        DangerRule { pattern: r"mongodb",              level: DangerLevel::Warning, category: "数据库", label: "MongoDB 数据目录" },
+        DangerRule { pattern: r"redis",                level: DangerLevel::Warning, category: "缓存服务", label: "Redis 数据目录" },
+        DangerRule { pattern: r"microsoft sql server", level: DangerLevel::Warning, category: "数据库", label: "SQL Server 数据目录" },
+
+        // ═══════════════════════════════════════
+        // WARNING — 安全软件
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"windows defender", level: DangerLevel::Warning, category: "安全软件", label: "Windows Defender 目录" },
+        DangerRule { pattern: r"kaspersky",        level: DangerLevel::Warning, category: "安全软件", label: "Kaspersky 目录" },
+        DangerRule { pattern: r"eset",             level: DangerLevel::Warning, category: "安全软件", label: "ESET 目录" },
+
+        // ═══════════════════════════════════════
+        // WARNING — 系统组件缓存
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"package cache",  level: DangerLevel::Warning, category: "系统组件", label: "Visual Studio Package Cache" },
+
+        // ═══════════════════════════════════════
+        // WARNING — ProgramData 根目录
+        // 必须排在 c:\programdata\microsoft\windows (BLOCKED) 之后
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"c:\programdata", level: DangerLevel::Warning, category: "系统目录", label: "ProgramData 根目录" },
     ];
 
-    for (pattern, category, label) in rules {
-        if source_normalized.contains(pattern) {
-            let tip = match *category {
-                "系统目录" => "迁移系统核心目录会导致 Windows 组件崩溃，无法开机。",
-                "浏览器"   => "浏览器安装目录含有系统级注册和自动修复机制，迁移后 Junction 会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器的缓存目录（在「数据迁移」页面的快捷项中）。",
-                "GPU驱动"  => "GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。",
-                _          => "该目录包含系统级组件，不支持迁移。",
-            };
-            return Some(format!(
-                "🚫 无法迁移：{label} 属于「{category}」，不支持通过 Junction 迁移。\n\n{tip}",
-                label = label,
-                category = category,
-                tip = tip,
-            ));
+    for rule in rules {
+        if source_normalized.contains(rule.pattern) {
+            match rule.level {
+                DangerLevel::Blocked => {
+                    let tip = match rule.category {
+                        "系统目录" => "迁移系统核心目录会导致 Windows 组件崩溃，无法开机。",
+                        "浏览器"   => "浏览器安装目录含有系统级注册和自动修复机制，迁移后 Junction 会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器的缓存目录（在「数据迁移」页面的快捷项中）。",
+                        "GPU驱动"  => "GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。",
+                        _          => "该目录包含系统级组件，不支持迁移。",
+                    };
+                    return Some((DangerLevel::Blocked, format!(
+                        "🚫 无法迁移：{label} 属于「{category}」，不支持通过 Junction 迁移。\n\n{tip}",
+                        label = rule.label,
+                        category = rule.category,
+                        tip = tip,
+                    )));
+                }
+                DangerLevel::Warning => {
+                    // WARNING 返回简短标签信息；详细风险说明由前端弹窗展示
+                    return Some((DangerLevel::Warning, format!(
+                        "高风险目录：{label}（{category}）",
+                        label = rule.label,
+                        category = rule.category,
+                    )));
+                }
+            }
         }
     }
 
@@ -406,6 +473,7 @@ pub fn migrate_app(
     app_handle: &tauri::AppHandle,
     record_type: MigrationRecordType,
     force_overwrite: bool,
+    user_confirmed_warning: bool,
 ) -> Result<MigrationResult, String> {
     #[cfg(windows)]
     {
@@ -429,15 +497,31 @@ pub fn migrate_app(
             });
         }
 
-        // 步骤 0.1: 危险路径黑名单检测
-        // 拦截系统目录、系统级浏览器安装目录、GPU 驱动目录等不可迁移路径
-        // 此检测在前端也会触发，后端作为兜底防线（前端校验可被绕过）
-        if let Some(danger_msg) = check_dangerous_path(&source) {
-            return Ok(MigrationResult {
-                success: false,
-                message: danger_msg,
-                new_path: None,
-            });
+        // 步骤 0.1: 危险路径分级检测
+        // 前端也会做同规则检测，后端作为防绕过兜底防线
+        if let Some((level, danger_msg)) = check_dangerous_path(&source) {
+            match level {
+                DangerLevel::Blocked => {
+                    // 绝对拦截，不允许任何绕过
+                    return Ok(MigrationResult {
+                        success: false,
+                        message: danger_msg,
+                        new_path: None,
+                    });
+                }
+                DangerLevel::Warning => {
+                    // 要求前端显式传 user_confirmed_warning 才放行
+                    if !user_confirmed_warning {
+                        return Ok(MigrationResult {
+                            success: false,
+                            message: format!("REQUIRES_WARNING_CONFIRM:{}", danger_msg),
+                            new_path: None,
+                        });
+                    }
+                    // 用户已确认，记录日志后继续执行
+                    log_warn!("migration", "高风险迁移（用户已确认）: {} — {}", source, danger_msg);
+                }
+            }
         }
 
         if !target_parent_path.exists() {

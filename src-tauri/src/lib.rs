@@ -53,6 +53,7 @@ async fn migrate_app(
     source: String,
     target_parent: String,
     force_overwrite: Option<bool>,
+    user_confirmed_warning: Option<bool>,
     state: tauri::State<'_, MigrationState>,
     app_handle: tauri::AppHandle,
 ) -> Result<MigrationResult, String> {
@@ -60,11 +61,12 @@ async fn migrate_app(
     let source_clone = source.clone();
     let cancel_flag = state.cancel_flag.clone();
     let force = force_overwrite.unwrap_or(false);
+    let confirmed = user_confirmed_warning.unwrap_or(false);
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         app_manager::migration::migrate_app(
             app_name, source, target_parent, &cancel_flag, &app_handle,
-            MigrationRecordType::App, force,
+            MigrationRecordType::App, force, confirmed,
         )
     }).await.map_err(|e| format!("迁移线程异常: {}", e))?;
 
@@ -92,7 +94,7 @@ async fn migrate_special_folder(
     // force_overwrite=false：文件夹迁移不自动覆盖残留目录，保持保护逻辑
     tauri::async_runtime::spawn_blocking(move || {
         app_manager::detector::migrate_special_folder(
-            app_name, source_path, target_dir, &cancel_flag, &app_handle, false,
+            app_name, source_path, target_dir, &cancel_flag, &app_handle, false, false,
         )
     }).await.map_err(|e| format!("迁移线程异常: {}", e))?
 }

@@ -13,7 +13,8 @@ import TargetPickerDialog from '../components/TargetPickerDialog';
 import Toast, { useToast } from '../components/Toast';
 import { logger } from '../utils/logger';
 import { TabNavigationContext } from '../App';
-import { useDangerousPathCheck } from '../hooks/useDangerousPathCheck';
+import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
+import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import {
   CleanupResult,
   InstalledApp,
@@ -130,7 +131,7 @@ export default function AppMigration() {
   // Toast 通知
   const { toast, showToast, hideToast } = useToast();
 
-  const checkDangerousPath = useDangerousPathCheck();
+  const { checkBlocked, checkWarning } = useDangerousPathCheck();
 
   // 页面导航（跳转至设置页）
   const setActiveTab = useContext(TabNavigationContext);
@@ -152,6 +153,27 @@ export default function AppMigration() {
       }),
     [],
   );
+
+  // WARNING 确认弹窗状态（Promise 模式，照抄 pickerDialog）
+  const [warningDialog, setWarningDialog] = useState<{
+    isOpen: boolean;
+    warningInfo: WarningInfo | null;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+
+  const showWarningDialog = useCallback(
+    (warningInfo: WarningInfo): Promise<boolean> =>
+      new Promise((resolve) => {
+        setWarningDialog({
+          isOpen: true, warningInfo,
+          resolve: (confirmed) => { setWarningDialog(null); resolve(confirmed); },
+        });
+      }),
+    [],
+  );
+
+  // WARNING 用户确认标志，供 handleForceContinue 读取
+  const [userConfirmedWarning, setUserConfirmedWarning] = useState(false);
 
   // 打开应用所在目录，失败时通过 Toast 反馈
   async function handleOpenFolder(app: InstalledApp) {
@@ -515,12 +537,22 @@ export default function AppMigration() {
 
   // 核心迁移流程
   async function handleMigrate(app: InstalledApp) {
-    // 步骤 0: 危险路径前端拦截（后端 migration.rs 也有兜底防线）
-    const dangerMsg = checkDangerousPath(app.install_location);
-    if (dangerMsg) {
-      showToast(dangerMsg, 'error');
+    // 步骤 0: BLOCKED 前端拦截（后端 migration.rs 也有兜底防线）
+    const blockedMsg = checkBlocked(app.install_location);
+    if (blockedMsg) {
+      showToast(blockedMsg, 'error');
       return;
     }
+
+    // 步骤 0.5: WARNING 检测 — 非批量模式弹确认弹窗
+    let localConfirmedWarning = false;
+    const warningInfo = checkWarning(app.install_location);
+    if (warningInfo) {
+      const confirmed = await showWarningDialog(warningInfo);
+      if (!confirmed) return;
+      localConfirmedWarning = true;
+    }
+    setUserConfirmedWarning(localConfirmedWarning);
 
     // 步骤 1: 解析迁移目录（默认设置 / 引导设置 / 手动选择）
     const defaultTarget = loadAppDefaultTarget();
@@ -549,7 +581,7 @@ export default function AppMigration() {
       }
 
       // 无进程占用，直接开始复制
-      await startCopyPhase(app, targetDir as string);
+      await startCopyPhase(app, targetDir as string, localConfirmedWarning);
     } catch (error) {
       setMigrationStep('error');
       setMigrationMessage(`检测进程锁失败: ${error}`);
@@ -562,11 +594,11 @@ export default function AppMigration() {
     setLockedProcesses([]);
     const targetDir = pendingTargetDir;
     setPendingTargetDir(null);
-    await startCopyPhase(migratingApp, targetDir);
+    await startCopyPhase(migratingApp, targetDir, userConfirmedWarning);
   }
 
   // 开始文件复制阶段（带事件监听）
-  async function startCopyPhase(app: InstalledApp, targetDir: string) {
+  async function startCopyPhase(app: InstalledApp, targetDir: string, userConfirmedWarning: boolean) {
     setMigrationStep('counting');
     setLockedProcesses([]);
 
@@ -608,6 +640,7 @@ export default function AppMigration() {
         appName: app.display_name,
         source: app.install_location,
         targetParent: targetDir,
+        userConfirmedWarning,
       });
 
       // 目标路径已有残留目录 → 询问用户是否覆盖
@@ -635,6 +668,7 @@ export default function AppMigration() {
           source: app.install_location,
           targetParent: targetDir,
           forceOverwrite: true,
+          userConfirmedWarning,
         });
       }
 
@@ -648,6 +682,15 @@ export default function AppMigration() {
           `请先前往「迁移记录」页面恢复该应用，再重新迁移。\n\n` +
           `目标位置：${targetPath}`
         );
+        return;
+      }
+
+      // 后端兜底：前端未传 userConfirmedWarning 时返回此错误码
+      // 正常流程不会到这里（前端已弹窗确认），仅作为防绕过最后防线
+      if (!result.success && result.message.startsWith('REQUIRES_WARNING_CONFIRM:')) {
+        if (unlisten) unlisten();
+        setMigrationStep('error');
+        setMigrationMessage('迁移被拒绝：高风险目录需通过正常流程确认，请重新操作。');
         return;
       }
 
@@ -829,12 +872,24 @@ export default function AppMigration() {
       setMigrationMessage(`正在处理 (${i + 1}/${selectedApps.length})...`);
 
       try {
-        // 前端危险路径拦截（后端 migration.rs 也有兜底防线）
-        const dangerMsg = checkDangerousPath(app.install_location);
-        if (dangerMsg) {
-          showToast(`${app.display_name}: ${dangerMsg}`, 'error');
+        // BLOCKED 前端拦截（后端 migration.rs 也有兜底防线）
+        const blockedMsg = checkBlocked(app.install_location);
+        if (blockedMsg) {
+          showToast(`${app.display_name}: ${blockedMsg}`, 'error');
           failCount++;
           failedApps.push(app.display_name);
+          continue;
+        }
+
+        // WARNING 检测 — 批量模式不弹窗，直接跳过提示单独迁移
+        const warningInfo = checkWarning(app.install_location);
+        if (warningInfo) {
+          showToast(
+            `${app.display_name}: 位于「${warningInfo.category}」(${warningInfo.label})，存在风险，已跳过。\n请在应用列表中单独迁移此项以查看详情。`,
+            'info'
+          );
+          failCount++;
+          failedApps.push(`${app.display_name}（高风���跳过）`);
           continue;
         }
 
@@ -844,6 +899,7 @@ export default function AppMigration() {
           appName: app.display_name,
           source: app.install_location,
           targetParent: targetDir,
+          userConfirmedWarning: false,
         });
 
         // 目标路径已有残留目录 → 弹出确认框，用户确认后以 force_overwrite 重试
@@ -869,6 +925,7 @@ export default function AppMigration() {
               source: app.install_location,
               targetParent: targetDir,
               forceOverwrite: true,
+              userConfirmedWarning: false,
             });
           } else {
             showToast(`${app.display_name}: 已跳过（目标路径已存在）`, 'info');
@@ -1000,6 +1057,16 @@ export default function AppMigration() {
           onUseDefault={() => pickerDialog.resolve('default')}
           onUseCustom={() => pickerDialog.resolve('custom')}
           onClose={() => pickerDialog.resolve(null)}
+        />
+      )}
+
+      {/* 高风险路径确认弹窗（WARNING 级别） */}
+      {warningDialog && (
+        <WarningConfirmDialog
+          isOpen={warningDialog.isOpen}
+          warningInfo={warningDialog.warningInfo}
+          onConfirm={() => warningDialog.resolve(true)}
+          onCancel={() => warningDialog.resolve(false)}
         />
       )}
 

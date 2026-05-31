@@ -15,7 +15,8 @@ import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
 import MigrationModal from '../components/MigrationModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
-import { useDangerousPathCheck } from '../hooks/useDangerousPathCheck';
+import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
+import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import {
   LargeFolder, ProcessLockResult, LargeFolderSizeEvent,
   MigrationProgressEvent,
@@ -304,7 +305,7 @@ export default function LargeFolders() {
 
   const { toast, showToast, hideToast } = useToast();
 
-  const checkDangerousPath = useDangerousPathCheck();
+  const { checkBlocked, checkWarning } = useDangerousPathCheck();
 
   // 页面导航（跳转至设置页）
   const setActiveTab = useContext(TabNavigationContext);
@@ -326,6 +327,27 @@ export default function LargeFolders() {
       }),
     [],
   );
+
+  // WARNING 确认弹窗状态（Promise 模式，照抄 pickerDialog）
+  const [warningDialog, setWarningDialog] = useState<{
+    isOpen: boolean;
+    warningInfo: WarningInfo | null;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+
+  const showWarningDialog = useCallback(
+    (warningInfo: WarningInfo): Promise<boolean> =>
+      new Promise((resolve) => {
+        setWarningDialog({
+          isOpen: true, warningInfo,
+          resolve: (confirmed) => { setWarningDialog(null); resolve(confirmed); },
+        });
+      }),
+    [],
+  );
+
+  // WARNING 用户确认标志，供 handleRiskConfirm 读取
+  const [userConfirmedWarning, setUserConfirmedWarning] = useState(false);
 
   const totalReclaimable = useMemo(
     () => folders.filter(f => !f.is_junction && f.exists).reduce((s, f) => s + f.size, 0),
@@ -414,12 +436,22 @@ export default function LargeFolders() {
   }
 
   async function handleMigrate(folder: LargeFolder) {
-    // 步骤 0: 危险路径前置检测（与后端黑名单同步，提前给用户明确反馈）
-    const dangerMsg = checkDangerousPath(folder.path);
-    if (dangerMsg) {
-      showToast(dangerMsg, 'error');
+    // 步骤 0: BLOCKED 前置检测（与后端黑名单同步）
+    const blockedMsg = checkBlocked(folder.path);
+    if (blockedMsg) {
+      showToast(blockedMsg, 'error');
       return;
     }
+
+    // 步骤 0.5: WARNING 检测 — 非批量模式弹确认弹窗
+    let localConfirmedWarning = false;
+    const warningInfo = checkWarning(folder.path);
+    if (warningInfo) {
+      const confirmed = await showWarningDialog(warningInfo);
+      if (!confirmed) return;
+      localConfirmedWarning = true;
+    }
+    setUserConfirmedWarning(localConfirmedWarning);
 
     // 步骤 1: 进程锁检查
     try {
@@ -449,7 +481,7 @@ export default function LargeFolders() {
     if (folder.folder_type === 'System') {
       setRiskConfirm({ isOpen: true, folder, targetDir });
     } else {
-      await startFolderMigration(folder, targetDir);
+      await startFolderMigration(folder, targetDir, localConfirmedWarning);
     }
   }
 
@@ -458,11 +490,11 @@ export default function LargeFolders() {
     const { folder, targetDir } = riskConfirm;
     if (!folder || !targetDir) return;
     setRiskConfirm({ isOpen: false, folder: null, targetDir: null });
-    await startFolderMigration(folder, targetDir);
+    await startFolderMigration(folder, targetDir, userConfirmedWarning);
   }
 
   /** 启动文件夹迁移，打开进度弹窗并监听进度事件 */
-  async function startFolderMigration(folder: LargeFolder, targetDir: string) {
+  async function startFolderMigration(folder: LargeFolder, targetDir: string, userConfirmedWarning: boolean) {
     setMigratingFolder(folder);
     setMigrationModalOpen(true);
     setMigrationStep('checking');
@@ -474,6 +506,7 @@ export default function LargeFolders() {
       const result = await invoke<MigrationResult>('migrate_large_folder', {
         sourcePath: folder.path,
         targetDir,
+        userConfirmedWarning,
       });
 
       if (result.success) {
@@ -595,10 +628,32 @@ export default function LargeFolders() {
       setMigrationMessage(`正在处理 (${i + 1}/${selectedFolders.length})...`);
 
       try {
+        // BLOCKED 前端拦截
+        const blockedMsg = checkBlocked(folder.path);
+        if (blockedMsg) {
+          showToast(`${folder.display_name}: ${blockedMsg}`, 'error');
+          failCount++;
+          failedFolders.push(folder.display_name);
+          continue;
+        }
+
+        // WARNING 检测 — 批量模式不弹窗，直接跳过
+        const warningInfo = checkWarning(folder.path);
+        if (warningInfo) {
+          showToast(
+            `${folder.display_name}: 位于「${warningInfo.category}」(${warningInfo.label})，存在风险，已跳过。\n请在文件夹列表中单独迁移此项以查看详情。`,
+            'info'
+          );
+          failCount++;
+          failedFolders.push(`${folder.display_name}（高风险跳过）`);
+          continue;
+        }
+
         // 直接调用 migrate_large_folder，后端步骤 0.5 会做准确的占用检测
         const result = await invoke<MigrationResult>('migrate_large_folder', {
           sourcePath: folder.path,
           targetDir,
+          userConfirmedWarning: false,
         });
 
         // 处理 TARGET_EXISTS 特殊返回值（不能直接 Toast 路径字符串给用户）
@@ -624,6 +679,7 @@ export default function LargeFolders() {
               sourcePath: folder.path,
               targetDir,
               forceOverwrite: true,
+              userConfirmedWarning: false,
             });
             if (retryResult.success) {
               successCount++;
@@ -712,7 +768,7 @@ export default function LargeFolders() {
     const selectedPath = await open({ directory: true, title: '选择要监控的文件夹' });
     if (!selectedPath) return;
     // 危险路径检测：拦截系统目录、浏览器安装目录、GPU 驱动目录
-    const dangerMsg = checkDangerousPath(selectedPath as string);
+    const dangerMsg = checkBlocked(selectedPath as string);
     if (dangerMsg) {
       showToast(dangerMsg, 'error');
       return;
@@ -855,6 +911,16 @@ export default function LargeFolders() {
       <RiskConfirmModal isOpen={riskConfirm.isOpen} folder={riskConfirm.folder}
         onConfirm={handleRiskConfirm}
         onCancel={() => setRiskConfirm({ isOpen: false, folder: null, targetDir: null })} />
+
+      {/* WARNING 危险路径确认弹窗 */}
+      {warningDialog && (
+        <WarningConfirmDialog
+          isOpen={warningDialog.isOpen}
+          warningInfo={warningDialog.warningInfo}
+          onConfirm={() => warningDialog.resolve(true)}
+          onCancel={() => warningDialog.resolve(false)}
+        />
+      )}
 
       {/* 迁移目标选择弹窗（区分 默认 / 自定义 / 取消） */}
       {pickerDialog && (

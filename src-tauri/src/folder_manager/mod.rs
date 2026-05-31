@@ -280,6 +280,7 @@ pub async fn migrate_large_folder(
     source_path: String,
     target_dir: String,
     force_overwrite: Option<bool>,
+    user_confirmed_warning: Option<bool>,
     state: tauri::State<'_, MigrationState>,
     app_handle: AppHandle,
 ) -> Result<MigrationResult, String> {
@@ -293,6 +294,7 @@ pub async fn migrate_large_folder(
         .unwrap_or_else(|| "unknown".to_string());
 
     let force = force_overwrite.unwrap_or(false);
+    let confirmed = user_confirmed_warning.unwrap_or(false);
 
     state.cancel_flag.store(false, Ordering::SeqCst);
     let cancel_flag = state.cancel_flag.clone();
@@ -301,7 +303,7 @@ pub async fn migrate_large_folder(
     let result = tauri::async_runtime::spawn_blocking(move || {
         crate::app_manager::migration::migrate_app(
             folder_name, source_path, target_dir, &cancel_flag, &handle,
-            MigrationRecordType::LargeFolder, force,
+            MigrationRecordType::LargeFolder, force, confirmed,
         )
     }).await.map_err(|e| format!("迁移线程异常: {}", e))?;
 
