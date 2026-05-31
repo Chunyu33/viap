@@ -15,6 +15,7 @@ import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
 import MigrationModal from '../components/MigrationModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
+import { useDangerousPathCheck } from '../hooks/useDangerousPathCheck';
 import {
   LargeFolder, ProcessLockResult, LargeFolderSizeEvent,
   MigrationProgressEvent,
@@ -271,6 +272,11 @@ function FolderRow({
   );
 }
 
+/**
+ * 前端危险路径检测（与后端 check_dangerous_path 保持同步）
+ * 在 invoke 前给用户即时反馈，避免等待后端才报错
+ * 返回错误消息字符串，或 null 表示安全
+ */
 export default function LargeFolders() {
   const [folders, setFolders] = useState<LargeFolder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -297,6 +303,8 @@ export default function LargeFolders() {
   }>({ isOpen: false, folder: null, targetDir: null });
 
   const { toast, showToast, hideToast } = useToast();
+
+  const checkDangerousPath = useDangerousPathCheck();
 
   // 页面导航（跳转至设置页）
   const setActiveTab = useContext(TabNavigationContext);
@@ -406,6 +414,13 @@ export default function LargeFolders() {
   }
 
   async function handleMigrate(folder: LargeFolder) {
+    // 步骤 0: 危险路径前置检测（与后端黑名单同步，提前给用户明确反馈）
+    const dangerMsg = checkDangerousPath(folder.path);
+    if (dangerMsg) {
+      showToast(dangerMsg, 'error');
+      return;
+    }
+
     // 步骤 1: 进程锁检查
     try {
       const lockResult = await invoke<ProcessLockResult>('check_process_locks', { sourcePath: folder.path });
@@ -696,6 +711,12 @@ export default function LargeFolders() {
   async function handleAddCustomFolder() {
     const selectedPath = await open({ directory: true, title: '选择要监控的文件夹' });
     if (!selectedPath) return;
+    // 危险路径检测：拦截系统目录、浏览器安装目录、GPU 驱动目录
+    const dangerMsg = checkDangerousPath(selectedPath as string);
+    if (dangerMsg) {
+      showToast(dangerMsg, 'error');
+      return;
+    }
     try {
       await invoke('add_custom_folder', { path: selectedPath as string });
       showToast('文件夹已添加', 'success');

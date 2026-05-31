@@ -13,6 +13,7 @@ import TargetPickerDialog from '../components/TargetPickerDialog';
 import Toast, { useToast } from '../components/Toast';
 import { logger } from '../utils/logger';
 import { TabNavigationContext } from '../App';
+import { useDangerousPathCheck } from '../hooks/useDangerousPathCheck';
 import {
   CleanupResult,
   InstalledApp,
@@ -128,6 +129,8 @@ export default function AppMigration() {
 
   // Toast 通知
   const { toast, showToast, hideToast } = useToast();
+
+  const checkDangerousPath = useDangerousPathCheck();
 
   // 页面导航（跳转至设置页）
   const setActiveTab = useContext(TabNavigationContext);
@@ -512,6 +515,13 @@ export default function AppMigration() {
 
   // 核心迁移流程
   async function handleMigrate(app: InstalledApp) {
+    // 步骤 0: 危险路径前端拦截（后端 migration.rs 也有兜底防线）
+    const dangerMsg = checkDangerousPath(app.install_location);
+    if (dangerMsg) {
+      showToast(dangerMsg, 'error');
+      return;
+    }
+
     // 步骤 1: 解析迁移目录（默认设置 / 引导设置 / 手动选择）
     const defaultTarget = loadAppDefaultTarget();
     const targetDir = await resolveMigrationTarget(defaultTarget, app.display_name, setActiveTab, showTargetPicker);
@@ -819,6 +829,15 @@ export default function AppMigration() {
       setMigrationMessage(`正在处理 (${i + 1}/${selectedApps.length})...`);
 
       try {
+        // 前端危险路径拦截（后端 migration.rs 也有兜底防线）
+        const dangerMsg = checkDangerousPath(app.install_location);
+        if (dangerMsg) {
+          showToast(`${app.display_name}: ${dangerMsg}`, 'error');
+          failCount++;
+          failedApps.push(app.display_name);
+          continue;
+        }
+
         // 直接调用 migrate_app，后端步骤 0.5 会做准确的占用检测
         // 不在此处调用 check_process_locks（弱检测且后端已覆盖）
         let result = await invoke<MigrationResult>('migrate_app', {

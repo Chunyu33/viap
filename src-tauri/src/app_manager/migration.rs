@@ -323,6 +323,75 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
     fs::remove_dir(path)
 }
 
+/// 危险路径检测
+///
+/// 对源路径做黑名单匹配，拦截以下三类不可迁移的目录：
+///
+/// 1. **系统核心目录**：Windows / Program Files / System32 等，迁移会导致系统崩溃
+/// 2. **系统级浏览器**：Edge / Chrome 安装目录。
+///    Edge 的 MicrosoftEdgeUpdate 服务会把 Junction 识别为"损坏安装"并覆盖；
+///    Chromium 把安装路径写死进扩展签名，路径变更后所有插件报损坏。
+/// 3. **GPU / 显卡驱动目录**：NVIDIA / AMD / Intel 驱动深度注册进系统服务，
+///    迁移后驱动服务找不到 DLL，轻则降级到基本显示适配器，重则蓝屏。
+///
+/// 返回 Some(错误消息) 表示命中黑名单，None 表示安全。
+fn check_dangerous_path(source: &str) -> Option<String> {
+    let source_lower = source.to_lowercase();
+    // 统一转为正斜杠，兼容用户粘贴的混合路径
+    let source_normalized = source_lower.replace('/', "\\");
+
+    // ── 规则表 ──────────────────────────────────────────────────────────────
+    // 每条规则：(匹配片段, 分类标签, 用户可见原因)
+    // 匹配逻辑：source_normalized 包含该片段即命中
+    let rules: &[(&str, &str, &str)] = &[
+        // 系统核心目录
+        (r"c:\windows",             "系统目录", "Windows 系统目录"),
+        (r"c:\program files\windowsapps", "系统目录", "Windows 应用商店目录"),
+        (r"c:\programdata\microsoft\windows", "系统目录", "Windows 系统数据目录"),
+
+        // 系统级浏览器（安装目录，非缓存）
+        // Edge：MicrosoftEdgeUpdate 服务会把 Junction 识别为损坏安装并自动覆盖
+        // Chrome：Chromium 把安装路径写死进扩展签名，迁移后所有插件报损坏
+        (r"microsoft\edge\application",   "浏览器", "Microsoft Edge 安装目录"),
+        (r"microsoft\msedge\application",  "浏览器", "Microsoft Edge 安装目录"),
+        (r"google\chrome\application",     "浏览器", "Google Chrome 安装目录"),
+        (r"google\chrome beta\application","浏览器", "Google Chrome Beta 安装目录"),
+        (r"google\chrome dev\application", "浏览器", "Google Chrome Dev 安装目录"),
+        (r"bromite\application",           "浏览器", "Bromite 安装目录"),
+
+        // GPU / 显卡驱动（驱动 DLL 路径写死进服务注册表，迁移后驱动失效）
+        (r"nvidia corporation\installer2",   "GPU驱动", "NVIDIA 驱动安装目录"),
+        (r"nvidia\displaydriver",            "GPU驱动", "NVIDIA 显卡驱动目录"),
+        (r"\nvidia\",                        "GPU驱动", "NVIDIA 驱动目录"),
+        (r"amd\ccc2",                        "GPU驱动", "AMD 显卡控制中心目录"),
+        (r"advanced micro devices",          "GPU驱动", "AMD 驱动目录"),
+        (r"intel\graphics",                  "GPU驱动", "Intel 核显驱动目录"),
+        (r"intel\intelgraphicscontrolpanel", "GPU驱动", "Intel 显卡控制面板目录"),
+
+        // Microsoft Edge WebView2 运行时（系统级组件）
+        (r"microsoft\edgewebview\application", "浏览器", "Microsoft WebView2 运行时目录"),
+    ];
+
+    for (pattern, category, label) in rules {
+        if source_normalized.contains(pattern) {
+            let tip = match *category {
+                "系统目录" => "迁移系统核心目录会导致 Windows 组件崩溃，无法开机。",
+                "浏览器"   => "浏览器安装目录含有系统级注册和自动修复机制，迁移后 Junction 会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器的缓存目录（在「数据迁移」页面的快捷项中）。",
+                "GPU驱动"  => "GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。",
+                _          => "该目录包含系统级组件，不支持迁移。",
+            };
+            return Some(format!(
+                "🚫 无法迁移：{label} 属于「{category}」，不支持通过 Junction 迁移。\n\n{tip}",
+                label = label,
+                category = category,
+                tip = tip,
+            ));
+        }
+    }
+
+    None
+}
+
 /// 核心迁移命令
 /// 将应用从源路径迁移到目标路径，并创建 Windows 目录联接（Junction）
 ///
@@ -356,6 +425,17 @@ pub fn migrate_app(
             return Ok(MigrationResult {
                 success: false,
                 message: "源路径必须是一个目录".to_string(),
+                new_path: None,
+            });
+        }
+
+        // 步骤 0.1: 危险路径黑名单检测
+        // 拦截系统目录、系统级浏览器安装目录、GPU 驱动目录等不可迁移路径
+        // 此检测在前端也会触发，后端作为兜底防线（前端校验可被绕过）
+        if let Some(danger_msg) = check_dangerous_path(&source) {
+            return Ok(MigrationResult {
+                success: false,
+                message: danger_msg,
                 new_path: None,
             });
         }
