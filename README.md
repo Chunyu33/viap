@@ -100,7 +100,9 @@ viap/
 │   │   ├── MigrationHistory.tsx # 迁移历史页（搜索/筛选/分页/详情面板）
 │   │   └── Settings.tsx         # 设置页（幽灵清理/导入导出）
 │   ├── hooks/                    # 自定义 Hook
-│   │   └── useUpdater.ts        # 自动更新检测（check/download/进度跟踪）
+│   │   ├── useDangerousPathCheck.ts # 危险路径检测（迁移前拦截）
+│   │   ├── useTheme.ts            # 主题切换
+│   │   └── useUpdater.ts          # 自动更新检测（check/download/进度跟踪）
 │   ├── utils/                    # 工具函数
 │   │   └── logger.ts            # 统一日志工具
 │   ├── styles/                   # 样式系统

@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.0.2"
+version = "1.0.3"
 description = "A Tauri App"
 authors = ["Evan Lau"]
 edition = "2021"
