@@ -21,6 +21,18 @@ use crate::models::*;
 use crate::app_manager::uninstaller;
 
 // ============================================================================
+// Tauri 命令 — 系统信息
+// ============================================================================
+
+/// 获取 Viap 自身的安装目录，前端用于禁用自身的迁移/卸载按钮
+#[tauri::command]
+fn get_viap_install_path() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let parent = exe.parent().ok_or("无法获取 Viap 安装目录".to_string())?;
+    Ok(parent.to_string_lossy().to_string())
+}
+
+// ============================================================================
 // Tauri 命令 — 应用管理（委托给 app_manager 子模块）
 // ============================================================================
 
@@ -169,6 +181,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 系统接口
             system::disk_usage::get_disk_usage,
+            get_viap_install_path,
             // 存储层 — 数据目录
             storage::data_dir::get_data_dir_info,
             storage::data_dir::set_data_dir,

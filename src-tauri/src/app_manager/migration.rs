@@ -378,6 +378,11 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         DangerRule { pattern: r"c:\windows",                            level: DangerLevel::Blocked, category: "系统目录", label: "Windows 系统目录" },
         DangerRule { pattern: r"c:\program files\windowsapps",          level: DangerLevel::Blocked, category: "系统目录", label: "Windows 应用商店目录" },
         DangerRule { pattern: r"c:\programdata\microsoft\windows",      level: DangerLevel::Blocked, category: "系统目录", label: "Windows 系统数据目录" },
+        DangerRule { pattern: r"c:\windows\system32",          level: DangerLevel::Blocked, category: "系统目录", label: "Windows System32 目录" },
+        DangerRule { pattern: r"c:\windows\syswow64",          level: DangerLevel::Blocked, category: "系统目录", label: "Windows SysWOW64 目录" },
+        DangerRule { pattern: r"c:\windows\winsxs",            level: DangerLevel::Blocked, category: "系统目录", label: "Windows WinSxS 组件库" },
+        DangerRule { pattern: r"^c:\users$",                   level: DangerLevel::Blocked, category: "系统目录", label: "Users 用户配置根目录" },
+        DangerRule { pattern: r"wpsystem",                     level: DangerLevel::Blocked, category: "系统目录", label: "Windows 商店加密数据目录" },
 
         // ═══════════════════════════════════════
         // BLOCKED — 系统级浏览器安装目录
@@ -438,20 +443,36 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
 },
 
         // ═══════════════════════════════════════
+        // WARNING — 即时通讯应用数据
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"wechat files",  level: DangerLevel::Warning, category: "缓存服务", label: "微信数据目录" },
+        DangerRule { pattern: r"tencent files", level: DangerLevel::Warning, category: "缓存服务", label: "腾讯系应用数据目录" },
+
+        // ═══════════════════════════════════════
         // WARNING — ProgramData 根目录
         // 必须排在 c:\programdata\microsoft\windows (BLOCKED) 之后
         // ═══════════════════════════════════════
         DangerRule { pattern: r"c:\programdata", level: DangerLevel::Warning, category: "系统目录", label: "ProgramData 根目录" },
     ];
 
+    /// 路径匹配：支持 ^pattern$ 精确匹配（如 ^c:\users$ 只匹配根目录，不匹配子目录），
+    /// 其余规则用 contains 前缀匹配。确保 Blocked First 原则：BLOCKED 规则先遍历，
+    /// 命中即返回，不会降级为 WARNING。
+    fn match_path(source: &str, pattern: &str) -> bool {
+        let is_exact = pattern.starts_with('^') && pattern.ends_with('$');
+        let match_pattern = if is_exact { &pattern[1..pattern.len()-1] } else { pattern };
+        if is_exact { source == match_pattern } else { source.contains(match_pattern) }
+    }
+
     for rule in rules {
-        if source_normalized.contains(rule.pattern) {
+        if match_path(&source_normalized, rule.pattern) {
             match rule.level {
                 DangerLevel::Blocked => {
                     let tip = match rule.category {
                         "系统目录" => "迁移系统核心目录会导致 Windows 组件崩溃，无法开机。",
                         "浏览器"   => "浏览器安装目录含有系统级注册和自动修复机制，迁移后 Junction 会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器的缓存目录（在「数据迁移」页面的快捷项中）。",
                         "GPU驱动"  => "GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。",
+                        "开发工具" => "开发工具目录含被 Windows 内核内存映射的 DLL 和后台语言服务，复制阶段容易失败，迁移前需完全退出所有相关进程。",
                         _          => "该目录包含系统级组件，不支持迁移。",
                     };
                     return Some((DangerLevel::Blocked, format!(

@@ -98,6 +98,8 @@ export default function AppMigration() {
 
   // 已迁移的路径列表
   const [migratedPaths, setMigratedPaths] = useState<string[]>([]);
+  // Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮
+  const [viapInstallPath, setViapInstallPath] = useState<string>('');
   // 应用迁移记录（用于还原时获取 historyId）
   const [appMigrationRecords, setAppMigrationRecords] = useState<MigrationRecord[]>([]);
 
@@ -377,6 +379,12 @@ export default function AppMigration() {
 
   // 强力卸载流程
   async function handleUninstall(app: InstalledApp) {
+    // 兜底防护：Viap 自身不可卸载
+    if (isViapSelf(app)) {
+      showToast('Viap 自身不可卸载', 'error');
+      return;
+    }
+
     // 读取用户设置的删除方式（默认移入回收站）
     let useRecycleBin = true;
     try {
@@ -532,8 +540,21 @@ export default function AppMigration() {
     setScanningResidue(false);
   }
 
+  // Viap 自身不可迁移/卸载（兜底防护，UI 层已禁用按钮）
+  function isViapSelf(app: InstalledApp): boolean {
+    if (!viapInstallPath) return false;
+    return app.install_location.toLowerCase().replace(/\//g, '\\') ===
+      viapInstallPath.toLowerCase().replace(/\//g, '\\');
+  }
+
   // 核心迁移流程
   async function handleMigrate(app: InstalledApp) {
+    // 兜底防护：Viap 自身不可迁移
+    if (isViapSelf(app)) {
+      showToast('Viap 自身不可迁移', 'error');
+      return;
+    }
+
     // 步骤 0: BLOCKED 前端拦截（后端 migration.rs 也有兜底防线）
     const blockedMsg = checkBlocked(app.install_location);
     if (blockedMsg) {
@@ -1033,6 +1054,10 @@ export default function AppMigration() {
   useEffect(() => {
     fetchInstalledApps();
     fetchAppMigrationRecords();
+    // 获取 Viap 自身安装目录，用于禁用自身的迁移/卸载按钮
+    invoke<string>('get_viap_install_path')
+      .then(setViapInstallPath)
+      .catch(() => {});
   }, []);
 
   return (
@@ -1059,6 +1084,7 @@ export default function AppMigration() {
             sizeMap={sizeMap}
             onRefresh={handleRefreshApps}
             refreshing={refreshing}
+            viapInstallPath={viapInstallPath || undefined}
           />
       </div>
 

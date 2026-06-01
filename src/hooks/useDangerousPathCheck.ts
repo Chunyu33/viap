@@ -46,6 +46,31 @@ const DANGER_RULES: DangerRule[] = [
     level: 'BLOCKED', category: '系统目录', label: 'Windows 系统数据目录',
     reason: 'Windows 系统数据目录含系统激活、更新等关键信息，迁移后 Windows 更新和安全中心将失效。',
   },
+  {
+    pattern: 'c:\\windows\\system32',
+    level: 'BLOCKED', category: '系统目录', label: 'Windows System32 目录',
+    reason: 'System32 含大量硬链接和内核级系统文件，迁移会导致系统立即崩溃，无法开机。',
+  },
+  {
+    pattern: 'c:\\windows\\syswow64',
+    level: 'BLOCKED', category: '系统目录', label: 'Windows SysWOW64 目录',
+    reason: 'SysWOW64 是 32 位子系统兼容层，含大量硬链接，迁移会导致 32 位应用全部无法运行。',
+  },
+  {
+    pattern: 'c:\\windows\\winsxs',
+    level: 'BLOCKED', category: '系统目录', label: 'Windows WinSxS 组件库',
+    reason: 'WinSxS（Windows 并行组件库）含整个 Windows 组件的硬链接映射，迁移会导致系统更新和组件激活彻底失效。',
+  },
+  {
+    pattern: '^c:\\users$',
+    level: 'BLOCKED', category: '系统目录', label: 'Users 用户配置根目录',
+    reason: '锁定整个用户配置根目录会导致 Windows 账户登录服务（ProfSvc）失效，开机后无法登录桌面。切勿迁移整个 C:\\Users 目录。',
+  },
+  {
+    pattern: 'wpsystem',
+    level: 'BLOCKED', category: '系统目录', label: 'Windows 商店加密数据目录',
+    reason: 'Windows 商店应用的加密数据保护目录（WPSystem），含 DRM 许可证和加密密钥，强行搬运会导致 ACL 权限崩溃，商店应用全部无法使用。',
+  },
 
   // ═══════════════════════════════════════════
   // BLOCKED — 系统级浏览器安装目录
@@ -237,6 +262,21 @@ const DANGER_RULES: DangerRule[] = [
   },
 
   // ═══════════════════════════════════════════
+  // WARNING — 即时通讯应用数据
+  // 特征：含高频写入的 SQLite 数据库，迁移前需完全退出程序
+  // ═══════════════════════════════════════════
+  {
+    pattern: 'wechat files',
+    level: 'WARNING', category: '缓存服务', label: '微信数据目录',
+    reason: '微信数据目录含高频写入的 SQLite 数据库文件，迁移前需完全退出微信（系统托盘右键退出）。建议优先使用微信内置的「更改文件管理路径」功能。',
+  },
+  {
+    pattern: 'tencent files',
+    level: 'WARNING', category: '缓存服务', label: '腾讯系应用数据目录',
+    reason: '腾讯系应用数据目录（QQ、企业微信等）含高频写入的 SQLite 数据库，迁移前需完全退出相关程序（系统托盘右键退出）。建议优先使用应用自带的文件管理路径设置。',
+  },
+
+  // ═══════════════════════════════════════════
   // WARNING — ProgramData 根目录
   // 注意：必须排在 BLOCKED 的 c:\programdata\microsoft\windows 之后，
   // 确保更具体的子路径先被 BLOCKED 命中，不会降级到 WARNING
@@ -277,12 +317,22 @@ export function useDangerousPathCheck(): {
   checkBlocked: (sourcePath: string) => string | null;
   checkWarning: (sourcePath: string) => WarningInfo | null;
 } {
+  /**
+   * 路径匹配：支持 ^pattern$ 精确匹配（如 ^c:\users$ 只匹配根目录，不匹配子目录），
+   * 其余规则用 includes 前缀匹配
+   */
+  function matchPath(normalized: string, pattern: string): boolean {
+    const isExact = pattern.startsWith('^') && pattern.endsWith('$');
+    const matchPattern = isExact ? pattern.slice(1, -1) : pattern;
+    return isExact ? normalized === matchPattern : normalized.includes(matchPattern);
+  }
+
   const checkBlocked = useCallback((sourcePath: string): string | null => {
     const normalized = sourcePath.toLowerCase().replace(/\//g, '\\');
 
     for (const rule of DANGER_RULES) {
       if (rule.level !== 'BLOCKED') continue;
-      if (normalized.includes(rule.pattern)) {
+      if (matchPath(normalized, rule.pattern)) {
         const tip = BLOCKED_CATEGORY_TIPS[rule.category]
           ?? '该目录包含系统级组件，不支持迁移。';
         return `🚫 无法迁移：${rule.label} 属于「${rule.category}」，不支持通过 Junction 迁移。\n\n${tip}`;
@@ -296,7 +346,7 @@ export function useDangerousPathCheck(): {
 
     for (const rule of DANGER_RULES) {
       if (rule.level !== 'WARNING') continue;
-      if (normalized.includes(rule.pattern)) {
+      if (matchPath(normalized, rule.pattern)) {
         return {
           label: rule.label,
           category: rule.category,

@@ -1,7 +1,6 @@
 // 用户手册组件
 // 内容按逻辑顺序编排：概述 → 迁移原理 → 强力卸载 → 其他功能 → 数据安全 → 使用协议
 
-import { color } from 'framer-motion';
 import Modal from './Modal';
 
 interface UserManualProps {

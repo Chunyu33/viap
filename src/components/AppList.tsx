@@ -46,6 +46,8 @@ interface AppListProps {
   sizeMap?: Map<string, number>;
   onRefresh?: () => void;
   refreshing?: boolean;
+  /** Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮 */
+  viapInstallPath?: string;
 }
 
 function formatSize(kb: number): string {
@@ -88,7 +90,7 @@ const AppRow = memo(function AppRow({
   app, onMigrate, onRestore, onUninstall, onOpenFolder,
   isUninstalling, isMigrated, isRestoring,
   isSelected, onToggleSelect, showCheckbox,
-  appSize,
+  appSize, isViap,
 }: {
   app: InstalledApp;
   onMigrate: (app: InstalledApp) => void;
@@ -102,6 +104,7 @@ const AppRow = memo(function AppRow({
   onToggleSelect?: (app: InstalledApp) => void;
   showCheckbox?: boolean;
   appSize?: number;
+  isViap?: boolean;
 }) {
   const rowStyle: React.CSSProperties = {
     height: 'var(--row-height)' as unknown as string,
@@ -205,7 +208,9 @@ const AppRow = memo(function AppRow({
         ) : (
           <button
             onClick={() => onMigrate(app)}
+            disabled={isViap}
             className="btn btn-primary btn-sm h-6 text-[11px]"
+            title={isViap ? 'Viap 是当前运行的应用，不可迁移自身' : undefined}
           >
             迁移
           </button>
@@ -213,8 +218,9 @@ const AppRow = memo(function AppRow({
 
         <button
           onClick={() => onUninstall(app)}
-          disabled={isUninstalling}
+          disabled={isUninstalling || isViap}
           className="btn btn-link btn-link-danger h-6 text-[11px]"
+          title={isViap ? 'Viap 是当前运行的应用，不可卸载自身' : undefined}
         >
           {isUninstalling ? '卸载中...' : '卸载'}
         </button>
@@ -262,6 +268,7 @@ export default function AppList({
   sizeMap,
   onRefresh,
   refreshing = false,
+  viapInstallPath,
 }: AppListProps) {
   const defaultOpenFolder = async (app: InstalledApp) => {
     try {
@@ -483,6 +490,11 @@ export default function AppList({
           <div className="flex flex-col">
             {filteredApps.map((app) => {
               const key = app.registry_path || app.install_location;
+              // 判断当前应用是否为 Viap 自身（大小写不敏感）
+              const isViapSelf = viapInstallPath
+                ? app.install_location.toLowerCase().replace(/\//g, '\\') ===
+                  viapInstallPath.toLowerCase().replace(/\//g, '\\')
+                : false;
               return (
                 <AppRow
                   key={key}
@@ -498,6 +510,7 @@ export default function AppList({
                   onToggleSelect={onToggleSelect}
                   showCheckbox={!!onToggleSelect}
                   appSize={sizeMap?.get(key)}
+                  isViap={isViapSelf}
                 />
               );
             })}
