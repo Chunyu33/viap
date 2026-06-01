@@ -222,9 +222,18 @@ const DANGER_RULES: DangerRule[] = [
     reason: 'Visual Studio 包含被 Windows 内核持续映射的编译器和语言服务组件（如 VBCSCompiler.exe、MSBuild.exe），这些 DLL 无法在运行时复制。迁移前需完全停止所有 VS 实例、关闭所有 .NET/C++ 项目，并在任务管理器中确认没有 MSBuild、VBCSCompiler、ServiceHub 相关进程。迁移成功后 VS 仍可正常运行，但建议通过「修复安装」验证完整性。',
   },
   {
-    pattern: 'jetbrains',
-    level: 'WARNING', category: '开发工具', label: 'JetBrains IDE 目录',
-    reason: 'JetBrains IDE（IntelliJ、Rider、GoLand 等）有后台索引服务和 JVM 进程，迁移前需完全退出所有 JetBrains 产品和后台服务（系统托盘右键退出）。',
+    pattern: 'jetbrains|intellij|rider|goland|webstorm',
+    level: 'WARNING',
+    category: '开发工具',
+    label: 'JetBrains IDE 目录',
+    reason: 'JetBrains IDE（IntelliJ、Rider、GoLand 等）有后台索引服务和 JVM 进程...',
+  },
+  {
+    pattern: 'microsoft visual studio code|vscode|\\.vscode|Microsoft VS Code',
+    level: 'WARNING',
+    category: '开发工具',
+    label: 'VSCode 目录',
+    reason: 'VSCode 会在用户目录生成 .vscode 配置与扩展缓存，同时存在安装目录与用户数据目录，迁移时可能造成扩展锁定或配置丢失。',
   },
 
   // ═══════════════════════════════════════════

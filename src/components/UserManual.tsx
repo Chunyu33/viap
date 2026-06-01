@@ -1,6 +1,7 @@
 // 用户手册组件
 // 内容按逻辑顺序编排：概述 → 迁移原理 → 强力卸载 → 其他功能 → 数据安全 → 使用协议
 
+import { color } from 'framer-motion';
 import Modal from './Modal';
 
 interface UserManualProps {
@@ -222,9 +223,9 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
               迁移操作涉及文件系统的底层修改。强烈建议在操作前关闭相关应用，
               并在迁移重要数据前进行独立备份。
             </li>
-            <li>
-              请勿将本软件用于迁移系统关键目录（如 Windows 目录、Program Files 中的系统组件等），
-              此类操作可能导致系统不稳定。
+            <li style={{ color: 'red' }}>
+              请勿将本软件用于迁移系统关键目录（如 Windows 目录、Edge浏览器、硬件驱动、Program Files 中的系统组件等），
+              此类操作可能导致系统不稳定、甚至崩溃。
             </li>
             <li>
               本软件不会收集、上传或分享您的任何个人数据。所有数据均存储在本地。
