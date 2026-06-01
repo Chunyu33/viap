@@ -53,12 +53,32 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'v__VERSION__'
           releaseBody: |
-            ## v1.0.3 更新内容
+            ## v1.0.4 更新内容
 
-            ### 危险路径检测
-            - 新增 15+ 条规则与后端完全同步
-            - 应用迁移、数据迁移均接入前端层面拦截
+            ### 危险路径分级拦截（BLOCKED / WARNING 两级体系）
+            - 新增两级危险路径检测：BLOCKED 直接终止，WARNING 弹窗确认后放行
+            - 规则表扩充至 32 条（17 BLOCKED + 15 WARNING），前后端完全同步
+            - 新增「开发工具」WARNING 类别：Visual Studio、JetBrains IDE、VSCode
+            - 批量模式下 WARNING 路径静默跳过，不中断批量流程
 
-          releaseDraft: false
+            ### 进程占用检测增强
+            - 后端步骤 0.5 智能占用检测：含 exe 用进程路径匹配，数据目录用文件独占锁探测
+            - 大目录扫描期间取消即时响应（每 200 文件检查取消标志）
+            - 迁移弹窗进度条仅在数据操作阶段显示，检查阶段不显示进度条
+            - 检查阶段新增说明文字：「正在检测进程占用，检测完成后才会开始复制文件...」
+
+            ### 迁移稳定性修复
+            - 新增空目录安全检查：源目录有内容但遍历为空时阻止迁移，防止数据丢失
+            - 复制失败时细化错误消息（内核映射 DLL、后台进程等原因 + 解决步骤）
+            - 弹窗按钮区域始终可见：长进程列表可滚动，底部按钮不溢出视口
+
+            ### 卸载联动
+            - 卸载应用时自动清理对应迁移记录和元数据
+
+            ### 文档
+            - 用户手册同步更新（危险路径分级说明、开发工具迁移注意事项）
+
+            ### 完整 Changelog
+            详见 [CHANGELOG.md](https://github.com/ethan0925/viap/blob/main/CHANGELOG.md)
           prerelease: false
           args: ${{ matrix.args }}
