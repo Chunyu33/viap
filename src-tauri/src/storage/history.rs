@@ -130,6 +130,31 @@ pub fn update_migration_record_status(original_path: &str, new_status: &str) -> 
     save_history(&storage)
 }
 
+/// 卸载联动：将指定路径的迁移记录标记为已卸载，同时清理兜底元数据
+/// 在 force_remove_application / uninstall_application 成功后调用
+pub fn delete_migration_record_by_path(original_path: &str) {
+    // 调取当前记录
+    let mut storage = load_history();
+
+    // 标记匹配的活跃记录为 uninstalled
+    let mut updated = false;
+    for record in storage.records.iter_mut() {
+        if record.original_path.eq_ignore_ascii_case(original_path) && record.status == "active" {
+            record.status = "uninstalled".to_string();
+            updated = true;
+        }
+    }
+
+    if updated {
+        if let Err(e) = save_history(&storage) {
+            eprintln!("[viap][history] 卸载后更新迁移记录失败: {}", e);
+        }
+    }
+
+    // 同步清理兜底元数据
+    crate::storage::migrated_app_metadata::remove_migrated_app(original_path);
+}
+
 // ============================================================================
 // 查询命令
 // ============================================================================

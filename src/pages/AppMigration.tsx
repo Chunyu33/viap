@@ -108,9 +108,6 @@ export default function AppMigration() {
   const [migrationMessage, setMigrationMessage] = useState('');
   const [migrationProgress, setMigrationProgress] = useState(0);
   const [lockedProcesses, setLockedProcesses] = useState<string[]>([]);
-  // 进程锁检测后保存已选目标目录，避免强制继续时重新弹窗选择
-  const [pendingTargetDir, setPendingTargetDir] = useState<string | null>(null);
-
   // 强力卸载状态
   const [uninstallingKey, setUninstallingKey] = useState<string | null>(null);
   // 还原状态
@@ -121,6 +118,9 @@ export default function AppMigration() {
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   // 批量迁移取消标志，用 ref 避免异步循环中闭包捕获过期 state
   const batchCancelledRef = useRef(false);
+  // 批量模式下进程锁弹窗的 Promise resolve 函数
+  const batchProcessLockResolveRef = useRef<((value: boolean) => void) | null>(null);
+  const [batchWaitingProcessLock, setBatchWaitingProcessLock] = useState(false);
   const [cleanupModalOpen, setCleanupModalOpen] = useState(false);
   const [cleanupTargetAppName, setCleanupTargetAppName] = useState('');
   const [cleanupTargetPublisher, setCleanupTargetPublisher] = useState<string | null>(null);
@@ -171,9 +171,6 @@ export default function AppMigration() {
       }),
     [],
   );
-
-  // WARNING 用户确认标志，供 handleForceContinue 读取
-  const [userConfirmedWarning, setUserConfirmedWarning] = useState(false);
 
   // 打开应用所在目录，失败时通过 Toast 反馈
   async function handleOpenFolder(app: InstalledApp) {
@@ -552,7 +549,6 @@ export default function AppMigration() {
       if (!confirmed) return;
       localConfirmedWarning = true;
     }
-    setUserConfirmedWarning(localConfirmedWarning);
 
     // 步骤 1: 解析迁移目录（默认设置 / 引导设置 / 手动选择）
     const defaultTarget = loadAppDefaultTarget();
@@ -574,8 +570,6 @@ export default function AppMigration() {
       });
 
       if (lockResult.is_locked) {
-        // 保存已选目标目录，供强制继续时直接复用，不再弹窗
-        setPendingTargetDir(targetDir as string);
         setLockedProcesses(lockResult.processes);
         return;
       }
@@ -588,18 +582,18 @@ export default function AppMigration() {
     }
   }
 
-  // 用户确认强制继续（忽略进程锁），复用已保存的目标目录
-  async function handleForceContinue() {
-    if (!migratingApp || !pendingTargetDir) return;
-    setLockedProcesses([]);
-    const targetDir = pendingTargetDir;
-    setPendingTargetDir(null);
-    await startCopyPhase(migratingApp, targetDir, userConfirmedWarning);
+  // 批量迁移进程锁：跳过当前应用，继续批量
+  function handleBatchProcessLockSkip() {
+    batchProcessLockResolveRef.current?.(true);
+  }
+  // 批量迁移进程锁：停止批量迁移
+  function handleBatchProcessLockStop() {
+    batchProcessLockResolveRef.current?.(false);
   }
 
   // 开始文件复制阶段（带事件监听）
   async function startCopyPhase(app: InstalledApp, targetDir: string, userConfirmedWarning: boolean) {
-    setMigrationStep('counting');
+    setMigrationStep('checking');
     setLockedProcesses([]);
 
     // 注册进度事件监听器
@@ -611,6 +605,9 @@ export default function AppMigration() {
 
         // 根据后端 step 同步前端步骤
         switch (data.step) {
+          case 'checking':
+            setMigrationStep('checking');
+            break;
           case 'counting':
             setMigrationStep('counting');
             break;
@@ -691,6 +688,22 @@ export default function AppMigration() {
         if (unlisten) unlisten();
         setMigrationStep('error');
         setMigrationMessage('迁移被拒绝：高风险目录需通过正常流程确认，请重新操作。');
+        return;
+      }
+
+      // 后端步骤 0.5 检测到进程占用（比前端 check_process_locks 更准确，
+      // 能检测到 Language Server、IntelliCode 等后台子进程）
+      // 解析进程名列表，走与前端步骤 2 相同的进程占用提示 UI
+      if (!result.success && result.message.includes('检测到以下程序正在运行')) {
+        if (unlisten) unlisten();
+        // 后端消息格式：'检测到以下程序正在运行，请关闭后重试：\nProc1.exe、Proc2.exe'
+        const lines = result.message.split('\n');
+        const processLine = lines.find(l => !l.includes('检测到以下程序') && l.trim().length > 0);
+        const processes = processLine
+          ? processLine.split('、').map(p => p.trim()).filter(Boolean)
+          : ['（未知进程）'];
+        setLockedProcesses(processes);
+        setMigrationStep('checking');
         return;
       }
 
@@ -902,6 +915,38 @@ export default function AppMigration() {
           userConfirmedWarning: false,
         });
 
+        // 后端步骤 0.5 检测到进程占用 → 暂停批量等待用户介入
+        if (!result.success && result.message.includes('检测到以下程序正在运行')) {
+          const lines = result.message.split('\n');
+          const processLine = lines.find(l => !l.includes('检测到以下程序') && l.trim().length > 0);
+          const processes = processLine
+            ? processLine.split('、').map(p => p.trim()).filter(Boolean)
+            : ['（未知进程）'];
+
+          setLockedProcesses(processes);
+          setMigrationStep('checking');
+          setMigrationMessage(`${app.display_name} 有进程占用，请处理后选择继续或跳过`);
+
+          setBatchWaitingProcessLock(true);
+          const shouldContinue = await new Promise<boolean>((resolve) => {
+            batchProcessLockResolveRef.current = resolve;
+          });
+          batchProcessLockResolveRef.current = null;
+          setBatchWaitingProcessLock(false);
+
+          setLockedProcesses([]);
+          setMigrationStep('checking');
+
+          if (!shouldContinue || batchCancelledRef.current) {
+            batchCancelledRef.current = true;
+            break;
+          }
+          showToast(`${app.display_name}: 存在进程占用，已跳过`, 'info');
+          failCount++;
+          failedApps.push(`${app.display_name}（进程占用跳过）`);
+          continue;
+        }
+
         // 目标路径已有残留目录 → 弹出确认框，用户确认后以 force_overwrite 重试
         if (!result.success && (
           result.message.startsWith('TARGET_EXISTS_RETRY:') ||
@@ -1029,8 +1074,18 @@ export default function AppMigration() {
         message={migrationMessage}
         lockedProcesses={lockedProcesses}
         progress={migrationProgress}
-        onCancel={batchMigrating ? handleStopBatchMigrate : handleCancelMigration}
-        onForceContinue={handleForceContinue}
+        onCancel={
+          batchMigrating
+            ? (batchWaitingProcessLock
+                ? handleBatchProcessLockStop
+                : handleStopBatchMigrate)
+            : handleCancelMigration
+        }
+        onForceContinue={
+          batchWaitingProcessLock
+            ? handleBatchProcessLockSkip
+            : undefined
+        }
         onClose={handleCloseMigrationModal}
         onRequestClose={handleRequestCloseDuringMigration}
       />

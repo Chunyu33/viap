@@ -250,17 +250,25 @@ fn copy_dir_with_progress(
 /// 应用目录需用进程 exe 路径匹配检测。
 ///
 /// 返回：被占用文件的相对路径列表，最多 10 条；空列表表示无占用。
+/// 每 200 个文件检查一次取消标志，避免大目录扫描期间取消无响应。
 #[cfg(windows)]
-fn check_directory_file_locks(dir: &Path) -> Vec<String> {
+fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBool>) -> Vec<String> {
     use std::os::windows::fs::OpenOptionsExt;
 
     let mut locked_files: Vec<String> = Vec::new();
+    let mut checked_count: u64 = 0;
 
     for entry in WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
+        // 每 200 个文件检查一次取消标志，避免大目录扫描期间取消无响应
+        checked_count += 1;
+        if checked_count % 200 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return vec!["检测已取消".to_string()];
+        }
+
         let path = entry.path();
 
         // FILE_SHARE_NONE = 0，独占打开。若其他进程持有该文件句柄则失败。
@@ -352,7 +360,8 @@ struct DangerRule {
 /// 2. **数据库**：MySQL / PostgreSQL / MongoDB / Redis / SQL Server（含事务日志）
 /// 3. **安全软件**：Defender / Kaspersky / ESET（含内核级驱动）
 /// 4. **系统组件缓存**：VS Package Cache
-/// 5. **ProgramData 根目录**（包含大量系统级配置）
+/// 5. **开发工具**：Visual Studio / JetBrains（含内核映射 DLL）
+/// 6. **ProgramData 根目录**（包含大量系统级配置）
 ///
 /// 返回 Some((level, 用户可见消息)) 或 None（安全路径）
 fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
@@ -419,6 +428,14 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         // WARNING — 系统组件缓存
         // ═══════════════════════════════════════
         DangerRule { pattern: r"package cache",  level: DangerLevel::Warning, category: "系统组件", label: "Visual Studio Package Cache" },
+
+        // ═══════════════════════════════════════
+        // WARNING — 开发工具
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"microsoft visual studio", level: DangerLevel::Warning, category: "开发工具", label: "Visual Studio 安装目录" },
+        DangerRule { pattern: r"jetbrains",              level: DangerLevel::Warning, category: "开发工具", label: "JetBrains IDE 目录" },
+        DangerRule { pattern: r"(?i)microsoft.*visual studio code|visual studio code", level: DangerLevel::Warning, category: "开发工具", label: "VSCode 用户/数据目录",
+},
 
         // ═══════════════════════════════════════
         // WARNING — ProgramData 根目录
@@ -599,6 +616,11 @@ pub fn migrate_app(
         //     原因：数据文件有真实写锁，而进程 exe 不在该目录内，路径匹配无效
         emit_progress(app_handle, &source, 0.0, "checking", "正在检测文件占用...", 0, 0);
 
+        // 及时响应取消（大目录 WalkDir 可能耗时较长）
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("用户取消了迁移".to_string());
+        }
+
         let has_exe_in_source = WalkDir::new(source_path)
             .max_depth(2)
             .into_iter()
@@ -646,7 +668,7 @@ pub fn migrate_app(
             }
         } else {
             // 数据目录：用文件独占锁探测（独占打开每个文件，检测 SHARING_VIOLATION）
-            let locked_files = check_directory_file_locks(source_path);
+            let locked_files = check_directory_file_locks(source_path, cancel_flag);
             if !locked_files.is_empty() {
                 return Ok(MigrationResult {
                     success: false,
@@ -708,13 +730,50 @@ pub fn migrate_app(
             Err(e) => {
                 // 取消或复制错误：清理已创建的目标目录，避免残留半成品
                 let _ = fs::remove_dir_all(&target_path);
+                // 细化错误消息：拒绝访问通常意味着文件被内核映射或系统进程独占
+                let user_message = if e.contains("拒绝访问") || e.contains("Access is denied")
+                    || e.contains("os error 5") || e.contains("permission denied")
+                {
+                    format!(
+                        "复制失败：部分文件被 Windows 系统内核映射，无法在运行时复制。\n\n\
+                         常见原因：开发工具（Visual Studio、JetBrains 等）的编译器、\
+                         语言服务进程（MSBuild、VBCSCompiler、ServiceHub 等）仍在后台运行。\n\n\
+                         解决方案：\n\
+                         1. 完全退出所有 IDE 实例（包括系统托盘图标）\n\
+                         2. 打开任务管理器，结束所有 MSBuild、VBCSCompiler、\
+                         ServiceHub、dotnet 相关进程\n\
+                         3. 等待 10 秒后重试\n\n\
+                         原始错误：{}", e
+                    )
+                } else {
+                    e
+                };
                 return Ok(MigrationResult {
                     success: false,
-                    message: e,
+                    message: user_message,
                     new_path: None,
                 });
             }
         };
+
+        // 步骤 2.1: 空目录安全检查
+        // source_size > 0 说明预扫描时目录有内容，但 WalkDir 遍历结果为空，
+        // 意味着遍历过程遇到了大面积的权限拒绝或重解析点异常（WalkDir 静默跳过）。
+        // 若此时继续，校验通过 → 源目录被删除 → 空链接被创建 → 数据丢失。
+        if source_size > 0 && total_size == 0 {
+            let _ = fs::remove_dir_all(&target_path);
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目录遍历失败：源目录 {} 预扫描有 {} 字节内容，但遍历时未发现任何可复制文件。\n\
+                     这通常是因为目录权限限制或文件系统特殊属性导致的。\n\
+                     建议：以管理员身份运行本程序后重试。",
+                    source,
+                    source_size
+                ),
+                new_path: None,
+            });
+        }
 
         // 步骤 3: 完整性校验
         // 使用实际复制量（去除跳过文件）作为预期基准，避免权限拒绝文件导致误报

@@ -5,7 +5,7 @@
 
 import { useCallback } from 'react';
 
-type DangerCategory = '系统目录' | '浏览器' | 'GPU驱动' | '虚拟化' | '数据库' | '缓存服务' | '安全软件' | '系统组件';
+type DangerCategory = '系统目录' | '浏览器' | 'GPU驱动' | '虚拟化' | '数据库' | '缓存服务' | '安全软件' | '系统组件' | '开发工具';
 
 interface DangerRule {
   pattern: string;
@@ -212,6 +212,22 @@ const DANGER_RULES: DangerRule[] = [
   },
 
   // ═══════════════════════════════════════════
+  // WARNING — 开发工具
+  // 特征：含被 Windows 内核内存映射的 DLL，复制阶段会失败；
+  //       后台语言服务/索引/编译进程的 exe 不在安装目录下，进程检测无法拦截
+  // ═══════════════════════════════════════════
+  {
+    pattern: 'microsoft visual studio',
+    level: 'WARNING', category: '开发工具', label: 'Visual Studio 安装目录',
+    reason: 'Visual Studio 包含被 Windows 内核持续映射的编译器和语言服务组件（如 VBCSCompiler.exe、MSBuild.exe），这些 DLL 无法在运行时复制。迁移前需完全停止所有 VS 实例、关闭所有 .NET/C++ 项目，并在任务管理器中确认没有 MSBuild、VBCSCompiler、ServiceHub 相关进程。迁移成功后 VS 仍可正常运行，但建议通过「修复安装」验证完整性。',
+  },
+  {
+    pattern: 'jetbrains',
+    level: 'WARNING', category: '开发工具', label: 'JetBrains IDE 目录',
+    reason: 'JetBrains IDE（IntelliJ、Rider、GoLand 等）有后台索引服务和 JVM 进程，迁移前需完全退出所有 JetBrains 产品和后台服务（系统托盘右键退出）。',
+  },
+
+  // ═══════════════════════════════════════════
   // WARNING — ProgramData 根目录
   // 注意：必须排在 BLOCKED 的 c:\programdata\microsoft\windows 之后，
   // 确保更具体的子路径先被 BLOCKED 命中，不会降级到 WARNING
@@ -228,6 +244,7 @@ const BLOCKED_CATEGORY_TIPS: Record<string, string> = {
   '系统目录': '迁移系统核心目录会导致 Windows 组件崩溃，无法开机。',
   '浏览器': '浏览器安装目录含系统级注册和自动修复机制，迁移后链接会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器缓存（在「数据迁移」页面的「应用数据」分区中）。',
   'GPU驱动': 'GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。',
+  '开发工具': '开发工具目录含被 Windows 内核内存映射的 DLL 和后台语言服务，复制阶段容易失败，迁移前需完全退出所有相关进程。',
 };
 
 // WARNING 统一免责声明

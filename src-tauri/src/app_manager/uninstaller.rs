@@ -377,6 +377,11 @@ pub fn force_remove_application(input: UninstallInput) -> Result<UninstallResult
             Some(if use_recycle { "recycle_bin" } else { "permanent" }),
         );
 
+        // 清理该应用的迁移记录和兜底元数据（避免已卸载的应用仍显示为"已迁移"）
+        if let Some(ref loc) = install_location {
+            crate::storage::history::delete_migration_record_by_path(loc);
+        }
+
         let parts: Vec<&str> = vec![
             if deleted_files { Some("文件已删除") } else { None },
             if deleted_registry { Some("注册表已清理") } else { None },
@@ -616,6 +621,11 @@ pub async fn uninstall_application(input: UninstallInput) -> Result<UninstallRes
                         &format!("卸载命令已执行: {}", uninstall_cmd),
                         None,
                     );
+
+                    // 清理该应用的迁移记录和兜底元数据（避免已卸载的应用仍显示为"已迁移"）
+                    if let Some(ref loc) = input.install_location {
+                        crate::storage::history::delete_migration_record_by_path(loc);
+                    }
 
                     return Ok(UninstallResult {
                         success: true,

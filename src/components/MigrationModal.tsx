@@ -23,6 +23,7 @@ interface MigrationModalProps {
   /** 弹窗标题，默认 "应用迁移" */
   title?: string;
   onCancel?: () => void;
+  /** 批量迁移进程占用时：跳过此应用继续批量 */
   onForceContinue?: () => void;
   onClose: () => void;
   /** 迁移进行中点击 X 的二次确认回调（由父组件处理 confirm + cancel） */
@@ -49,7 +50,7 @@ export default function MigrationModal({
   progress,
   title = '应用迁移',
   onCancel,
-  // onForceContinue,
+  onForceContinue,
   onClose,
   onRequestClose,
 }: MigrationModalProps) {
@@ -87,6 +88,8 @@ export default function MigrationModal({
   // 进程占用视为终止状态：非 loading，可关闭，无需确认
   const hasProcessLocks = lockedProcesses.length > 0 && step === 'checking';
   const isLoading = !hasProcessLocks && ['checking', 'counting', 'copying', 'verifying', 'linking'].includes(step);
+  // 进度条只在数据操作阶段显示，不在进程检查阶段显示（避免用户误以为已经开始复制）
+  const showProgressBar = !hasProcessLocks && ['counting', 'copying', 'verifying', 'linking'].includes(step);
   const canClose = step === 'success' || step === 'error' || hasProcessLocks;
   const isSuccess = step === 'success';
   const isError = step === 'error';
@@ -116,6 +119,9 @@ export default function MigrationModal({
         className={`relative w-full overflow-hidden rounded-xl shadow-lg ${leaving ? 'animate-modal-out' : 'animate-modal-in'}`}
         style={{
           maxWidth: '400px',
+          maxHeight: '90vh',
+          display: 'flex',
+          flexDirection: 'column',
           background: 'var(--bg-modal)',
           border: '1px solid var(--border-color)',
         }}
@@ -138,7 +144,7 @@ export default function MigrationModal({
         </div>
 
         {/* 内容区 */}
-        <div className="px-5 py-4">
+        <div className="px-5 py-4 flex-1 overflow-y-auto">
           {/* 目标应用名称 */}
           <p
             className="truncate text-center text-sm font-medium mb-4"
@@ -169,8 +175,18 @@ export default function MigrationModal({
             </span>
           </div>
 
+          {/* checking 阶段说明：让用户明确知道还没开始复制 */}
+          {!hasProcessLocks && step === 'checking' && (
+            <p
+              className="text-center text-xs mb-3"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              正在检测进程占用，检测完成后才会开始复制文件...
+            </p>
+          )}
+
           {/* 进度条 */}
-          {isLoading && (
+          {showProgressBar && (
             <div className="mb-3">
               <div
                 className="h-1 rounded-full overflow-hidden"
@@ -225,11 +241,18 @@ export default function MigrationModal({
             >
               <div className="flex items-start gap-2">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-warning)' }} />
-                <div>
+                <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
                     检测到进程占用
                   </p>
-                  <ul className="space-y-0.5">
+                  {/* 批量模式：显示操作引导，确保用户注意到底部按钮 */}
+                  {onForceContinue && (
+                    <p className="text-xs mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                      请关闭以下进程后点击「跳过」继续批量，或点击「停止」结束批量迁移。
+                    </p>
+                  )}
+                  {/* 进程列表最大高度限制：超过 120px 时可滚动，确保底部按钮始终可见 */}
+                  <ul className="space-y-0.5 overflow-y-auto" style={{ maxHeight: '120px' }}>
                     {lockedProcesses.map((proc, i) => (
                       <li key={i} className="text-xs flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
                         <span className="h-1 w-1 rounded-full flex-shrink-0" style={{ background: 'var(--color-warning)' }} />
@@ -246,7 +269,7 @@ export default function MigrationModal({
         {/* 底部按钮 */}
         {(isLoading || hasProcessLocks || canClose) && (
           <div
-            className="flex items-center justify-center gap-2 px-5 py-3"
+            className="flex items-center justify-center gap-2 px-5 py-3 flex-shrink-0"
             style={{
               borderTop: '1px solid var(--border-color)',
               background: 'var(--bg-toolbar)',
@@ -268,17 +291,47 @@ export default function MigrationModal({
               </button>
             )}
 
-            {canClose && (
+            {/* 批量迁移进程占用：显示"跳过此应用继续"按钮 */}
+            {hasProcessLocks && onForceContinue && (
               <button
-                onClick={handleAnimatedClose}
+                onClick={onForceContinue}
                 className="btn btn-sm"
                 style={{
-                  background: 'var(--color-primary)',
+                  background: 'var(--color-warning)',
                   color: 'var(--text-inverse)',
-                  borderColor: 'var(--color-primary)',
+                  borderColor: 'var(--color-warning)',
                 }}
               >
-                {isSuccess ? '完成' : '我知道了'}
+                跳过此应用，继续批量
+              </button>
+            )}
+
+            {/* 关闭 / 停止批量 / 我知道了 */}
+            {canClose && (
+              <button
+                onClick={
+                  hasProcessLocks && onForceContinue && onCancel
+                    ? onCancel
+                    : handleAnimatedClose
+                }
+                className="btn btn-sm"
+                style={{
+                  background:
+                    hasProcessLocks && onForceContinue
+                      ? 'var(--color-danger)'
+                      : 'var(--color-primary)',
+                  color: 'var(--text-inverse)',
+                  borderColor:
+                    hasProcessLocks && onForceContinue
+                      ? 'var(--color-danger)'
+                      : 'var(--color-primary)',
+                }}
+              >
+                {hasProcessLocks && onForceContinue
+                  ? '停止批量迁移'
+                  : isSuccess
+                  ? '完成'
+                  : '我知道了'}
               </button>
             )}
           </div>

@@ -297,6 +297,9 @@ export default function LargeFolders() {
   const [batchMigrating, setBatchMigrating] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const batchCancelledRef = useRef(false);
+  // 批量模式下进程锁弹窗的 Promise resolve 函数
+  const batchProcessLockResolveRef = useRef<((value: boolean) => void) | null>(null);
+  const [batchWaitingProcessLock, setBatchWaitingProcessLock] = useState(false);
 
   // 系统文件夹风险确认弹窗（仅 System 类型显示）
   const [riskConfirm, setRiskConfirm] = useState<{
@@ -391,6 +394,7 @@ export default function LargeFolders() {
           const data = event.payload;
           setMigrationProgress(data.percent);
           switch (data.step) {
+            case 'checking': setMigrationStep('checking'); break;
             case 'counting': setMigrationStep('counting'); break;
             case 'copying': setMigrationStep('copying'); break;
             case 'verifying': setMigrationStep('verifying'); break;
@@ -656,6 +660,38 @@ export default function LargeFolders() {
           userConfirmedWarning: false,
         });
 
+        // 后端步骤 0.5 检测到进程占用 → 暂停批量等待用户介入
+        if (!result.success && result.message.includes('检测到以下程序正在运行')) {
+          const lines = result.message.split('\n');
+          const processLine = lines.find(l => !l.includes('检测到以下程序') && l.trim().length > 0);
+          const processes = processLine
+            ? processLine.split('、').map(p => p.trim()).filter(Boolean)
+            : ['（未知进程）'];
+
+          setLockedProcesses(processes);
+          setMigrationStep('checking');
+          setMigrationMessage(`${folder.display_name} 有进程占用，请处理后选择继续或跳过`);
+
+          setBatchWaitingProcessLock(true);
+          const shouldContinue = await new Promise<boolean>((resolve) => {
+            batchProcessLockResolveRef.current = resolve;
+          });
+          batchProcessLockResolveRef.current = null;
+          setBatchWaitingProcessLock(false);
+
+          setLockedProcesses([]);
+          setMigrationStep('checking');
+
+          if (!shouldContinue || batchCancelledRef.current) {
+            batchCancelledRef.current = true;
+            break;
+          }
+          showToast(`${folder.display_name}: 存在进程占用，已跳过`, 'info');
+          failCount++;
+          failedFolders.push(`${folder.display_name}（进程占用跳过）`);
+          continue;
+        }
+
         // 处理 TARGET_EXISTS 特殊返回值（不能直接 Toast 路径字符串给用户）
         if (!result.success && (
           result.message.startsWith('TARGET_EXISTS_RETRY:') ||
@@ -736,6 +772,15 @@ export default function LargeFolders() {
   function handleStopBatchMigrate() {
     batchCancelledRef.current = true;
     invoke('cancel_migration').catch(() => {});
+  }
+
+  // 批量迁移进程锁：跳过当前文件夹，继续批量
+  function handleBatchProcessLockSkip() {
+    batchProcessLockResolveRef.current?.(true);
+  }
+  // 批量迁移进程锁：停止批量迁移
+  function handleBatchProcessLockStop() {
+    batchProcessLockResolveRef.current?.(false);
   }
 
   async function handleRestore(folder: LargeFolder) {
@@ -948,7 +993,18 @@ export default function LargeFolders() {
         lockedProcesses={lockedProcesses}
         progress={migrationProgress}
         title="数据迁移"
-        onCancel={batchMigrating ? handleStopBatchMigrate : handleCancelMigration}
+        onCancel={
+          batchMigrating
+            ? (batchWaitingProcessLock
+                ? handleBatchProcessLockStop
+                : handleStopBatchMigrate)
+            : handleCancelMigration
+        }
+        onForceContinue={
+          batchWaitingProcessLock
+            ? handleBatchProcessLockSkip
+            : undefined
+        }
         onClose={handleCloseMigrationModal}
         onRequestClose={batchMigrating
           ? async () => { handleStopBatchMigrate(); }
