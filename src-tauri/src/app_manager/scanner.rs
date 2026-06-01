@@ -267,6 +267,20 @@ impl AppScanner {
         dedup_subdirectory_apps(&mut all_apps);
         all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
 
+        // 兜底补全：扫描器遗漏的已迁移绿色/便携软件（无注册表条目）
+        // get_or_scan() 有此步骤，scan_all_streaming() 也必须对称执行，
+        // 否则这些应用在初始加载时缺失，仅在手动刷新后才出现
+        {
+            let existing: HashSet<String> = all_apps
+                .iter()
+                .map(|a| a.install_location.to_lowercase())
+                .collect();
+            let failsafe = crate::storage::migrated_app_metadata::generate_failsafe_apps(&existing);
+            all_apps.extend(failsafe);
+        }
+        // 兜底应用可能导致排序变化，重新排序
+        all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+
         // ── 图标提取（分批，每批 20 个，边提取边推送）──────────────────
         // 图标提取是 IO 密集操作，不用 rayon 并行（机械盘并行反而更慢）
         // 改为顺序分批，每批完成后立即推送，让前端能逐渐渲染图标
