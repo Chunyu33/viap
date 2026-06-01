@@ -12,6 +12,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use serde::Serialize;
+use tauri::Emitter;
+
 use crate::models::{InstalledApp, ProcessLockResult};
 use rayon::prelude::*;
 use sysinfo::System;
@@ -41,6 +44,34 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;
 #[cfg(windows)]
 use winreg::HKEY;
+
+// ============================================================================
+// 流式扫描事件类型
+// ============================================================================
+
+/// 流式扫描进度事件 payload
+/// 事件名：`scan-progress`
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanProgressEvent {
+    /// 当前阶段："tier1" | "tier2" | "tier3" | "icons" | "done"
+    pub phase: String,
+    /// 本批新增应用列表（增量，不含历史已推送的）
+    pub apps: Vec<InstalledApp>,
+    /// 图标批次更新（key=install_location, value=icon_base64）
+    /// 仅 phase="icons" 时有值，其余阶段为空
+    pub icon_updates: Vec<IconUpdate>,
+    /// 当前累计应用总数（含本批）
+    pub total_count: usize,
+    /// 是否为最终完成事件
+    pub is_final: bool,
+}
+
+/// 单个图标更新
+#[derive(Debug, Clone, Serialize)]
+pub struct IconUpdate {
+    pub install_location: String,
+    pub icon_base64: String,
+}
 
 // ============================================================================
 // AppScanner 结构体
@@ -140,6 +171,168 @@ impl AppScanner {
 
         orbit_log!("INFO", "scanner", "全量扫描完成: {} 个应用, 总耗时 {}ms", apps.len(), total_start.elapsed().as_millis());
         Ok(apps)
+    }
+
+    /// 流式全量扫描：每个 Tier 完成后立即通过 Tauri 事件推送，不等待全部完成
+    ///
+    /// 事件名：`scan-progress`，payload：`ScanProgressEvent`
+    ///
+    /// 流程：
+    /// 1. Tier 1 注册表扫描完成 → emit phase="tier1"，apps=注册表应用列表
+    /// 2. Tier 2 LNK 扫描完成  → emit phase="tier2"，apps=LNK 新增应用（去重后）
+    /// 3. Tier 3 文件系统扫描完成（若未提前终止）→ emit phase="tier3"，apps=FS 新增应用
+    /// 4. 图标提取（全部应用，分批，每批 20 个）→ 每批 emit phase="icons"
+    /// 5. 完成 → emit phase="done"，is_final=true
+    ///
+    /// 同时将最终结果写入内存缓存（通过 cache 模块的全局 APP_CACHE）
+    pub fn scan_all_streaming(&self, app_handle: &tauri::AppHandle) -> Result<Vec<InstalledApp>, String> {
+        let total_start = Instant::now();
+        let mut all_apps: Vec<InstalledApp> = Vec::new();
+
+        // ── Tier 1：注册表 ──────────────────────────────────────────────
+        let t1_apps = self.scan_registry_deep()?;
+        orbit_log!("INFO", "scanner", "Tier1 完成: {} 个, {}ms", t1_apps.len(), total_start.elapsed().as_millis());
+
+        let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+            phase: "tier1".to_string(),
+            apps: t1_apps.clone(),
+            icon_updates: vec![],
+            total_count: t1_apps.len(),
+            is_final: false,
+        });
+
+        all_apps.extend(t1_apps);
+
+        // ── Tier 2：LNK 快捷方式 ────────────────────────────────────────
+        let mut existing_paths: HashSet<String> = all_apps
+            .iter()
+            .map(|a| normalize_path(&a.install_location))
+            .collect();
+
+        // 解析 symlink 目标，防止 Tier3 在目标盘重复发现
+        let symlink_targets: Vec<String> = existing_paths
+            .iter()
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                if path.is_symlink() {
+                    std::fs::read_link(path).ok()
+                        .map(|t| normalize_path(&t.to_string_lossy()))
+                } else { None }
+            })
+            .collect();
+        for t in symlink_targets { existing_paths.insert(t); }
+
+        let t2_apps = self.scan_lnk_shortcuts(&existing_paths);
+        orbit_log!("INFO", "scanner", "Tier2 完成: {} 个新应用", t2_apps.len());
+
+        let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+            phase: "tier2".to_string(),
+            apps: t2_apps.clone(),
+            icon_updates: vec![],
+            total_count: all_apps.len() + t2_apps.len(),
+            is_final: false,
+        });
+
+        for app in &t2_apps {
+            existing_paths.insert(normalize_path(&app.install_location));
+        }
+        all_apps.extend(t2_apps);
+
+        // ── Tier 3：文件系统扫描（未达提前终止阈值时执行）──────────────
+        if all_apps.len() < EARLY_EXIT_APP_COUNT {
+            let t3_apps = self.scan_filesystem_constrained(&existing_paths);
+            orbit_log!("INFO", "scanner", "Tier3 完成: {} 个新应用", t3_apps.len());
+
+            let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+                phase: "tier3".to_string(),
+                apps: t3_apps.clone(),
+                icon_updates: vec![],
+                total_count: all_apps.len() + t3_apps.len(),
+                is_final: false,
+            });
+
+            all_apps.extend(t3_apps);
+        } else {
+            orbit_log!("INFO", "scanner", "应用数 >= {}，跳过 Tier3", EARLY_EXIT_APP_COUNT);
+            let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+                phase: "tier3".to_string(),
+                apps: vec![],
+                icon_updates: vec![],
+                total_count: all_apps.len(),
+                is_final: false,
+            });
+        }
+
+        // 后处理（去重、排序）——在图标提取前完成
+        dedup_subdirectory_apps(&mut all_apps);
+        all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+
+        // ── 图标提取（分批，每批 20 个，边提取边推送）──────────────────
+        // 图标提取是 IO 密集操作，不用 rayon 并行（机械盘并行反而更慢）
+        // 改为顺序分批，每批完成后立即推送，让前端能逐渐渲染图标
+        let icon_batch_size = 20;
+        let total_app_count = all_apps.len();
+        let total_batches = (total_app_count + icon_batch_size - 1) / icon_batch_size;
+        for (batch_idx, chunk) in all_apps.chunks_mut(icon_batch_size).enumerate() {
+            for app in chunk.iter_mut() {
+                if !app.display_icon.is_empty() {
+                    app.icon_base64 = crate::system::icon::extract_icon_to_base64(&app.display_icon);
+                }
+                if app.icon_base64.is_empty() {
+                    if let Some(fallback) = find_fallback_exe(&app.install_location) {
+                        app.icon_base64 = crate::system::icon::extract_icon_to_base64(&fallback);
+                        if !app.icon_base64.is_empty() {
+                            app.display_icon = fallback;
+                        }
+                    }
+                }
+            }
+
+            // 收集本批有效图标推送给前端
+            let updates: Vec<IconUpdate> = chunk
+                .iter()
+                .filter(|app| !app.icon_base64.is_empty())
+                .map(|app| IconUpdate {
+                    install_location: app.install_location.clone(),
+                    icon_base64: app.icon_base64.clone(),
+                })
+                .collect();
+
+            if !updates.is_empty() {
+                let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+                    phase: "icons".to_string(),
+                    apps: vec![],
+                    icon_updates: updates,
+                    total_count: total_app_count,
+                    is_final: false,
+                });
+            }
+
+            orbit_log!(
+                "DEBUG", "scanner",
+                "图标批次 {}/{} 完成",
+                batch_idx + 1,
+                total_batches
+            );
+        }
+
+        // ── 写入内存缓存 ────────────────────────────────────────────────
+        if let Ok(mut cache) = self.registry_cache.lock() {
+            *cache = Some((Instant::now(), all_apps.clone()));
+        }
+        *self.last_full_scan.lock().unwrap() = Some(Instant::now());
+
+        // ── 完成事件 ────────────────────────────────────────────────────
+        let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+            phase: "done".to_string(),
+            apps: vec![],
+            icon_updates: vec![],
+            total_count: all_apps.len(),
+            is_final: true,
+        });
+
+        orbit_log!("INFO", "scanner", "流式扫描完成: {} 个应用, 总耗时 {}ms", all_apps.len(), total_start.elapsed().as_millis());
+        Ok(all_apps)
     }
 
     /// 增量扫描：仅重新扫描注册表（若 TTL 过期），保留 Tier2/3 缓存

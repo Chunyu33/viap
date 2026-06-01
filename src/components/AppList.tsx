@@ -1,7 +1,7 @@
 // 应用列表组件 — 桌面工具风格
 // 表格化行布局，紧凑信息密度，弱化操作按钮视觉
 
-import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw } from 'lucide-react';
+import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw, LoaderCircle } from 'lucide-react';
 import { InstalledApp } from '../types';
 import { useState, useMemo, useDeferredValue, memo, useEffect } from 'react';
 import FilterSelect from './FilterSelect';
@@ -48,6 +48,10 @@ interface AppListProps {
   refreshing?: boolean;
   /** Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮 */
   viapInstallPath?: string;
+  /** 流式扫描阶段 */
+  scanPhase?: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'done';
+  /** 当前累计扫描到的应用数 */
+  scanTotalCount?: number;
 }
 
 function formatSize(kb: number): string {
@@ -57,7 +61,7 @@ function formatSize(kb: number): string {
   return `${(kb / (1024 * 1024)).toFixed(2)} GB`;
 }
 
-function AppIcon({ app }: { app: InstalledApp }) {
+function AppIcon({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: boolean }) {
   // icon_base64 是当前稳定方案，icon_url 预留后续自定义协议迁移
   if (app.icon_base64) {
     return (
@@ -76,6 +80,29 @@ function AppIcon({ app }: { app: InstalledApp }) {
   }
   const initial = app.display_name.charAt(0).toUpperCase();
   const hue = (app.display_name.charCodeAt(0) * 37) % 360;
+  // 图标仍在加载中时，首字母降低不透明度 + 外围显示旋转加载环
+  if (iconsLoading) {
+    return (
+      <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 relative">
+        {/* 旋转加载环 */}
+        <div
+          className="absolute inset-0 rounded-full animate-spin"
+          style={{
+            border: '2px solid transparent',
+            borderTopColor: `hsl(${hue}, 55%, 55%)`,
+            borderRightColor: `hsl(${hue}, 55%, 55%)`,
+          }}
+        />
+        {/* 首字母占位 */}
+        <span
+          className="text-[11px] font-semibold"
+          style={{ color: `hsl(${hue}, 55%, 55%)`, opacity: 0.5 }}
+        >
+          {initial}
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[11px] font-semibold text-white"
@@ -90,7 +117,7 @@ const AppRow = memo(function AppRow({
   app, onMigrate, onRestore, onUninstall, onOpenFolder,
   isUninstalling, isMigrated, isRestoring,
   isSelected, onToggleSelect, showCheckbox,
-  appSize, isViap,
+  appSize, isViap, iconsLoading,
 }: {
   app: InstalledApp;
   onMigrate: (app: InstalledApp) => void;
@@ -105,6 +132,7 @@ const AppRow = memo(function AppRow({
   showCheckbox?: boolean;
   appSize?: number;
   isViap?: boolean;
+  iconsLoading?: boolean;
 }) {
   const rowStyle: React.CSSProperties = {
     height: 'var(--row-height)' as unknown as string,
@@ -152,7 +180,7 @@ const AppRow = memo(function AppRow({
       )}
 
       {/* icon */}
-      <AppIcon app={app} />
+      <AppIcon app={app} iconsLoading={iconsLoading} />
 
       {/* name + path */}
       <div className="flex-1 min-w-0 flex items-center gap-4">
@@ -269,6 +297,8 @@ export default function AppList({
   onRefresh,
   refreshing = false,
   viapInstallPath,
+  scanPhase,
+  scanTotalCount = 0,
 }: AppListProps) {
   const defaultOpenFolder = async (app: InstalledApp) => {
     try {
@@ -484,6 +514,22 @@ export default function AppList({
         <span className="flex-shrink-0" style={{ width: '150px', textAlign: 'right' }}>操作</span>
       </div>
 
+      {/* 流式扫描进度提示：仅在扫描进行中显示，不遮挡已加载的应用 */}
+      {scanPhase && scanPhase !== 'done' && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md mb-1 flex-shrink-0"
+          style={{ background: 'var(--color-primary-light)', color: 'var(--color-primary)' }}
+        >
+          <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
+          <span>
+            {scanPhase === 'tier1' && `已发现 ${scanTotalCount} 个应用，正在扫描快捷方式...`}
+            {scanPhase === 'tier2' && `已发现 ${scanTotalCount} 个应用，正在扫描文件系统...`}
+            {scanPhase === 'tier3' && `已发现 ${scanTotalCount} 个应用，正在加载图标...`}
+            {scanPhase === 'icons' && `正在加载图标（${scanTotalCount} 个应用）...`}
+          </span>
+        </div>
+      )}
+
       {/* list body */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {filteredApps.length > 0 ? (
@@ -495,10 +541,13 @@ export default function AppList({
                 ? app.install_location.toLowerCase().replace(/\//g, '\\') ===
                   viapInstallPath.toLowerCase().replace(/\//g, '\\')
                 : false;
+              // 流式扫描完成前，图标尚未全部加载
+              const iconsLoading = !!scanPhase && scanPhase !== 'done' && scanPhase !== 'idle';
               return (
                 <AppRow
                   key={key}
                   app={app}
+                  iconsLoading={iconsLoading}
                   onMigrate={onMigrate}
                   onRestore={onRestore}
                   onUninstall={onUninstall}

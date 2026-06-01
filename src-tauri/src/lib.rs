@@ -41,6 +41,43 @@ fn get_installed_apps() -> Result<Vec<InstalledApp>, String> {
     app_manager::scanner::get_installed_apps()
 }
 
+/// 流式扫描应用列表
+/// 扫描结果通过 `scan-progress` 事件逐阶段推送，不等待全部完成
+/// 前端通过 listen('scan-progress') 接收增量数据
+///
+/// 返回值：扫描完成后的完整应用列表（用于兜底校验）
+#[tauri::command]
+async fn get_installed_apps_stream(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<InstalledApp>, String> {
+    // 快速路径：内存缓存命中则直接 emit done 事件（含完整列表），不重新扫描
+    if let Some(cached) = app_manager::cache::get_cached() {
+        let total = cached.len();
+        use tauri::Emitter;
+        let _ = app_handle.emit("scan-progress", app_manager::scanner::ScanProgressEvent {
+            phase: "done".to_string(),
+            apps: cached.clone(),
+            icon_updates: vec![],
+            total_count: total,
+            is_final: true,
+        });
+        return Ok(cached);
+    }
+
+    // 缓存未命中：在阻塞线程池中执行流式扫描
+    let app_handle_clone = app_handle.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        app_manager::scanner::SCANNER.scan_all_streaming(&app_handle_clone)
+    })
+    .await
+    .map_err(|e| format!("扫描线程异常: {}", e))??;
+
+    // 写入全局缓存，后续调用 get_or_scan / get_cached 可命中
+    app_manager::cache::set_cache(result.clone());
+
+    Ok(result)
+}
+
 /// 强制刷新应用列表：清空内存缓存并触发全量扫描
 #[tauri::command]
 fn refresh_apps() -> Result<Vec<InstalledApp>, String> {
@@ -210,6 +247,7 @@ pub fn run() {
             storage::operation_log::get_operation_logs,
             // 应用管理
             get_installed_apps,
+            get_installed_apps_stream,
             refresh_apps,
             get_app_size,
             check_process_locks,

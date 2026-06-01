@@ -85,20 +85,24 @@ Windows 用户经常面临以下困扰：
 viap/
 ├── src/                          # 前端源码
 │   ├── components/               # React 组件
-│   │   ├── AppList.tsx          # 应用列表（含批量选择）
+│   │   ├── AppList.tsx          # 应用列表（含批量选择 + 流式扫描进度提示）
 │   │   ├── CleanupModal.tsx     # 残留清理弹窗
 │   │   ├── DiskUsageBar.tsx     # 磁盘使用率
 │   │   ├── FilterSelect.tsx     # 下拉筛选组件
 │   │   ├── MigrationModal.tsx   # 迁移进度弹窗
 │   │   ├── ProjectPromoModal.tsx # 项目推介弹窗
+│   │   ├── TargetPickerDialog.tsx # 迁移目录选择弹窗
 │   │   ├── TitleBar.tsx         # 标题栏（集成 Tab 导航 + 磁盘状态）
 │   │   ├── Toast.tsx            # 通知组件
-│   │   └── UpdateNotification.tsx # 自动更新横幅
+│   │   ├── UpdateNotification.tsx # 自动更新横幅
+│   │   └── WarningConfirmDialog.tsx # 高风险路径确认弹窗
 │   ├── pages/                    # 页面
 │   │   ├── AppMigration.tsx     # 应用迁移页（还原/卸载/批量）
 │   │   ├── LargeFolders.tsx     # 数据迁移页
 │   │   ├── MigrationHistory.tsx # 迁移历史页（搜索/筛选/分页/详情面板）
 │   │   └── Settings.tsx         # 设置页（幽灵清理/导入导出）
+│   ├── store/                    # 全局状态
+│   │   └── appStore.ts            # 应用列表模块级单例缓存
 │   ├── hooks/                    # 自定义 Hook
 │   │   ├── useDangerousPathCheck.ts # 危险路径检测（迁移前拦截）
 │   │   ├── useTheme.ts            # 主题切换
@@ -227,6 +231,16 @@ node scripts/generate-ico.js
 - **下载进度**：横幅实时显示百分比进度条，可随时取消下载
 - **安全取消**：取消下载后立即中止后台流程，不会意外重启应用
 - 自动检查失败不影响正常使用，无弹窗打扰
+
+### 流式应用扫描
+
+应用列表采用流式加载架构，告别"等待全部扫描完成才能看到结果"：
+
+- **三级扫描引擎**：Tier 1 注册表（~85% 命中，<200ms）→ Tier 2 LNK 快捷方式（~10%）→ Tier 3 文件系统扫描（~5%）
+- **流式推送**：每个扫描阶段完成后立即通过 `scan-progress` 事件推送到前端，Tier 1 完成即可显示首批应用
+- **图标分批加载**：每批 20 个顺序提取，边提取边推送，前端实时渲染旋转加载环
+- **`appStore` 模块级单例**：应用列表缓存在模块作用域内，Tab 切换零 IPC 恢复，不重新扫描
+- **搜索/筛选保持**：搜索关键词和筛选条件跨 Tab 保持，用户无感知
 
 ### 应用图标提取
 

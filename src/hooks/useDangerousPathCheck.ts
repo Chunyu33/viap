@@ -247,14 +247,14 @@ const DANGER_RULES: DangerRule[] = [
     reason: 'Visual Studio 包含被 Windows 内核持续映射的编译器和语言服务组件（如 VBCSCompiler.exe、MSBuild.exe），这些 DLL 无法在运行时复制。迁移前需完全停止所有 VS 实例、关闭所有 .NET/C++ 项目，并在任务管理器中确认没有 MSBuild、VBCSCompiler、ServiceHub 相关进程。迁移成功后 VS 仍可正常运行，但建议通过「修复安装」验证完整性。',
   },
   {
-    pattern: 'jetbrains|intellij|rider|goland|webstorm',
+    pattern: 'jetbrains',
     level: 'WARNING',
     category: '开发工具',
     label: 'JetBrains IDE 目录',
     reason: 'JetBrains IDE（IntelliJ、Rider、GoLand 等）有后台索引服务和 JVM 进程...',
   },
   {
-    pattern: 'microsoft visual studio code|vscode|\\.vscode|Microsoft VS Code',
+    pattern: 'microsoft visual studio code',
     level: 'WARNING',
     category: '开发工具',
     label: 'VSCode 目录',

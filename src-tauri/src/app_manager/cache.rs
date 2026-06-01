@@ -49,6 +49,25 @@ lazy_static::lazy_static! {
 // 公共 API
 // ============================================================================
 
+/// 尝试获取内存缓存，未命中返回 None，不触发扫描
+/// 用于流式扫描命令快速返回，避免重复全量扫描
+pub fn get_cached() -> Option<Vec<InstalledApp>> {
+    let cache = APP_CACHE.read().unwrap();
+    if cache.is_valid() {
+        Some(cache.apps.clone())
+    } else {
+        None
+    }
+}
+
+/// 将扫描结果写入缓存，供后续调用 get_or_scan / get_cached 命中
+pub fn set_cache(apps: Vec<InstalledApp>) {
+    let mut cache = APP_CACHE.write().unwrap();
+    cache.apps = apps;
+    cache.last_scan_time = Instant::now();
+    cache.is_dirty = false;
+}
+
 /// 获取应用列表：缓存有效时直接返回内存数据，否则触发全量扫描
 pub fn get_or_scan() -> Result<Vec<InstalledApp>, String> {
     // 快速路径：缓存命中，仅持有读锁
