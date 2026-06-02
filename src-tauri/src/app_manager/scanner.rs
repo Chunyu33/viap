@@ -151,7 +151,7 @@ impl AppScanner {
             orbit_log!("INFO", "scanner", "应用数 >= {}，跳过 Tier3 文件系统扫描", EARLY_EXIT_APP_COUNT);
             apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
             self.extract_icons_parallel(&mut apps);
-            // 并行计算目录大小，避免前端通过 100+ 次 IPC 逐个获取
+            // 并行计算目录大小
             apps.par_iter_mut().for_each(|app| {
                 let dir = std::path::Path::new(&app.install_location);
                 if dir.exists() {
@@ -371,6 +371,7 @@ impl AppScanner {
 
         // ── 大小后台线程（冷启动自适应批次）───────────────────────────
         // 冷启动磁盘 IO 慢，缩小并发批次并延长间隔，避免 IO 队列堆积
+        // Phase 1: 速发缓存值（SWR 策略） → Phase 2: 后台重算真实大小
         let apps_for_sizes = all_apps.clone();
         let handle_for_sizes = app_handle.clone();
         std::thread::spawn(move || {
@@ -383,6 +384,33 @@ impl AppScanner {
                 if a.install_location.to_uppercase().starts_with("C:") { 1u8 } else { 0u8 }
             });
             let total = ordered.len();
+
+            // ── Phase 1: 速发缓存值，让前端秒显大小 ──────────────────
+            {
+                if let Ok(mut cache) = crate::storage::size_cache::SIZE_CACHE.lock() {
+                    let cached: Vec<SizeUpdate> = ordered
+                        .iter()
+                        .filter_map(|app| {
+                            cache.get(&app.install_location).map(|bytes| SizeUpdate {
+                                install_location: app.install_location.clone(),
+                                size_kb: bytes / 1024,
+                            })
+                        })
+                        .collect();
+                    if !cached.is_empty() {
+                        let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
+                            phase: "sizes".to_string(),
+                            apps: vec![],
+                            icon_updates: vec![],
+                            size_updates: cached,
+                            total_count: total,
+                            is_final: false,
+                        });
+                    }
+                }
+            }
+
+            // ── Phase 2: 后台重算真实大小，有变化则更新缓存 ──────────
             for chunk in ordered.chunks(batch_size) {
                 let updates: Vec<SizeUpdate> = chunk
                     .par_iter()
@@ -396,15 +424,29 @@ impl AppScanner {
                         SizeUpdate { install_location: app.install_location.clone(), size_kb }
                     })
                     .collect();
-                let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
-                    phase: "sizes".to_string(),
-                    apps: vec![],
-                    icon_updates: vec![],
-                    size_updates: updates,
-                    total_count: total,
-                    is_final: false,
-                });
+                if !updates.is_empty() {
+                    // 回写缓存（emit 前引用 updates，避免 clone）
+                    if let Ok(mut cache) = crate::storage::size_cache::SIZE_CACHE.lock() {
+                        for u in &updates {
+                            if u.size_kb > 0 {
+                                cache.set(&u.install_location, u.size_kb * 1024);
+                            }
+                        }
+                    }
+                    let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
+                        phase: "sizes".to_string(),
+                        apps: vec![],
+                        icon_updates: vec![],
+                        size_updates: updates,
+                        total_count: total,
+                        is_final: false,
+                    });
+                }
                 std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            }
+            // 一次性刷盘（不在批量中频繁 IO）
+            if let Ok(mut cache) = crate::storage::size_cache::SIZE_CACHE.lock() {
+                cache.flush();
             }
             let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
                 phase: "sizes_done".to_string(),
