@@ -36,10 +36,17 @@ interface IconUpdate {
   icon_base64: string;
 }
 
+interface SizeUpdate {
+  install_location: string;
+  /** 目录大小，单位 KB */
+  size_kb: number;
+}
+
 interface ScanProgressEvent {
-  phase: 'tier1' | 'tier2' | 'tier3' | 'icons' | 'done';
+  phase: 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   apps: InstalledApp[];           // 仅 tier1/tier2/tier3/done(缓存命中) 时有值
   icon_updates: IconUpdate[];     // 仅 icons 时有值
+  size_updates: SizeUpdate[];     // 仅 sizes 时有值，由后台线程推送
   total_count: number;
   is_final: boolean;
 }
@@ -106,7 +113,7 @@ export default function AppMigration() {
   const [appsLoading, setAppsLoading] = useState(true);
   const [sizesLoading, setSizesLoading] = useState(false);
   // 流式扫描阶段状态，用于展示进度提示
-  const [scanPhase, setScanPhase] = useState<'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'done'>('idle');
+  const [scanPhase, setScanPhase] = useState<'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done'>('idle');
   const [scanTotalCount, setScanTotalCount] = useState(0);
   const [sizeMap, setSizeMap] = useState<Map<string, number>>(cachedSizeMap ?? new Map());
   const [refreshing, setRefreshing] = useState(false);
@@ -247,7 +254,43 @@ export default function AppMigration() {
       if (appStore.isSizesLoaded) {
         startTransition(() => setSizeMap(new Map(appStore.sizeMap)));
       } else {
-        loadAppSizes(appStore.apps);
+        // 后台线程仍在计算大小，重新监听 sizes/sizes_done 事件
+        setSizesLoading(true);
+        const sizeAccumulator = new Map<string, number>();
+        const pending = new Map<string, number>();
+        let timer: ReturnType<typeof setTimeout> | null = null;
+
+        const sizeUnlisten = await listen<ScanProgressEvent>('scan-progress', (event) => {
+          const { phase, size_updates } = event.payload;
+          if (phase === 'sizes' && size_updates.length > 0) {
+            for (const u of size_updates) {
+              pending.set(u.install_location.toLowerCase(), u.size_kb);
+            }
+            if (!timer) {
+              timer = setTimeout(() => {
+                if (pending.size === 0) return;
+                timer = null;
+                for (const [k, v] of pending) { sizeAccumulator.set(k, v); }
+                pending.clear();
+                startTransition(() => setSizeMap(new Map(sizeAccumulator)));
+              }, 300);
+            }
+          }
+          if (phase === 'sizes_done') {
+            if (timer) { clearTimeout(timer); timer = null; }
+            // flush pending
+            for (const [k, v] of pending) { sizeAccumulator.set(k, v); }
+            pending.clear();
+            appStore.sizeMap = new Map(sizeAccumulator);
+            appStore.isSizesLoaded = true;
+            cachedSizeMap = appStore.sizeMap;
+            startTransition(() => setSizeMap(new Map(sizeAccumulator)));
+            setSizesLoading(false);
+            sizeUnlisten();
+          }
+        });
+        // 组件卸载或重新扫描时会通过 scanUnlistenRef 清理
+        scanUnlistenRef.current = () => { if (timer) clearTimeout(timer); sizeUnlisten(); };
       }
       return;
     }
@@ -282,11 +325,27 @@ export default function AppMigration() {
       });
     }
 
+    // 大小缓冲：后台线程通过 sizes 事件分批推送目录大小
+    // 节流 300ms 合并多批后刷新 UI，避免频繁 re-render
+    const accumulatedSizes = new Map<string, number>();
+    const pendingSizes = new Map<string, number>();
+    let sizesTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function flushSizes() {
+      if (pendingSizes.size === 0) return;
+      if (sizesTimer) { clearTimeout(sizesTimer); sizesTimer = null; }
+      for (const [key, size] of pendingSizes) {
+        accumulatedSizes.set(key, size);
+      }
+      pendingSizes.clear();
+      startTransition(() => setSizeMap(new Map(accumulatedSizes)));
+    }
+
     const unlisten = await listen<ScanProgressEvent>('scan-progress', (event) => {
       const { phase, apps: newApps, icon_updates, total_count, is_final } = event.payload;
 
-      // 图标事件不覆写 scanPhase，避免上线文混乱
-      if (phase !== 'icons') {
+      // 图标和大小阶段不覆写 scanPhase，避免进度提示条闪烁
+      if (phase !== 'icons' && phase !== 'sizes' && phase !== 'sizes_done') {
         setScanPhase(phase);
         setScanTotalCount(total_count);
       }
@@ -312,9 +371,35 @@ export default function AppMigration() {
         iconTimer = setTimeout(flushIcons, 200);
       }
 
+      // sizes 事件由后台线程推送，节流合并后刷新 UI
+      if (phase === 'sizes' && event.payload.size_updates.length > 0) {
+        for (const u of event.payload.size_updates) {
+          pendingSizes.set(u.install_location.toLowerCase(), u.size_kb);
+        }
+        if (!sizesTimer) {
+          sizesTimer = setTimeout(flushSizes, 300);
+        }
+      }
+
+      // sizes_done：后台线程全部完成，最终写入 appStore + 模块级缓存
+      if (phase === 'sizes_done') {
+        if (sizesTimer) { clearTimeout(sizesTimer); sizesTimer = null; }
+        flushSizes();
+        appStore.sizeMap = new Map(accumulatedSizes);
+        appStore.isSizesLoaded = true;
+        cachedSizeMap = appStore.sizeMap;
+        setSizesLoading(false);
+        setScanPhase('done');
+        // 后台线程结束，清理 scan-progress 监听器
+        scanUnlistenRef.current?.();
+        scanUnlistenRef.current = null;
+      }
+
       if (is_final) {
         setAppsLoading(false);
         setScanPhase('done');
+        // done 事件之后后台线程开始计算大小，启动 loading 指示
+        setSizesLoading(true);
       }
     });
 
@@ -324,9 +409,7 @@ export default function AppMigration() {
       // fullResult 是去重+failsafe+图标的完整结果，唯一的真相源
       const fullResult = await invoke<InstalledApp[]>('get_installed_apps_stream');
 
-      // 清理并写入 appStore
-      scanUnlistenRef.current?.();
-      scanUnlistenRef.current = null;
+      // 写入 appStore（不清理 listener —— 后台大小线程仍在推送 sizes/sizes_done 事件）
       if (iconTimer) clearTimeout(iconTimer);
 
       appStore.apps = fullResult;
@@ -336,7 +419,7 @@ export default function AppMigration() {
       startTransition(() => setApps(fullResult));
       setScanPhase('done');
       setAppsLoading(false);
-      loadAppSizes(fullResult);
+      // 大小由后台线程通过 sizes 事件推送，sizes_done 到来时清理 listener
     } catch (error) {
       logger.error('流式扫描失败:', error);
       scanUnlistenRef.current?.();
@@ -348,67 +431,24 @@ export default function AppMigration() {
         appStore.scanPhase = 'done';
         appStore.scanTotalCount = fallbackApps.length;
         startTransition(() => setApps(fallbackApps));
-        loadAppSizes(fallbackApps);
+        // 降级路径：fallback 走的是 scan_all 同步路径，estimated_size 已填入
+        // 直接构建 sizeMap 避免又走 loadAppSizes（已被删除）
+        const fallbackSizeMap = new Map<string, number>();
+        for (const a of fallbackApps) {
+          if (a.estimated_size > 0) {
+            fallbackSizeMap.set(a.registry_path || a.install_location, a.estimated_size);
+          }
+        }
+        appStore.sizeMap = fallbackSizeMap;
+        appStore.isSizesLoaded = true;
+        cachedSizeMap = fallbackSizeMap;
+        startTransition(() => setSizeMap(fallbackSizeMap));
       } catch {
         startTransition(() => setApps([]));
       }
       setAppsLoading(false);
       setScanPhase('done');
     }
-  }
-
-  // 分批异步获取所有应用的目录大小
-  // 优先从 appStore 缓存命中，避免 Tab 切换后重复遍历磁盘
-  async function loadAppSizes(appList: InstalledApp[]) {
-    // 用 appStore 做命中检查：缓存完整且 key 集合一致则直接复用
-    if (appStore.isSizesLoaded && appStore.sizeMap.size > 0) {
-      const currentKeys = new Set(appList.map(a => a.registry_path || a.install_location));
-      const cachedKeys = new Set(appStore.sizeMap.keys());
-      const isHit = currentKeys.size === cachedKeys.size &&
-        [...currentKeys].every(k => cachedKeys.has(k));
-
-      if (isHit) {
-        startTransition(() => setSizeMap(new Map(appStore.sizeMap)));
-        return;
-      }
-    }
-
-    setSizesLoading(true);
-
-    // 非 C 盘优先计算（迁移目标盘先展示），C 盘排后
-    const prioritized = [
-      ...appList.filter(a => !a.install_location.toUpperCase().startsWith('C:')),
-      ...appList.filter(a => a.install_location.toUpperCase().startsWith('C:')),
-    ];
-
-    const batchSize = 16; // 加大批次减少 IPC 往返次数
-    const localSizeMap = new Map<string, number>();
-
-    for (let i = 0; i < prioritized.length; i += batchSize) {
-      const batch = prioritized.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map(app => invoke<number>('get_app_size', { installLocation: app.install_location }))
-      );
-      for (let j = 0; j < batch.length; j++) {
-        const key = batch[j].registry_path || batch[j].install_location;
-        const result = results[j];
-        if (result.status === 'fulfilled') {
-          localSizeMap.set(key, result.value);
-        }
-      }
-      // 每批完成后实时更新 UI（用户能看到大小逐步填入）
-      startTransition(() => setSizeMap(new Map(localSizeMap)));
-    }
-
-    // 全部完成后写入全局 store + 模块级缓存
-    appStore.sizeMap = new Map(localSizeMap);
-    appStore.isSizesLoaded = true;
-    cachedSizeMap = appStore.sizeMap; // 保持后向兼容
-
-    startTransition(() => {
-      setSizeMap(new Map(localSizeMap));
-      setSizesLoading(false);
-    });
   }
 
   // 获取应用迁移记录，并同步已迁移路径
@@ -451,7 +491,18 @@ export default function AppMigration() {
       setScanTotalCount(freshApps.length);
       setAppsLoading(false);
 
-      loadAppSizes(freshApps);
+      // refresh_apps 内部调用 scan_all，已完成并行大小计算
+      // estimated_size 已填入（KB），直接构建 sizeMap
+      const refreshSizeMap = new Map<string, number>();
+      for (const a of freshApps) {
+        if (a.estimated_size > 0) {
+          refreshSizeMap.set(a.registry_path || a.install_location, a.estimated_size);
+        }
+      }
+      appStore.sizeMap = refreshSizeMap;
+      appStore.isSizesLoaded = true;
+      cachedSizeMap = refreshSizeMap;
+      startTransition(() => setSizeMap(refreshSizeMap));
     } catch (error) {
       logger.error('刷新应用列表失败:', error);
     }
@@ -484,7 +535,17 @@ export default function AppMigration() {
       setScanTotalCount(freshApps.length);
       setAppsLoading(false);
 
-      loadAppSizes(freshApps);
+      // refresh_apps 内部走 scan_all，estimated_size 已填入
+      const refreshSizeMap = new Map<string, number>();
+      for (const a of freshApps) {
+        if (a.estimated_size > 0) {
+          refreshSizeMap.set(a.registry_path || a.install_location, a.estimated_size);
+        }
+      }
+      appStore.sizeMap = refreshSizeMap;
+      appStore.isSizesLoaded = true;
+      cachedSizeMap = refreshSizeMap;
+      startTransition(() => setSizeMap(refreshSizeMap));
       await fetchAppMigrationRecords();
     } catch (error) {
       logger.error('刷新应用列表失败:', error);

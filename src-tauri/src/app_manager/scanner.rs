@@ -53,13 +53,14 @@ use winreg::HKEY;
 /// 事件名：`scan-progress`
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanProgressEvent {
-    /// 当前阶段："tier1" | "tier2" | "tier3" | "icons" | "done"
+    /// 当前阶段："tier1" | "tier2" | "tier3" | "icons" | "sizes" | "sizes_done" | "done"
     pub phase: String,
     /// 本批新增应用列表（增量，不含历史已推送的）
     pub apps: Vec<InstalledApp>,
-    /// 图标批次更新（key=install_location, value=icon_base64）
-    /// 仅 phase="icons" 时有值，其余阶段为空
+    /// 图标批次更新：仅 phase="icons" 时有值
     pub icon_updates: Vec<IconUpdate>,
+    /// 大小批次更新：仅 phase="sizes" 时有值
+    pub size_updates: Vec<SizeUpdate>,
     /// 当前累计应用总数（含本批）
     pub total_count: usize,
     /// 是否为最终完成事件
@@ -71,6 +72,14 @@ pub struct ScanProgressEvent {
 pub struct IconUpdate {
     pub install_location: String,
     pub icon_base64: String,
+}
+
+/// 单个应用大小更新
+#[derive(Debug, Clone, Serialize)]
+pub struct SizeUpdate {
+    pub install_location: String,
+    /// 目录大小，单位 KB
+    pub size_kb: u64,
 }
 
 // ============================================================================
@@ -142,6 +151,13 @@ impl AppScanner {
             orbit_log!("INFO", "scanner", "应用数 >= {}，跳过 Tier3 文件系统扫描", EARLY_EXIT_APP_COUNT);
             apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
             self.extract_icons_parallel(&mut apps);
+            // 并行计算目录大小，避免前端通过 100+ 次 IPC 逐个获取
+            apps.par_iter_mut().for_each(|app| {
+                let dir = std::path::Path::new(&app.install_location);
+                if dir.exists() {
+                    app.estimated_size = crate::utils::get_dir_size_safe(dir) / 1024;
+                }
+            });
             // 写入缓存
             if let Ok(mut cache) = self.registry_cache.lock() {
                 *cache = Some((Instant::now(), apps.clone()));
@@ -162,6 +178,13 @@ impl AppScanner {
         dedup_subdirectory_apps(&mut apps);
         apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
         self.extract_icons_parallel(&mut apps);
+        // 并行计算目录大小，避免前端通过 100+ 次 IPC 逐个获取
+        apps.par_iter_mut().for_each(|app| {
+            let dir = std::path::Path::new(&app.install_location);
+            if dir.exists() {
+                app.estimated_size = crate::utils::get_dir_size_safe(dir) / 1024;
+            }
+        });
 
         // 写入缓存
         if let Ok(mut cache) = self.registry_cache.lock() {
@@ -197,6 +220,7 @@ impl AppScanner {
             phase: "tier1".to_string(),
             apps: t1_apps.clone(),
             icon_updates: vec![],
+            size_updates: vec![],
             total_count: t1_apps.len(),
             is_final: false,
         });
@@ -229,6 +253,7 @@ impl AppScanner {
             phase: "tier2".to_string(),
             apps: t2_apps.clone(),
             icon_updates: vec![],
+            size_updates: vec![],
             total_count: all_apps.len() + t2_apps.len(),
             is_final: false,
         });
@@ -249,6 +274,7 @@ impl AppScanner {
                 phase: "tier3".to_string(),
                 apps: t3_apps.clone(),
                 icon_updates: vec![],
+            size_updates: vec![],
                 total_count: all_apps.len() + t3_apps.len(),
                 is_final: false,
             });
@@ -260,6 +286,7 @@ impl AppScanner {
                 phase: "tier3".to_string(),
                 apps: vec![],
                 icon_updates: vec![],
+            size_updates: vec![],
                 total_count: all_apps.len(),
                 is_final: false,
             });
@@ -315,6 +342,7 @@ impl AppScanner {
                     phase: "icons".to_string(),
                     apps: vec![],
                     icon_updates: updates,
+                size_updates: vec![],
                     total_count: total_app_count,
                     is_final: false,
                 });
@@ -332,8 +360,58 @@ impl AppScanner {
             phase: "done".to_string(),
             apps: vec![],
             icon_updates: vec![],
+            size_updates: vec![],
             total_count: all_apps.len(),
             is_final: true,
+        });
+
+        // ── 大小计算后台线程：用 rayon 并行 batched walkdir，通过 sizes 事件推送 ──
+        // 非 C 盘优先（迁移目标盘先展示），C 盘排后
+        // 8 个一批并行 walkdir，控制磁盘 IO 并发
+        let apps_for_sizes = all_apps.clone();
+        let handle_for_sizes = app_handle.clone();
+        std::thread::spawn(move || {
+            let mut ordered = apps_for_sizes;
+            ordered.sort_by_key(|a| {
+                if a.install_location.to_uppercase().starts_with("C:") { 1u8 } else { 0u8 }
+            });
+            let total = ordered.len();
+            let batch_size = 8;
+            for chunk in ordered.chunks(batch_size) {
+                let updates: Vec<SizeUpdate> = chunk
+                    .par_iter()
+                    .map(|app| {
+                        let dir = std::path::Path::new(&app.install_location);
+                        let size_kb = if dir.exists() {
+                            crate::utils::get_dir_size_safe(dir) / 1024
+                        } else if dir.is_symlink() {
+                            0 // 联接目标暂不可达
+                        } else {
+                            0
+                        };
+                        SizeUpdate { install_location: app.install_location.clone(), size_kb }
+                    })
+                    .collect();
+                let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
+                    phase: "sizes".to_string(),
+                    apps: vec![],
+                    icon_updates: vec![],
+                    size_updates: updates,
+                    total_count: total,
+                    is_final: false,
+                });
+                // 批次间短暂休眠，避免磁盘 IO 100% 占满
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            // 大小计算完成
+            let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
+                phase: "sizes_done".to_string(),
+                apps: vec![],
+                icon_updates: vec![],
+                size_updates: vec![],
+                total_count: total,
+                is_final: false,
+            });
         });
 
         orbit_log!("INFO", "scanner", "流式扫描完成: {} 个应用, 总耗时 {}ms", all_apps.len(), total_start.elapsed().as_millis());

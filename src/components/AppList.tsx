@@ -49,7 +49,7 @@ interface AppListProps {
   /** Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮 */
   viapInstallPath?: string;
   /** 流式扫描阶段 */
-  scanPhase?: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'done';
+  scanPhase?: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   /** 当前累计扫描到的应用数 */
   scanTotalCount?: number;
 }
@@ -355,7 +355,7 @@ export default function AppList({
     let total = 0;
     for (const app of filteredApps) {
       const key = app.registry_path || app.install_location;
-      total += sizeMap.get(key) ?? 0;
+      total += sizeMap.get(key) ?? sizeMap.get(app.install_location.toLowerCase()) ?? 0;
     }
     return total;
   }, [filteredApps, sizeMap]);
@@ -526,6 +526,7 @@ export default function AppList({
             {scanPhase === 'tier2' && `已发现 ${scanTotalCount} 个应用，正在扫描文件系统...`}
             {scanPhase === 'tier3' && `已发现 ${scanTotalCount} 个应用，正在加载图标...`}
             {scanPhase === 'icons' && `正在加载图标（${scanTotalCount} 个应用）...`}
+            {scanPhase === 'sizes' && `正在计算目录大小...`}
           </span>
         </div>
       )}
@@ -541,7 +542,7 @@ export default function AppList({
                 ? app.install_location.toLowerCase().replace(/\//g, '\\') ===
                   viapInstallPath.toLowerCase().replace(/\//g, '\\')
                 : false;
-              // 流式扫描完成前，图标尚未全部加载
+              // 流式扫描完成前图标尚未全部加载
               const iconsLoading = !!scanPhase && scanPhase !== 'done' && scanPhase !== 'idle';
               return (
                 <AppRow
@@ -558,7 +559,9 @@ export default function AppList({
                   isSelected={selectedKeys?.has(key)}
                   onToggleSelect={onToggleSelect}
                   showCheckbox={!!onToggleSelect}
-                  appSize={sizeMap?.get(key)}
+                  // 后台线程以 install_location 为 key 推送大小
+                  // 兼容 registry-scanned 应用（key = registry_path）和非注册表应用（key = install_location）
+                  appSize={sizeMap?.get(key) ?? sizeMap?.get(app.install_location.toLowerCase())}
                   isViap={isViapSelf}
                 />
               );

@@ -58,6 +58,7 @@ async fn get_installed_apps_stream(
             phase: "done".to_string(),
             apps: cached.clone(),
             icon_updates: vec![],
+            size_updates: vec![],
             total_count: total,
             is_final: true,
         });

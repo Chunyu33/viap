@@ -11,7 +11,7 @@ export interface AppStoreState {
   isScanned: boolean;
   /** 大小是否已计算完毕 */
   isSizesLoaded: boolean;
-  scanPhase: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'done';
+  scanPhase: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   scanTotalCount: number;
 }
 
