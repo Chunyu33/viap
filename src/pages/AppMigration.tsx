@@ -235,138 +235,112 @@ export default function AppMigration() {
   }
 
   // 流式扫描：初次进入页面时使用，通过 scan-progress 事件分阶段推送
-  // Tier 1 完成后立即显示首批应用（~200ms），图标逐步填充
+  // Tier 1 完成后立即显示首批应用（~200ms），图标和大小在后台静默填入
   // 若 appStore 已缓存（Tab 切换后再回来），直接恢复 state，零 IPC 开销
   async function fetchInstalledApps() {
-    // 缓存命中：已扫描过则直接恢复 state，不发起任何 IPC 调用
+    // ── 缓存命中 ──
     if (appStore.isScanned) {
-      startTransition(() => setApps(appStore.apps));
+      startTransition(() => setApps([...appStore.apps]));
       setScanPhase('done');
       setScanTotalCount(appStore.apps.length);
       setAppsLoading(false);
-
       if (appStore.isSizesLoaded) {
         startTransition(() => setSizeMap(new Map(appStore.sizeMap)));
       } else {
-        // 大小还没算完（上次被打断），继续计算
         loadAppSizes(appStore.apps);
       }
       return;
     }
 
+    // ── 首次扫描 ──
     setAppsLoading(true);
     setScanPhase('idle');
 
-    // 用 Map 维护当前应用列表，key=install_location（小写），value=InstalledApp
-    // Map 让图标更新（O(1) 查找）和应用追加（O(1) 去重）都高效
+    // appMap：扫描期间的临时缓存，仅用于 tier1 预览阶段
     const appMap = new Map<string, InstalledApp>();
 
-    // 注册流式扫描事件监听器
+    // 图标缓冲：合并多批仅用于 tier1 预览期间，
+    // invoke 返回值（fullResult）已含完整图标，图标事件在 done 之后不会到来
+    const pendingIcons = new Map<string, string>();
+    let iconTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function flushIcons() {
+      if (pendingIcons.size === 0) return;
+      if (iconTimer) { clearTimeout(iconTimer); iconTimer = null; }
+      const snap = new Map(pendingIcons);
+      pendingIcons.clear();
+      startTransition(() => {
+        setApps(prev => {
+          let changed = false;
+          const next = prev.map(app => {
+            const b64 = snap.get(app.install_location.toLowerCase());
+            if (b64 && b64 !== app.icon_base64) { changed = true; return { ...app, icon_base64: b64 }; }
+            return app;
+          });
+          return changed ? next : prev;
+        });
+      });
+    }
+
     const unlisten = await listen<ScanProgressEvent>('scan-progress', (event) => {
       const { phase, apps: newApps, icon_updates, total_count, is_final } = event.payload;
 
-      setScanPhase(phase);
-      setScanTotalCount(total_count);
+      // 图标事件不覆写 scanPhase，避免上线文混乱
+      if (phase !== 'icons') {
+        setScanPhase(phase);
+        setScanTotalCount(total_count);
+      }
 
       if (phase === 'tier1' || phase === 'tier2' || phase === 'tier3') {
-        // 追加新应用到 Map（自动去重：相同 install_location 后者覆盖前者）
         for (const app of newApps) {
           appMap.set(app.install_location.toLowerCase(), app);
         }
-
-        // 仅 tier1 更新 React state（注册表数据最可靠，覆盖 ~85% 应用）
-        // tier2/tier3 等 invoke 返回去重结果后再一次性替换，避免用户看到"杂乱"的中间列表
-        if (phase === 'tier1') {
+        if (phase === 'tier1' && newApps.length > 0) {
           const sorted = [...appMap.values()].sort((a, b) =>
             a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase())
           );
           startTransition(() => setApps(sorted));
-
-          // Tier 1 完成后即可关闭 loading
-          if (newApps.length > 0) {
-            setAppsLoading(false);
-          }
+          setAppsLoading(false);
         }
       }
 
       if (phase === 'icons' && icon_updates.length > 0) {
-        // 直接同步更新 appMap + React state，不用 requestIdleCallback
-        // requestIdleCallback 在主线程繁忙（渲染 200+ 列表项）时永不触发，导致图标"卡住"
-        for (const update of icon_updates) {
-          const key = update.install_location.toLowerCase();
-          const existing = appMap.get(key);
-          if (existing) {
-            appMap.set(key, { ...existing, icon_base64: update.icon_base64 });
-          }
+        for (const u of icon_updates) {
+          pendingIcons.set(u.install_location.toLowerCase(), u.icon_base64);
         }
-        startTransition(() => {
-          setApps(prev => {
-            const updated = [...prev];
-            for (const update of icon_updates) {
-              const idx = updated.findIndex(
-                a => a.install_location.toLowerCase() === update.install_location.toLowerCase()
-              );
-              if (idx !== -1 && updated[idx].icon_base64 !== update.icon_base64) {
-                updated[idx] = { ...updated[idx], icon_base64: update.icon_base64 };
-              }
-            }
-            return updated;
-          });
-        });
+        if (iconTimer) clearTimeout(iconTimer);
+        iconTimer = setTimeout(flushIcons, 200);
       }
 
       if (is_final) {
-        // 最终完成：清理监听器
-        scanUnlistenRef.current?.();
-
-        // 缓存命中路径：done 事件携带后端去重后的完整列表，直接信任
-        if (newApps.length > 0) {
-          for (const app of newApps) {
-            appMap.set(app.install_location.toLowerCase(), app);
-          }
-          const sorted = [...appMap.values()].sort((a, b) =>
-            a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase())
-          );
-          startTransition(() => setApps(sorted));
-
-          const finalApps = [...appMap.values()];
-          appStore.apps = finalApps;
-          appStore.isScanned = true;
-          appStore.scanPhase = 'done';
-          appStore.scanTotalCount = finalApps.length;
-
-          setAppsLoading(false);
-          setScanPhase('done');
-          loadAppSizes(finalApps);
-        } else {
-          // 流式扫描路径：done 事件 apps 为空，不在这里写入 appStore
-          // 等待 invoke 返回去重后的完整结果后再最终确定
-          setAppsLoading(false);
-          setScanPhase('done');
-        }
+        setAppsLoading(false);
+        setScanPhase('done');
       }
     });
 
     scanUnlistenRef.current = unlisten;
 
     try {
-      // 触发流式扫描，返回值是后端去重+排序+含图标的最终结果
+      // fullResult 是去重+failsafe+图标的完整结果，唯一的真相源
       const fullResult = await invoke<InstalledApp[]>('get_installed_apps_stream');
 
-      // 流式扫描路径：is_final 未设置 appStore（newApps 为空），此处用去重结果最终确定
-      if (!appStore.isScanned) {
-        appStore.apps = fullResult;
-        appStore.isScanned = true;
-        appStore.scanPhase = 'done';
-        appStore.scanTotalCount = fullResult.length;
-        startTransition(() => setApps(fullResult));
-        loadAppSizes(fullResult);
-      }
-      // 缓存命中路径：is_final 已用 done 事件数据设置好 appStore，无需覆盖
+      // 清理并写入 appStore
+      scanUnlistenRef.current?.();
+      scanUnlistenRef.current = null;
+      if (iconTimer) clearTimeout(iconTimer);
+
+      appStore.apps = fullResult;
+      appStore.isScanned = true;
+      appStore.scanPhase = 'done';
+      appStore.scanTotalCount = fullResult.length;
+      startTransition(() => setApps(fullResult));
+      setScanPhase('done');
+      setAppsLoading(false);
+      loadAppSizes(fullResult);
     } catch (error) {
       logger.error('流式扫描失败:', error);
       scanUnlistenRef.current?.();
-      // 降级：尝试原有的一次性加载
+      scanUnlistenRef.current = null;
       try {
         const fallbackApps = await invoke<InstalledApp[]>('get_installed_apps');
         appStore.apps = fallbackApps;
@@ -375,8 +349,7 @@ export default function AppMigration() {
         appStore.scanTotalCount = fallbackApps.length;
         startTransition(() => setApps(fallbackApps));
         loadAppSizes(fallbackApps);
-      } catch (fallbackError) {
-        logger.error('降级加载也失败:', fallbackError);
+      } catch {
         startTransition(() => setApps([]));
       }
       setAppsLoading(false);
@@ -453,19 +426,31 @@ export default function AppMigration() {
   }
 
   async function handleRefresh() {
-    // 清空 appStore 缓存，下次切 Tab 回来会重新扫描
+    // 先终止所有进行中的扫描监听（图标后台线程的 emit 将无人接收）
+    scanUnlistenRef.current?.();
+    scanUnlistenRef.current = null;
+
+    // 清空 appStore 缓存
     appStore.isScanned = false;
     appStore.isSizesLoaded = false;
     appStore.sizeMap = new Map();
+    appStore.apps = [];
     cachedSizeMap = null;
 
-    // 使用 refresh_apps 绕过缓存强刷注册表扫描，确保迁移后的目录联接路径与迁移记录一致
     try {
+      // refresh_apps 调用后端 scan_all（同步，含图标，不走流式）
       const freshApps = await invoke<InstalledApp[]>('refresh_apps');
-      // 直接写入 store，不需要再走流式扫描
+
       appStore.apps = freshApps;
       appStore.isScanned = true;
+      appStore.scanPhase = 'done';
+      appStore.scanTotalCount = freshApps.length;
+
       startTransition(() => setApps(freshApps));
+      setScanPhase('done');
+      setScanTotalCount(freshApps.length);
+      setAppsLoading(false);
+
       loadAppSizes(freshApps);
     } catch (error) {
       logger.error('刷新应用列表失败:', error);
@@ -473,19 +458,32 @@ export default function AppMigration() {
     await fetchAppMigrationRecords();
   }
 
-  // 手动刷新：清空 appStore 缓存 + 后端缓存，强制全量扫描
+  // 手动刷新：终止监听 + 清空 appStore + 后端强刷全量扫描
   async function handleRefreshApps() {
     setRefreshing(true);
+
+    // 先终止所有进行中的扫描监听
+    scanUnlistenRef.current?.();
+    scanUnlistenRef.current = null;
+
     appStore.isScanned = false;
     appStore.isSizesLoaded = false;
     appStore.sizeMap = new Map();
+    appStore.apps = [];
     cachedSizeMap = null;
 
     try {
       const freshApps = await invoke<InstalledApp[]>('refresh_apps');
       appStore.apps = freshApps;
       appStore.isScanned = true;
+      appStore.scanPhase = 'done';
+      appStore.scanTotalCount = freshApps.length;
+
       startTransition(() => setApps(freshApps));
+      setScanPhase('done');
+      setScanTotalCount(freshApps.length);
+      setAppsLoading(false);
+
       loadAppSizes(freshApps);
       await fetchAppMigrationRecords();
     } catch (error) {
