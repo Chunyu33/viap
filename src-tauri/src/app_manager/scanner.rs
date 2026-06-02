@@ -238,8 +238,10 @@ impl AppScanner {
         }
         all_apps.extend(t2_apps);
 
-        // ── Tier 3：文件系统扫描（未达提前终止阈值时执行）──────────────
-        if all_apps.len() < EARLY_EXIT_APP_COUNT {
+        // ── Tier 3：文件系统扫描 ──────────────────────────────────────
+        // 跳过条件：应用数已达上限 OR 系统冷启动（开机 < 60s，磁盘尚未预热）
+        let skip_tier3 = all_apps.len() >= EARLY_EXIT_APP_COUNT || system_uptime_secs() < 60;
+        if !skip_tier3 {
             let t3_apps = self.scan_filesystem_constrained(&existing_paths);
             orbit_log!("INFO", "scanner", "Tier3 完成: {} 个新应用", t3_apps.len());
 
@@ -253,7 +255,7 @@ impl AppScanner {
 
             all_apps.extend(t3_apps);
         } else {
-            orbit_log!("INFO", "scanner", "应用数 >= {}，跳过 Tier3", EARLY_EXIT_APP_COUNT);
+            orbit_log!("INFO", "scanner", "跳过 Tier3（应用数 {} >= {} 或开机 {}s < 60s）", all_apps.len(), EARLY_EXIT_APP_COUNT, system_uptime_secs());
             let _ = app_handle.emit("scan-progress", ScanProgressEvent {
                 phase: "tier3".to_string(),
                 apps: vec![],
@@ -282,12 +284,11 @@ impl AppScanner {
         all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
 
         // ── 图标提取（分批，每批 20 个，边提取边推送）──────────────────
-        // 图标提取是 IO 密集操作，不用 rayon 并行（机械盘并行反而更慢）
-        // 改为顺序分批，每批完成后立即推送，让前端能逐渐渲染图标
+        // 图标在 done 事件之前提取完成，确保 invoke 返回值包含图标
+        // 前端在 tier1 阶段已渲染首批应用，这批图标补全剩余项的展示
         let icon_batch_size = 20;
         let total_app_count = all_apps.len();
-        let total_batches = (total_app_count + icon_batch_size - 1) / icon_batch_size;
-        for (batch_idx, chunk) in all_apps.chunks_mut(icon_batch_size).enumerate() {
+        for chunk in all_apps.chunks_mut(icon_batch_size) {
             for app in chunk.iter_mut() {
                 if !app.display_icon.is_empty() {
                     app.icon_base64 = crate::system::icon::extract_icon_to_base64(&app.display_icon);
@@ -301,8 +302,6 @@ impl AppScanner {
                     }
                 }
             }
-
-            // 收集本批有效图标推送给前端
             let updates: Vec<IconUpdate> = chunk
                 .iter()
                 .filter(|app| !app.icon_base64.is_empty())
@@ -311,7 +310,6 @@ impl AppScanner {
                     icon_base64: app.icon_base64.clone(),
                 })
                 .collect();
-
             if !updates.is_empty() {
                 let _ = app_handle.emit("scan-progress", ScanProgressEvent {
                     phase: "icons".to_string(),
@@ -321,13 +319,6 @@ impl AppScanner {
                     is_final: false,
                 });
             }
-
-            orbit_log!(
-                "DEBUG", "scanner",
-                "图标批次 {}/{} 完成",
-                batch_idx + 1,
-                total_batches
-            );
         }
 
         // ── 写入内存缓存 ────────────────────────────────────────────────
@@ -336,7 +327,7 @@ impl AppScanner {
         }
         *self.last_full_scan.lock().unwrap() = Some(Instant::now());
 
-        // ── 完成事件 ────────────────────────────────────────────────────
+        // ── 完成事件：图标已全部提取完成，invoke 返回值也包含完整图标 ──
         let _ = app_handle.emit("scan-progress", ScanProgressEvent {
             phase: "done".to_string(),
             apps: vec![],
@@ -717,6 +708,15 @@ lazy_static::lazy_static! {
 // ============================================================================
 // 工具函数
 // ============================================================================
+
+/// 系统开机时长（秒）
+/// 冷启动（< 60s）时磁盘尚未预热，Tier3 文件系统扫描跳过，避免阻塞
+#[cfg(windows)]
+fn system_uptime_secs() -> u64 {
+    sysinfo::System::uptime()
+}
+#[cfg(not(windows))]
+fn system_uptime_secs() -> u64 { u64::MAX }
 
 /// 规范化路径：去除末尾分隔符、转小写
 fn normalize_path(path: &str) -> String {
