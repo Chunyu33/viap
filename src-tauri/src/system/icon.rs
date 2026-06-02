@@ -262,7 +262,7 @@ pub fn extract_icon_to_base64(icon_path: &str) -> String {
     // 一级缓存：内存（ICON_CACHE）
     if let Ok(cache) = ICON_CACHE.lock() {
         if let Some(cached) = cache.get(icon_path) {
-            println!("[icon] mem hit  {}", icon_path);
+            // println!("[icon] mem hit  {}", icon_path);
             return cached.clone();
         }
     }
@@ -275,7 +275,7 @@ pub fn extract_icon_to_base64(icon_path: &str) -> String {
 
     // 二级缓存：磁盘（%APPDATA%/viap/cache/icons/{sha1}.png）
     if let Some(png_bytes) = read_disk_cache(&file_path, icon_index) {
-        println!("[icon] disk hit {}", icon_path);
+        // println!("[icon] disk hit {}", icon_path);
         let base64_str = BASE64_STANDARD.encode(&png_bytes);
         let result = format!("data:image/png;base64,{}", base64_str);
         // 回填内存缓存
@@ -310,7 +310,7 @@ pub fn extract_icon_to_base64(icon_path: &str) -> String {
 
         // 写入两级缓存
         if !base64_result.is_empty() {
-            println!("[icon] extract {}", icon_path);
+            // println!("[icon] extract {}", icon_path);
             // 磁盘缓存：保存原始 PNG 字节（跨重启命中）
             save_disk_cache(&file_path, icon_index, &png_bytes);
             // 内存缓存：保存 Base64 字符串（进程内命中）

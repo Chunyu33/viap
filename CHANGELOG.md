@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.0.6 — 2026-06-02
+
+### 图标持久化缓存
+
+- 新增二级缓存架构：内存缓存（ICON_CACHE）+ 磁盘缓存（`cache/icons/{sha1}.png`），跨重启命中
+- 缓存 key = `sha1(exe_path + icon_index + modified_time)`，exe 升级后 mtime 变化自动失效
+- 首次提取后写入磁盘，后续启动直接读取 PNG，跳过 ExtractIconExW 调用
+
+### 目录大小持久化缓存（SWR）
+
+- 新增 `cache/size_cache.json`，7 天 TTL，采用 Stale-While-Revalidate 策略
+- Phase 1：启动时秒发缓存值，前端立即显示大小
+- Phase 2：后台异步 walkdir 重算真实大小，有变化自动更新缓存并刷新 UI
+- 冷启动/休眠唤醒场景大幅提速，机械硬盘效果显著
+
+### 应用列表排序
+
+- 列表新增列头点击排序：按名称（中文拼音）、按大小升序/降序
+- 纯本地内存排序，无后端调用
+- 刷新列表时自动重置排序状态
+
+---
+
 ## v1.0.5 — 2026-06-02
 
 ### 应用列表加载性能优化

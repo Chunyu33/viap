@@ -123,16 +123,17 @@ viap/
 │   │   ├── utils.rs              # 文件系统工具函数
 │   │   ├── system/               # 系统接口层
 │   │   │   ├── disk_usage.rs     # 磁盘容量/使用率扫描
-│   │   │   └── icon.rs           # EXE/DLL 图标提取 → Base64
+│   │   │   └── icon.rs           # 图标提取（内存缓存 + SHA1 磁盘缓存，跨重启命中）
 │   │   ├── storage/              # 存储层
 │   │   │   ├── data_dir.rs       # 数据目录配置管理
-│   │   │   └── history.rs        # 迁移记录持久化（JSON）
+│   │   │   ├── history.rs        # 迁移记录持久化（JSON）
+│   │   │   └── size_cache.rs     # 目录大小 SWR 缓存（启动秒发缓存，后台重算更新）
 │   │   ├── folder_manager/       # 文件夹管理层
 │   │   │   └── mod.rs            # 大文件夹发现、迁移与恢复
 │   │   └── app_manager/          # 应用管理层
 │   │       ├── mod.rs
-│   │       ├── cache.rs          # 内存级应用缓存（AppCache 全局单例）
-│   │       ├── scanner.rs        # 三级扫描引擎（注册表 + LNK + FS）
+│   │       ├── cache.rs          # 内存级应用缓存（AppCache 全局单例，含图标复用保护）
+│   │       ├── scanner.rs        # 流式扫描引擎（注册表 → LNK → FS 三级，分批推送）
 │   │       ├── migration.rs      # 迁移引擎（6 步流程：验证 → 占用检测 → 空间检查 → 复制 → 删除源 → Junction）
 │   │       ├── uninstaller.rs    # 卸载/残留扫描/强制删除
 │   │       ├── detector.rs       # 特殊目录动态检测
@@ -239,9 +240,10 @@ node scripts/generate-ico.js
 - **三级扫描引擎**：Tier 1 注册表（~85% 命中，<200ms）→ Tier 2 LNK 快捷方式（~10%）→ Tier 3 文件系统扫描（~5%）
 - **流式推送**：每个扫描阶段完成后立即通过 `scan-progress` 事件推送到前端，Tier 1 完成即可显示首批应用
 - **图标分批加载**：每批 20 个顺序提取，边提取边推送，前端实时渲染
-- **大小后台计算**：Rust 后台线程用 rayon 并行 walkdir 计算目录大小，通过 `scan-progress` 事件分批推送，前端零 IO 调度
+- **大小后台计算 + 持久化缓存**：SWR 策略，启动时秒发缓存值，后台异步重算；冷启动/机械硬盘场景大幅提速
 - **`appStore` 模块级单例**：应用列表缓存在模块作用域内，Tab 切换零 IPC 恢复，不重新扫描
 - **搜索/筛选保持**：搜索关键词和筛选条件跨 Tab 保持，用户无感知
+- **列头排序**：点击「名称」或「大小」列头，按拼音/体积升序降序排列，纯本地排序，刷新后重置
 
 ### 应用图标提取
 
@@ -249,7 +251,7 @@ Viap 使用 Windows Win32 API 提取应用的真实图标：
 
 - **ExtractIconExW** - 从 EXE/DLL 文件中提取图标
 - **GetIconInfo / GetDIBits** - 将图标转换为位图数据
-- **图标缓存** - 使用内存缓存避免重复提取，提升性能
+- **两级缓存** - 内存缓存（进程内命中）+ 磁盘缓存（跨重启命中），自动失效
 
 ### 多磁盘显示
 

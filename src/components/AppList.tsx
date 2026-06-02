@@ -1,7 +1,7 @@
 // 应用列表组件 — 桌面工具风格
 // 表格化行布局，紧凑信息密度，弱化操作按钮视觉
 
-import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw, LoaderCircle } from 'lucide-react';
+import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw, LoaderCircle, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { InstalledApp } from '../types';
 import { useState, useMemo, useDeferredValue, memo, useEffect } from 'react';
 import FilterSelect from './FilterSelect';
@@ -314,10 +314,22 @@ export default function AppList({
   const [driveFilter, setDriveFilter] = useState<DriveFilter>(cachedDriveFilter);
   const deferredSearchQuery = useDeferredValue(inputQuery);
 
+  // 排序状态：本地内存排序，刷新时重置
+  const [sortKey, setSortKey] = useState<'name' | 'size' | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
   // 将搜索/筛选状态同步到模块级缓存，跨越 Tab 切换保持
   useEffect(() => { cachedSearchQuery = inputQuery; }, [inputQuery]);
   useEffect(() => { cachedMigrationFilter = migrationFilter; }, [migrationFilter]);
   useEffect(() => { cachedDriveFilter = driveFilter; }, [driveFilter]);
+
+  // 刷新时重置排序状态
+  useEffect(() => {
+    if (refreshing) {
+      setSortKey(null);
+      setSortOrder('asc');
+    }
+  }, [refreshing]);
   const migratedPathSet = useMemo(
     () => new Set(migratedPaths.map((path) => path.toLowerCase())),
     [migratedPaths],
@@ -354,6 +366,41 @@ export default function AppList({
       return true;
     });
   }, [apps, deferredSearchQuery, migrationFilter, driveFilter, migratedPathSet]);
+
+  // 排序点击处理：同 key 三态切换 asc → desc → 清除
+  const handleSort = (key: 'name' | 'size') => {
+    if (sortKey === key) {
+      if (sortOrder === 'asc') {
+        setSortOrder('desc');
+      } else {
+        setSortKey(null);
+        setSortOrder('asc');
+      }
+    } else {
+      setSortKey(key);
+      setSortOrder('asc');
+    }
+  };
+
+  // 本地内存排序，不触发任何后端调用
+  const sortedApps = useMemo(() => {
+    if (!sortKey) return filteredApps;
+    const sorted = [...filteredApps];
+    sorted.sort((a, b) => {
+      let cmp: number;
+      if (sortKey === 'name') {
+        cmp = a.display_name.localeCompare(b.display_name, 'zh-CN');
+      } else {
+        const keyA = a.registry_path || a.install_location;
+        const keyB = b.registry_path || b.install_location;
+        const sizeA = sizeMap?.get(keyA) ?? sizeMap?.get(a.install_location.toLowerCase()) ?? 0;
+        const sizeB = sizeMap?.get(keyB) ?? sizeMap?.get(b.install_location.toLowerCase()) ?? 0;
+        cmp = sizeA - sizeB;
+      }
+      return sortOrder === 'desc' ? -cmp : cmp;
+    });
+    return sorted;
+  }, [filteredApps, sortKey, sortOrder, sizeMap]);
 
   // 根据当前筛选/搜索结果聚合大小，跟随过滤条件实时变化
   const filteredTotalSize = useMemo(() => {
@@ -515,8 +562,34 @@ export default function AppList({
       >
         <div className="flex-shrink-0 w-4" />
         <div className="flex-shrink-0 w-7" />
-        <span className="flex-1 min-w-0">名称</span>
-        <span className="flex-shrink-0 w-16 text-right">大小</span>
+        <button
+          className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
+          onClick={() => handleSort('name')}
+          style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
+        >
+          名称
+          {sortKey === 'name' ? (
+            sortOrder === 'asc'
+              ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+              : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+          ) : (
+            <ArrowUpDown className="h-3 w-3 opacity-30" />
+          )}
+        </button>
+        <button
+          className="flex-shrink-0 w-16 flex items-center justify-end gap-0.5 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
+          onClick={() => handleSort('size')}
+          style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
+        >
+          大小
+          {sortKey === 'size' ? (
+            sortOrder === 'asc'
+              ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+              : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+          ) : (
+            <ArrowUpDown className="h-3 w-3 opacity-30" />
+          )}
+        </button>
         <span className="flex-shrink-0" style={{ width: '150px', textAlign: 'right' }}>操作</span>
       </div>
 
@@ -540,9 +613,9 @@ export default function AppList({
 
       {/* list body */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {filteredApps.length > 0 ? (
+        {sortedApps.length > 0 ? (
           <div className="flex flex-col">
-            {filteredApps.map((app) => {
+            {sortedApps.map((app) => {
               const key = app.registry_path || app.install_location;
               const isViapSelf = isViapSelfApp(app);
               // 流式扫描完成前图标尚未全部加载

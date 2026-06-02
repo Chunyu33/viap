@@ -53,18 +53,20 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'v__VERSION__'
           releaseBody: |
-            ## v1.0.5 更新内容
+            ## v1.0.6 更新内容
 
-            ### 应用列表加载性能优化
-            - 大小计算从前端 IPC 调用改为 Rust 后台线程统一计算，通过 scan-progress 事件推送
-            - 刷新列表时 rayon 并行 walkdir，返回结果直接携带准确大小
-            - 前端不再做任何 IO 调度，仅被动接收数据填入
+            ### 图标磁盘持久化缓存
+            - 图标提取结果缓存到磁盘（cache/icons/），跨重启命中，exe 升级后自动失效
+            - 冷启动/休眠唤醒后图标加载大幅提速，避免重复 ExtractIconExW 调用
 
-            ### Bug 修复
-            - 修复大小事件丢失导致列表不显示大小的问题
-            - 修复大小 key 不匹配导致部分应用大小显示为空的问题
-            - 修复刷新按钮无明显反馈的问题（新增刷新进度条）
-            - 修复 Viap 自身在批量迁移中可选择的问题
+            ### 目录大小持久化缓存
+            - 新增 size_cache.json，采用 SWR（Stale-While-Revalidate）策略
+            - 启动时秒发缓存值，后台异步重算真实大小，有变化自动刷新
+            - 机械硬盘、冷启动场景扫描耗时显著降低
+
+            ### 应用列表排序
+            - 新增列头点击排序：按名称（拼音）、按大小升序/降序
+            - 纯本地内存排序，点击刷新后自动重置
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/ethan0925/viap/blob/main/CHANGELOG.md)
