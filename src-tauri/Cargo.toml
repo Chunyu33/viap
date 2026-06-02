@@ -46,6 +46,8 @@ walkdir = "2.5"
 trash = "5"
 # 并行迭代器，用于注册表扫描、文件系统扫描并行化
 rayon = "1.10"
+# SHA1 哈希，用于图标磁盘缓存 key 计算
+sha1 = "0.10"
 
 # Windows API 绑定，用于提取应用图标
 [target.'cfg(windows)'.dependencies]
