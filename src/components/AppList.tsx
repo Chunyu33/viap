@@ -298,7 +298,7 @@ export default function AppList({
   refreshing = false,
   viapInstallPath,
   scanPhase,
-  scanTotalCount = 0,
+  // scanTotalCount = 0,
 }: AppListProps) {
   const defaultOpenFolder = async (app: InstalledApp) => {
     try {
@@ -529,10 +529,10 @@ export default function AppList({
           <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
           <span>
             {refreshing && '正在刷新应用列表...'}
-            {!refreshing && scanPhase === 'tier1' && `已发现 ${scanTotalCount} 个应用，正在扫描快捷方式...`}
-            {!refreshing && scanPhase === 'tier2' && `已发现 ${scanTotalCount} 个应用，正在扫描文件系统...`}
-            {!refreshing && scanPhase === 'tier3' && `已发现 ${scanTotalCount} 个应用，正在加载图标...`}
-            {!refreshing && scanPhase === 'icons' && `正在加载图标（${scanTotalCount} 个应用）...`}
+            {!refreshing && scanPhase === 'tier1' && `正在扫描快捷方式...`}
+            {!refreshing && scanPhase === 'tier2' && `正在扫描文件系统...`}
+            {!refreshing && scanPhase === 'tier3' && `正在加载图标...`}
+            {!refreshing && scanPhase === 'icons' && `正在加载图标...`}
             {!refreshing && scanPhase === 'sizes' && `正在计算目录大小...`}
           </span>
         </div>

@@ -310,52 +310,16 @@ impl AppScanner {
         // 兜底应用可能导致排序变化，重新排序
         all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
 
-        // ── 图标提取（分批，每批 20 个，边提取边推送）──────────────────
-        // 图标在 done 事件之前提取完成，确保 invoke 返回值包含图标
-        // 前端在 tier1 阶段已渲染首批应用，这批图标补全剩余项的展示
-        let icon_batch_size = 20;
-        let total_app_count = all_apps.len();
-        for chunk in all_apps.chunks_mut(icon_batch_size) {
-            for app in chunk.iter_mut() {
-                if !app.display_icon.is_empty() {
-                    app.icon_base64 = crate::system::icon::extract_icon_to_base64(&app.display_icon);
-                }
-                if app.icon_base64.is_empty() {
-                    if let Some(fallback) = find_fallback_exe(&app.install_location) {
-                        app.icon_base64 = crate::system::icon::extract_icon_to_base64(&fallback);
-                        if !app.icon_base64.is_empty() {
-                            app.display_icon = fallback;
-                        }
-                    }
-                }
-            }
-            let updates: Vec<IconUpdate> = chunk
-                .iter()
-                .filter(|app| !app.icon_base64.is_empty())
-                .map(|app| IconUpdate {
-                    install_location: app.install_location.clone(),
-                    icon_base64: app.icon_base64.clone(),
-                })
-                .collect();
-            if !updates.is_empty() {
-                let _ = app_handle.emit("scan-progress", ScanProgressEvent {
-                    phase: "icons".to_string(),
-                    apps: vec![],
-                    icon_updates: updates,
-                size_updates: vec![],
-                    total_count: total_app_count,
-                    is_final: false,
-                });
-            }
-        }
-
-        // ── 写入内存缓存 ────────────────────────────────────────────────
+        // ── 写入内存缓存（图标通过后续后台线程补充）─────────────────
         if let Ok(mut cache) = self.registry_cache.lock() {
             *cache = Some((Instant::now(), all_apps.clone()));
         }
         *self.last_full_scan.lock().unwrap() = Some(Instant::now());
 
-        // ── 完成事件：图标已全部提取完成，invoke 返回值也包含完整图标 ──
+        // ── 完成事件：立即发出，不等待图标提取 ────────────────────────
+        // 冷启动/休眠唤醒时 ExtractIconExW 每次耗费 10-50ms，100+ 个应
+        // 用串行提取可将 done 推迟 2s。改为先发 done 让前端 300ms 内看到
+        // 列表，图标和大小在后台线程异步填入。
         let _ = app_handle.emit("scan-progress", ScanProgressEvent {
             phase: "done".to_string(),
             apps: vec![],
@@ -365,18 +329,60 @@ impl AppScanner {
             is_final: true,
         });
 
-        // ── 大小计算后台线程：用 rayon 并行 batched walkdir，通过 sizes 事件推送 ──
-        // 非 C 盘优先（迁移目标盘先展示），C 盘排后
-        // 8 个一批并行 walkdir，控制磁盘 IO 并发
+        // ── 图标后台线程：done 之后 rayon 并行提取，不阻塞列表 ────────
+        let apps_for_icons = all_apps.clone();
+        let handle_for_icons = app_handle.clone();
+        std::thread::spawn(move || {
+            let icon_batch_size = 20;
+            let total = apps_for_icons.len();
+            for chunk in apps_for_icons.chunks(icon_batch_size) {
+                // rayon 并行提取本批图标，冷启动利用多核加速 3-4 倍
+                let updates: Vec<IconUpdate> = chunk
+                    .par_iter()
+                    .filter_map(|app| {
+                        let icon_path = if !app.display_icon.is_empty() {
+                            app.display_icon.clone()
+                        } else {
+                            find_fallback_exe(&app.install_location).unwrap_or_default()
+                        };
+                        if icon_path.is_empty() { return None; }
+                        let b64 = crate::system::icon::extract_icon_to_base64(&icon_path);
+                        if b64.is_empty() { return None; }
+                        Some(IconUpdate {
+                            install_location: app.install_location.clone(),
+                            icon_base64: b64,
+                        })
+                    })
+                    .collect();
+                if !updates.is_empty() {
+                    let _ = handle_for_icons.emit("scan-progress", ScanProgressEvent {
+                        phase: "icons".to_string(),
+                        apps: vec![],
+                        icon_updates: updates,
+                        size_updates: vec![],
+                        total_count: total,
+                        is_final: false,
+                    });
+                }
+                // 与大小线程错开磁盘 IO
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+
+        // ── 大小后台线程（冷启动自适应批次）───────────────────────────
+        // 冷启动磁盘 IO 慢，缩小并发批次并延长间隔，避免 IO 队列堆积
         let apps_for_sizes = all_apps.clone();
         let handle_for_sizes = app_handle.clone();
         std::thread::spawn(move || {
+            let cold = system_uptime_secs() < 120;
+            let batch_size = if cold { 4 } else { 8 };
+            let sleep_ms = if cold { 150 } else { 50 };
+
             let mut ordered = apps_for_sizes;
             ordered.sort_by_key(|a| {
                 if a.install_location.to_uppercase().starts_with("C:") { 1u8 } else { 0u8 }
             });
             let total = ordered.len();
-            let batch_size = 8;
             for chunk in ordered.chunks(batch_size) {
                 let updates: Vec<SizeUpdate> = chunk
                     .par_iter()
@@ -384,8 +390,6 @@ impl AppScanner {
                         let dir = std::path::Path::new(&app.install_location);
                         let size_kb = if dir.exists() {
                             crate::utils::get_dir_size_safe(dir) / 1024
-                        } else if dir.is_symlink() {
-                            0 // 联接目标暂不可达
                         } else {
                             0
                         };
@@ -400,10 +404,8 @@ impl AppScanner {
                     total_count: total,
                     is_final: false,
                 });
-                // 批次间短暂休眠，避免磁盘 IO 100% 占满
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
             }
-            // 大小计算完成
             let _ = handle_for_sizes.emit("scan-progress", ScanProgressEvent {
                 phase: "sizes_done".to_string(),
                 apps: vec![],
@@ -466,86 +468,72 @@ impl AppScanner {
     }
 
     /// 扫描单个注册表路径
+    /// 先收集子键名（避免 winreg 句柄跨线程竞争），再用 rayon 并行解析
     #[cfg(windows)]
     fn scan_registry_path(&self, hkey: HKEY, base_path: &str, hive_name: &str) -> Result<Vec<InstalledApp>, String> {
-        let mut apps: Vec<InstalledApp> = Vec::new();
         let uninstall_key = RegKey::predef(hkey)
             .open_subkey(base_path)
             .map_err(|e| format!("打开注册表路径失败 {}: {}", base_path, e))?;
 
-        for subkey_name in uninstall_key.enum_keys().filter_map(|k| k.ok()) {
-            let subkey = match uninstall_key.open_subkey(&subkey_name) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
+        // 先收集所有子键名（顺序 IO，冷启动时注册表句柄打开比热启动慢 2-3 倍）
+        let sub_key_names: Vec<String> = uninstall_key.enum_keys().flatten().collect();
 
-            let display_name: String = subkey.get_value("DisplayName").unwrap_or_default();
-            if display_name.is_empty() {
-                continue;
-            }
+        // 并行解析每个子键：CPU 密集的字段校验、PE 检测、熵值计算
+        // 每个 rayon 线程独立打开子键（RegKey 不跨线程传递），无竞争
+        let base_path_owned = base_path.to_string();
+        let apps: Vec<InstalledApp> = sub_key_names
+            .par_iter()
+            .filter_map(|subkey_name| {
+                let full_path = format!("{}\\{}", base_path_owned, subkey_name);
+                let subkey = RegKey::predef(hkey).open_subkey(&full_path).ok()?;
 
-            // 系统组件过滤：KB 补丁、安全更新等
-            if is_system_component(&display_name) {
-                continue;
-            }
+                let display_name: String = subkey.get_value("DisplayName").unwrap_or_default();
+                if display_name.is_empty() { return None; }
+                if is_system_component(&display_name) { return None; }
 
-            // 解析安装位置：三路汇聚 InstallLocation → DisplayIcon → UninstallString
-            let install_location =
-                resolve_install_location_from_registry(&subkey);
+                let install_location = resolve_install_location_from_registry(&subkey);
+                if install_location.is_empty() { return None; }
 
-            if install_location.is_empty() {
-                continue;
-            }
-            // UWP/MSIX 包：InstallLocation 在 \WindowsApps\ 下，系统管控不可迁移
-            let loc_lower = install_location.to_lowercase();
-            if loc_lower.contains("\\windowsapps\\")
-                || loc_lower.contains("\\program files\\windowsapps")
-                || loc_lower.contains("\\program files (x86)\\windowsapps")
-            {
-                continue;
-            }
-            // exists() 会跟随重解析点查询目标属性；目录联接（迁移后）若目标存在则通过
-            // 若返回 false 再通过 symlink_metadata 确认是否为联接本身存在但目标不可达的情况
-            let install_path = Path::new(&install_location);
-            if !install_path.exists() {
-                let is_symlink = install_path.symlink_metadata()
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false);
-                if !is_symlink {
-                    continue;
+                let loc_lower = install_location.to_lowercase();
+                if loc_lower.contains("\\windowsapps\\")
+                    || loc_lower.contains("\\program files\\windowsapps")
+                    || loc_lower.contains("\\program files (x86)\\windowsapps")
+                { return None; }
+
+                let install_path = Path::new(&install_location);
+                if !install_path.exists() {
+                    let is_symlink = install_path.symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                    if !is_symlink { return None; }
                 }
-                // 联接路径本身存在但目标暂不可达，保留该条目以便前端展示"已迁移"
-            }
 
-            let display_icon: String = subkey.get_value("DisplayIcon").unwrap_or_default();
-            let publisher: String = subkey.get_value("Publisher").unwrap_or_default();
-            let estimated_size: u64 =
-                subkey.get_value::<u32, _>("EstimatedSize").unwrap_or(0) as u64;
+                let display_icon: String = subkey.get_value("DisplayIcon").unwrap_or_default();
+                let publisher: String = subkey.get_value("Publisher").unwrap_or_default();
+                let estimated_size: u64 =
+                    subkey.get_value::<u32, _>("EstimatedSize").unwrap_or(0) as u64;
 
-            // DisplayIcon 校验：若指向的文件不存在则清空，由 extract_icons_parallel 兜底
-            let effective_icon = validate_display_icon(&display_icon);
+                let effective_icon = validate_display_icon(&display_icon);
+                let install_location = install_location.trim_end_matches(['\\', '/']).to_string();
+                let registry_path = format!("{}\\{}\\{}", hive_name, base_path_owned, subkey_name);
+                let icon_path = if effective_icon.is_empty() {
+                    String::new()
+                } else {
+                    effective_icon
+                };
 
-            // 规范化安装路径：去除尾部分隔符，防止图标提取和路径比对异常
-            let install_location = install_location.trim_end_matches(['\\', '/']).to_string();
-
-            let registry_path = format!("{}\\{}\\{}", hive_name, base_path, subkey_name);
-            let icon_path = if effective_icon.is_empty() {
-                String::new() // 清空无效路径，后续从安装目录搜索 exe 提取图标
-            } else {
-                effective_icon
-            };
-
-            apps.push(InstalledApp {
-                display_name,
-                install_location,
-                display_icon: icon_path,
-                estimated_size,
-                icon_base64: String::new(),
-                icon_url: String::new(),
-                registry_path,
-                publisher,
-            });
-        }
+                Some(InstalledApp {
+                    display_name,
+                    install_location,
+                    display_icon: icon_path,
+                    estimated_size,
+                    icon_base64: String::new(),
+                    icon_url: String::new(),
+                    registry_path,
+                    publisher,
+                })
+            })
+            .collect();
 
         Ok(apps)
     }

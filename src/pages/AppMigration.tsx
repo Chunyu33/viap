@@ -320,6 +320,9 @@ export default function AppMigration() {
             if (b64 && b64 !== app.icon_base64) { changed = true; return { ...app, icon_base64: b64 }; }
             return app;
           });
+          // 同步回写 appStore，防止 Tab 切换后图标丢失
+          // flushIcons 只更新了 React state，appStore.apps 仍持有时刻全空的对象
+          if (changed) { appStore.apps = next; }
           return changed ? next : prev;
         });
       });
