@@ -1066,9 +1066,11 @@ export default function AppMigration() {
   }
 
   function handleSelectAll() {
-    const selectable = apps.filter((a) => !migratedPaths.some(
-      (p) => p.toLowerCase() === a.install_location.toLowerCase()
-    ));
+    const selectable = apps.filter((a) =>
+      !migratedPaths.some(
+        (p) => p.toLowerCase() === a.install_location.toLowerCase()
+      ) && !isViapSelf(a) // Viap 自身不可迁移，排除在批量操作之外
+    );
     setSelectedKeys((prev) => {
       if (prev.size === selectable.length) {
         return new Set();

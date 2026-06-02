@@ -153,7 +153,7 @@ const AppRow = memo(function AppRow({
       }}
     >
       {/* checkbox */}
-      {showCheckbox && !isMigrated && (
+      {showCheckbox && !isMigrated && !isViap && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleSelect?.(app); }}
           className={`flex-shrink-0 w-4 h-4 rounded-sm border flex items-center justify-center ${
@@ -169,7 +169,7 @@ const AppRow = memo(function AppRow({
           {isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
         </button>
       )}
-      {showCheckbox && isMigrated && <div className="flex-shrink-0 w-4 h-4" />}
+      {(showCheckbox && (isMigrated || isViap)) && <div className="flex-shrink-0 w-4 h-4" />}
 
       {/* left bar for migrated */}
       {isMigrated && (
@@ -326,6 +326,12 @@ export default function AppList({
   const isAppMigrated = (app: InstalledApp): boolean =>
     migratedPathSet.has(app.install_location.toLowerCase());
 
+  const isViapSelfApp = (app: InstalledApp): boolean =>
+    viapInstallPath
+      ? app.install_location.toLowerCase().replace(/\//g, '\\') ===
+        viapInstallPath.toLowerCase().replace(/\//g, '\\')
+      : false;
+
   const availableDrives = useMemo(() => extractDriveLetters(apps), [apps]);
   const otherDrives = useMemo(() => availableDrives.filter(d => d !== 'C'), [availableDrives]);
 
@@ -367,8 +373,8 @@ export default function AppList({
   ];
 
   const selectableCount = useMemo(
-    () => filteredApps.filter(a => !isAppMigrated(a)).length,
-    [filteredApps, migratedPathSet],
+    () => filteredApps.filter(a => !isAppMigrated(a) && !isViapSelfApp(a)).length,
+    [filteredApps, migratedPathSet, viapInstallPath],
   );
 
   const driveOptions: { value: DriveFilter; label: string }[] = [
@@ -514,19 +520,20 @@ export default function AppList({
         <span className="flex-shrink-0" style={{ width: '150px', textAlign: 'right' }}>操作</span>
       </div>
 
-      {/* 流式扫描进度提示：仅在扫描进行中显示，不遮挡已加载的应用 */}
-      {scanPhase && scanPhase !== 'done' && (
+      {/* 扫描/刷新进度提示：仅在进行中显示，不遮挡已加载的应用 */}
+      {((scanPhase && scanPhase !== 'done') || refreshing) && (
         <div
           className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md mb-1 flex-shrink-0"
           style={{ background: 'var(--color-primary-light)', color: 'var(--color-primary)' }}
         >
           <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
           <span>
-            {scanPhase === 'tier1' && `已发现 ${scanTotalCount} 个应用，正在扫描快捷方式...`}
-            {scanPhase === 'tier2' && `已发现 ${scanTotalCount} 个应用，正在扫描文件系统...`}
-            {scanPhase === 'tier3' && `已发现 ${scanTotalCount} 个应用，正在加载图标...`}
-            {scanPhase === 'icons' && `正在加载图标（${scanTotalCount} 个应用）...`}
-            {scanPhase === 'sizes' && `正在计算目录大小...`}
+            {refreshing && '正在刷新应用列表...'}
+            {!refreshing && scanPhase === 'tier1' && `已发现 ${scanTotalCount} 个应用，正在扫描快捷方式...`}
+            {!refreshing && scanPhase === 'tier2' && `已发现 ${scanTotalCount} 个应用，正在扫描文件系统...`}
+            {!refreshing && scanPhase === 'tier3' && `已发现 ${scanTotalCount} 个应用，正在加载图标...`}
+            {!refreshing && scanPhase === 'icons' && `正在加载图标（${scanTotalCount} 个应用）...`}
+            {!refreshing && scanPhase === 'sizes' && `正在计算目录大小...`}
           </span>
         </div>
       )}
@@ -537,11 +544,7 @@ export default function AppList({
           <div className="flex flex-col">
             {filteredApps.map((app) => {
               const key = app.registry_path || app.install_location;
-              // 判断当前应用是否为 Viap 自身（大小写不敏感）
-              const isViapSelf = viapInstallPath
-                ? app.install_location.toLowerCase().replace(/\//g, '\\') ===
-                  viapInstallPath.toLowerCase().replace(/\//g, '\\')
-                : false;
+              const isViapSelf = isViapSelfApp(app);
               // 流式扫描完成前图标尚未全部加载
               const iconsLoading = !!scanPhase && scanPhase !== 'done' && scanPhase !== 'idle';
               return (
