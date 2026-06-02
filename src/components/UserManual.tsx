@@ -222,7 +222,10 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
               迁移操作涉及文件系统的底层修改。强烈建议在操作前关闭相关应用，
               并在迁移重要数据前进行独立备份。
             </li>
-            <li style={{ color: 'red' }}>
+            <li className='text-red-500'>
+              请勿删除本软件的数据存储目录，否则会丢失所有配置和迁移历史记录。
+            </li>
+            <li className='text-red-500'>
               请勿将本软件用于迁移系统关键目录（如 Windows 目录、Edge浏览器、硬件驱动、Program Files 中的系统组件等），
               此类操作可能导致系统不稳定、甚至崩溃。
             </li>

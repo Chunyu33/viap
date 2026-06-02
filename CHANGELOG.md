@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.0.5 — 2026-06-02
+
+### 应用列表加载性能优化
+
+- **大小计算移入 Rust 后台线程**：前端不再通过 IPC 获取目录大小，改为后台线程通过 `scan-progress` 事件分批推送
+- **`scan_all()` 并行大小计算**：刷新列表时在 Rust 端用 rayon 并行 walkdir，返回结果直接携带准确大小
+- **前端纯被动接收**：删除 `loadAppSizes` 函数，前端不再做任何 IO 调度，仅接收 `sizes`/`sizes_done` 事件填入 sizeMap
+- **大小计算排序**：非 C 盘优先计算（迁移目标盘先展示），C 盘排后，8 个一批并行 walkdir 控制磁盘 IO 并发
+
+### Bug 修复
+
+- 修复移除 `loadAppSizes` 后 listener 提前清理导致大小事件丢失的问题
+- 修复大小更新 key 不匹配（后端以 install_location 推送，前端以 registry_path 查找）
+- 修复刷新按钮反馈不明显（新增「正在刷新应用列表...」进度条）
+- 修复 Viap 自身在批量迁移中可选择的问题（选择框 disabled + 全选排除）
+
+---
+
 ## v1.0.4 — 2026-06-01
 
 ### 危险路径分级拦截（BLOCKED / WARNING 两级体系）
