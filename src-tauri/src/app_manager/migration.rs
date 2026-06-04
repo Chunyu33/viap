@@ -309,7 +309,10 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
         Err(e) if e.kind() != std::io::ErrorKind::PermissionDenied => return Err(e),
         Err(_) => {}
     }
+
     // 因只读文件导致失败：遍历清除只读属性后逐个删除
+    let mut first_dir_error: Option<(PathBuf, std::io::Error)> = None;
+
     for entry in WalkDir::new(path).contents_first(true).into_iter().filter_map(|e| e.ok()) {
         let entry_path = entry.path();
         // 清除只读属性，否则 remove_file / remove_dir 会失败
@@ -318,17 +321,33 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
             let _ = fs::set_permissions(entry_path, perms);
         }
         if entry_path.is_file() || entry_path.is_symlink() {
-            // 文件删除失败不能忽略：说明文件仍被进程持有，整个删除操作必须中止
-            // 否则源目录删除不完整，后续 symlink_dir 因目标已存在而失败
-            if let Err(e) = fs::remove_file(entry_path) {
-                return Err(e);
-            }
+            // 文件删除失败直接返回，说明文件仍被进程持有
+            fs::remove_file(entry_path)?;
         } else if entry_path.is_dir() && entry_path != path {
-            // 子目录删除失败可忽略（contents_first 保证子项先删，空目录才轮到自己）
-            let _ = fs::remove_dir(entry_path);
+            if let Err(e) = fs::remove_dir(entry_path) {
+                // 记录第一个失败的子目录，用于最终错误消息诊断
+                if first_dir_error.is_none() {
+                    first_dir_error = Some((entry_path.to_path_buf(), e));
+                }
+            }
         }
     }
-    fs::remove_dir(path)
+
+    // 最终删除根目录
+    fs::remove_dir(path).map_err(|e| {
+        // 优先用子目录失败信息（更具体），没有则用根目录删除失败信息
+        if let Some((failed_dir, dir_err)) = first_dir_error {
+            std::io::Error::new(
+                dir_err.kind(),
+                format!(
+                    "子目录删除失败（目录：{}，原因：{}）；根目录删除失败：{}",
+                    failed_dir.display(), dir_err, e
+                ),
+            )
+        } else {
+            e
+        }
+    })
 }
 
 /// 危险路径分级
@@ -396,6 +415,12 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         DangerRule { pattern: r"bromite\application",                   level: DangerLevel::Blocked, category: "浏览器", label: "Bromite 安装目录" },
 
         // ═══════════════════════════════════════
+        // BLOCKED — Microsoft Office ClickToRun
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"microsoft office\root",                    level: DangerLevel::Blocked, category: "办公软件", label: "Microsoft Office 安装目录" },
+        DangerRule { pattern: r"programdata\microsoft\clicktorun",         level: DangerLevel::Blocked, category: "办公软件", label: "Office ClickToRun 服务目录" },
+
+        // ═══════════════════════════════════════
         // BLOCKED — GPU / 显卡驱动
         // ═══════════════════════════════════════
         DangerRule { pattern: r"nvidia corporation\installer2",         level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动安装目录" },
@@ -405,6 +430,11 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         DangerRule { pattern: r"advanced micro devices",               level: DangerLevel::Blocked, category: "GPU驱动", label: "AMD 驱动目录" },
         DangerRule { pattern: r"intel\graphics",                       level: DangerLevel::Blocked, category: "GPU驱动", label: "Intel 核显驱动目录" },
         DangerRule { pattern: r"intel\intelgraphicscontrolpanel",      level: DangerLevel::Blocked, category: "GPU驱动", label: "Intel 显卡控制面板目录" },
+
+        // ═══════════════════════════════════════
+        // BLOCKED — .NET Runtime
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"c:\program files\dotnet",                 level: DangerLevel::Blocked, category: "运行时", label: ".NET Runtime 安装目录" },
 
         // ═══════════════════════════════════════
         // WARNING — 虚拟化软件
@@ -421,6 +451,9 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         DangerRule { pattern: r"mongodb",              level: DangerLevel::Warning, category: "数据库", label: "MongoDB 数据目录" },
         DangerRule { pattern: r"redis",                level: DangerLevel::Warning, category: "缓存服务", label: "Redis 数据目录" },
         DangerRule { pattern: r"microsoft sql server", level: DangerLevel::Warning, category: "数据库", label: "SQL Server 数据目录" },
+        DangerRule { pattern: r"elasticsearch",          level: DangerLevel::Warning, category: "数据库", label: "Elasticsearch 数据目录" },
+        DangerRule { pattern: r"rabbitmq",               level: DangerLevel::Warning, category: "数据库", label: "RabbitMQ 数据目录" },
+        DangerRule { pattern: r"kafka",                  level: DangerLevel::Warning, category: "数据库", label: "Kafka 数据目录" },
 
         // ═══════════════════════════════════════
         // WARNING — 安全软件
@@ -428,6 +461,14 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         DangerRule { pattern: r"windows defender", level: DangerLevel::Warning, category: "安全软件", label: "Windows Defender 目录" },
         DangerRule { pattern: r"kaspersky",        level: DangerLevel::Warning, category: "安全软件", label: "Kaspersky 目录" },
         DangerRule { pattern: r"eset",             level: DangerLevel::Warning, category: "安全软件", label: "ESET 目录" },
+        DangerRule { pattern: r"norton",          level: DangerLevel::Warning, category: "安全软件", label: "Norton 安全软件目录" },
+        DangerRule { pattern: r"symantec",        level: DangerLevel::Warning, category: "安全软件", label: "Symantec 目录" },
+        DangerRule { pattern: r"mcafee",          level: DangerLevel::Warning, category: "安全软件", label: "McAfee/Trellix 目录" },
+        DangerRule { pattern: r"360安全",          level: DangerLevel::Warning, category: "安全软件", label: "360 安全卫士目录" },
+        DangerRule { pattern: r"360total",        level: DangerLevel::Warning, category: "安全软件", label: "360 Total Security 目录" },
+        DangerRule { pattern: r"huorong",         level: DangerLevel::Warning, category: "安全软件", label: "火绒安全目录" },
+        DangerRule { pattern: r"bitdefender",     level: DangerLevel::Warning, category: "安全软件", label: "Bitdefender 目录" },
+        DangerRule { pattern: r"malwarebytes",    level: DangerLevel::Warning, category: "安全软件", label: "Malwarebytes 目录" },
 
         // ═══════════════════════════════════════
         // WARNING — 系统组件缓存
@@ -447,6 +488,11 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         // ═══════════════════════════════════════
         DangerRule { pattern: r"wechat files",  level: DangerLevel::Warning, category: "缓存服务", label: "微信数据目录" },
         DangerRule { pattern: r"tencent files", level: DangerLevel::Warning, category: "缓存服务", label: "腾讯系应用数据目录" },
+
+        // ═══════════════════════════════════════
+        // WARNING — 游戏平台库
+        // ═══════════════════════════════════════
+        DangerRule { pattern: r"steamapps", level: DangerLevel::Warning, category: "游戏平台", label: "Steam 游戏库目录" },
 
         // ═══════════════════════════════════════
         // WARNING — ProgramData 根目录
@@ -472,6 +518,8 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
                         "系统目录" => "迁移系统核心目录会导致 Windows 组件崩溃，无法开机。",
                         "浏览器"   => "浏览器安装目录含有系统级注册和自动修复机制，迁移后 Junction 会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器的缓存目录（在「数据迁移」页面的快捷项中）。",
                         "GPU驱动"  => "GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。",
+                        "办公软件" => "Microsoft Office 使用 ClickToRun 虚拟化安装机制，迁移后自动修复服务会覆盖 Junction，COM 注册表记录无法跟随迁移。",
+                        "运行时"   => ".NET 运行时路径被大量应用和系统组件硬编码引用，迁移后依赖 .NET 的应用将无法启动。",
                         "开发工具" => "开发工具目录含被 Windows 内核内存映射的 DLL 和后台语言服务，复制阶段容易失败，迁移前需完全退出所有相关进程。",
                         _          => "该目录包含系统级组件，不支持迁移。",
                     };
@@ -827,16 +875,20 @@ pub fn migrate_app(
         emit_progress(app_handle, &source, 93.0, "linking", "正在创建目录链接...", source_size, source_size);
 
         if let Err(e) = remove_directory_robust(source_path) {
-            // 删除源目录失败，说明复制过程中有新进程锁定了文件
+            // 删除源目录失败，可能原因：文件被进程锁定 / 权限不足 / 只读保护
             // 必须清理 target，将状态恢复到迁移前（source 完整，target 不存在）
             let _ = fs::remove_dir_all(&target_path);
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
-                    "迁移中止：原目录中有文件在复制期间被程序重新锁定。\n\
-                     路径: {}\n原因: {}\n\n\
-                     已自动清理目标副本，原数据完好无损。\n\
-                     请关闭相关程序（如浏览器、游戏等）后重试。",
+                    "删除原目录失败，迁移中止。\n\
+                     已自动清理目标副本，原数据完好无损。\n\n\
+                     失败路径：{}\n\
+                     失败原因：{}\n\n\
+                     常见解决方案：\n\
+                     • 文件被程序占用 → 关闭相关程序（浏览器、游戏、编辑器等）后重试\n\
+                     • 权限不足 → 以管理员身份运行本程序后重试\n\
+                     • 只读保护 → 以管理员身份运行后程序会自动解除只读属性",
                     source, e
                 ),
                 new_path: None,
@@ -874,26 +926,66 @@ pub fn migrate_app(
                     new_path: Some(target_path_str),
                 })
             }
-            Err(e) => {
-                // source 已删除，target 是唯一数据副本，无法自动回滚
-                // 相比旧方案（rename 备份），新方案消除了 rename 成功但 symlink
-                // 失败且 rename-back 也失败的双重失败极端情况
-                Ok(MigrationResult {
-                    success: false,
-                    message: format!(
-                        "创建目录链接失败：{}\n\n\
-                         您的数据完整保存在：{}\n\
-                         请手动处理：\n\
-                         1. 将 {} 目录移回 {}\n\
-                         2. 或手动创建从 {} 到 {} 的目录联接\n\
-                         （以管理员身份运行 cmd：mklink /J \"{}\" \"{}\"）",
-                        e, target_path_str,
-                        target_path_str, source,
-                        target_path_str, source,
-                        source, target_path_str
-                    ),
-                    new_path: None,
-                })
+            Err(symlink_err) => {
+                // source 已删除，target 是唯一数据副本
+                // 策略：优先尝试 rename 把 target 移回 source（同盘原子操作，成功率高）
+                // rename 失败（跨盘）时不再做 copy-then-delete（可能制造两个残缺副本），
+                // 而是保留 target 并返回明确的恢复指引
+                let rollback_result = fs::rename(&target_path, source_path);
+
+                match rollback_result {
+                    Ok(_) => {
+                        // 回滚成功：source 已恢复，target 已清除，用户数据安全
+                        // 清理可能遗留的空父目录（如 D:\Apps 是本次迁移新建的，rename 后成为空目录）
+                        if let Some(parent) = target_path.parent() {
+                            let _ = fs::remove_dir(parent);
+                        }
+                        Ok(MigrationResult {
+                            success: false,
+                            message: format!(
+                                "创建目录链接失败，已自动将数据恢复到原位置。\n\n\
+                                 失败原因：{}\n\n\
+                                 常见原因及解决方案：\n\
+                                 • 权限不足 → 请以管理员身份运行本程序后重试\n\
+                                 • 源路径被占用 → 请重启后重试\n\n\
+                                 您的数据已完整恢复到：{}",
+                                symlink_err, source
+                            ),
+                            new_path: None,
+                        })
+                    }
+                    Err(rename_err) => {
+                        // rename 失败（通常是跨盘 os error 17），target 仍是唯一副本
+                        // 此时数据安全但位置不在原处，必须明确告知用户
+                        orbit_log!(
+                            "ERROR", "migration",
+                            "symlink 失败且 rename 回滚也失败。symlink_err={}, rename_err={}, data_at={}",
+                            symlink_err, rename_err, target_path_str
+                        );
+                        Ok(MigrationResult {
+                            success: false,
+                            // 用特殊前缀让前端识别「数据已转移但链接失败」状态
+                            message: format!(
+                                "SYMLINK_FAILED_DATA_AT_TARGET:{target}\n\
+                                 创建目录链接失败，自动回滚也未成功。\n\n\
+                                 ⚠️ 您的数据完整保存在新位置，原位置已清空：\n\
+                                 数据位置：{target}\n\n\
+                                 请选择以下任一方式恢复：\n\
+                                 方式一（推荐）：将数据移回原位置\n\
+                                 　把「{target}」整个目录移动到「{source}」\n\n\
+                                 方式二：手动创建目录链接\n\
+                                 　以管理员身份运行 CMD，执行：\n\
+                                 　mklink /J \"{source}\" \"{target}\"\n\n\
+                                 链接失败原因：{symlink_err}",
+                                target = target_path_str,
+                                source = source,
+                                symlink_err = symlink_err,
+                            ),
+                            // 返回 target 路径，让前端知道数据在哪
+                            new_path: Some(target_path_str.clone()),
+                        })
+                    }
+                }
             }
         }
     }

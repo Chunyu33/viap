@@ -2,12 +2,11 @@
 // 企业级模块化设计
 // 集成主题系统，支持浅色/深色/跟随系统三种模式
 
-import { useEffect, useState, createContext, useContext } from 'react';
+import { useEffect, useState, createContext, useContext, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FolderSync, FolderArchive, History, Settings as SettingsIcon } from 'lucide-react';
 import TitleBar from './components/TitleBar';
 import DiskUsageBar from './components/DiskUsageBar';
-import PageTransition from './components/PageTransition';
 import UpdateNotification from './components/UpdateNotification';
 import AppMigration from './pages/AppMigration';
 import LargeFolders from './pages/LargeFolders';
@@ -46,6 +45,26 @@ const tabs: { id: TabType; label: string; Icon: typeof FolderSync }[] = [
   { id: 'settings', label: '设置', Icon: SettingsIcon },
 ];
 
+/** 页面容器 — absolute 填充父容器，底部滑入 + 淡入过渡 */
+function PageContainer({ visible, children }: { visible: boolean; children: ReactNode }) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        opacity: visible ? 1 : 0,
+        transform: visible ? 'translateY(0)' : 'translateY(18px)',
+        pointerEvents: visible ? 'auto' : 'none',
+        zIndex: visible ? 1 : 0,
+        transition: 'opacity 200ms ease-out, transform 220ms cubic-bezier(0.16, 1, 0.3, 1)',
+        overflow: 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('migration');
   const [disks, setDisks] = useState<DiskUsage[]>([]);
@@ -77,21 +96,6 @@ function App() {
   useEffect(() => {
     fetchDiskUsage();
   }, []);
-
-  function renderContent() {
-    switch (activeTab) {
-      case 'migration':
-        return <AppMigration />;
-      case 'folders':
-        return <LargeFolders />;
-      case 'history':
-        return <MigrationHistory />;
-      case 'settings':
-        return <Settings />;
-      default:
-        return <AppMigration />;
-    }
-  }
 
   return (
     <ThemeContext.Provider value={themeState}>
@@ -144,11 +148,20 @@ function App() {
         {/* 标题栏下方：更新通知条 */}
         <UpdateNotification />
 
-        {/* 页面内容区域 */}
-        <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)' }}>
-          <PageTransition pageKey={activeTab} className="h-full">
-            {renderContent()}
-          </PageTransition>
+        {/* 页面内容区域 — CSS display 切换，组件实例保持存活，opacity 过渡动画 */}
+        <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)', position: 'relative' }}>
+          <PageContainer visible={activeTab === 'migration'}>
+            <AppMigration visible={activeTab === 'migration'} />
+          </PageContainer>
+          <PageContainer visible={activeTab === 'folders'}>
+            <LargeFolders visible={activeTab === 'folders'} />
+          </PageContainer>
+          <PageContainer visible={activeTab === 'history'}>
+            <MigrationHistory visible={activeTab === 'history'} />
+          </PageContainer>
+          <PageContainer visible={activeTab === 'settings'}>
+            <Settings visible={activeTab === 'settings'} />
+          </PageContainer>
         </main>
       </div>
       </TabNavigationContext.Provider>

@@ -113,6 +113,11 @@
   margin: 0;
 }
 
+/* 按钮行按下反馈 — 类似移动端菜单 click 效果 */
+.setting-item-clickable:active {
+  background: var(--bg-row-hover) !important;
+}
+
 .setting-desc {
   font-size: var(--font-size-xs);
   color: var(--text-tertiary);

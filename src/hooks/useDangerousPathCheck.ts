@@ -5,7 +5,7 @@
 
 import { useCallback } from 'react';
 
-type DangerCategory = '系统目录' | '浏览器' | 'GPU驱动' | '虚拟化' | '数据库' | '缓存服务' | '安全软件' | '系统组件' | '开发工具';
+type DangerCategory = '系统目录' | '浏览器' | 'GPU驱动' | '办公软件' | '运行时' | '虚拟化' | '数据库' | '缓存服务' | '安全软件' | '系统组件' | '开发工具' | '游戏平台';
 
 interface DangerRule {
   pattern: string;
@@ -115,6 +115,20 @@ const DANGER_RULES: DangerRule[] = [
   },
 
   // ═══════════════════════════════════════════
+  // BLOCKED — Microsoft Office ClickToRun
+  // ═══════════════════════════════════════════
+  {
+    pattern: 'microsoft office\\root',
+    level: 'BLOCKED', category: '办公软件', label: 'Microsoft Office 安装目录',
+    reason: 'Office 使用 ClickToRun 虚拟化文件系统，安装路径写进 COM 注册和激活记录。ClickToRun 自我修复服务会把 Junction 识别为损坏安装并自动覆盖，迁移无效且可能触发重新安装。',
+  },
+  {
+    pattern: 'programdata\\microsoft\\clicktorun',
+    level: 'BLOCKED', category: '办公软件', label: 'Office ClickToRun 服务目录',
+    reason: 'ClickToRun 服务目录含 Office 虚拟化文件系统的核心组件，迁移后 Office 所有应用无法启动。',
+  },
+
+  // ═══════════════════════════════════════════
   // BLOCKED — GPU / 显卡驱动
   // 特征：驱动 DLL 路径硬编码进系统服务注册表（HKLM\SYSTEM\CurrentControlSet\Services）；
   //       迁移后驱动服务找不到 DLL，轻则降级到基本显示适配器，重则蓝屏
@@ -153,6 +167,15 @@ const DANGER_RULES: DangerRule[] = [
     pattern: 'intel\\intelgraphicscontrolpanel',
     level: 'BLOCKED', category: 'GPU驱动', label: 'Intel 显卡控制面板目录',
     reason: 'Intel 显卡控制面板路径写死进系统服务注册表，迁移后控制面板失效。',
+  },
+
+  // ═══════════════════════════════════════════
+  // BLOCKED — .NET Runtime
+  // ═══════════════════════════════════════════
+  {
+    pattern: 'c:\\program files\\dotnet',
+    level: 'BLOCKED', category: '运行时', label: '.NET Runtime 安装目录',
+    reason: '.NET 运行时路径被大量应用的 runtimeconfig.json 和 DOTNET_ROOT 环境变量硬编码引用，迁移后所有依赖 .NET 的应用（包括部分系统组件）将无法启动。',
   },
 
   // ═══════════════════════════════════════════
@@ -205,6 +228,21 @@ const DANGER_RULES: DangerRule[] = [
     level: 'WARNING', category: '数据库', label: 'SQL Server 数据目录',
     reason: 'SQL Server 数据文件（.mdf/.ldf）路径记录在系统目录中，迁移后需通过 SQL Server Management Studio 重新附加数据库。',
   },
+  {
+    pattern: 'elasticsearch',
+    level: 'WARNING', category: '数据库', label: 'Elasticsearch 数据目录',
+    reason: '含事务日志和持久化数据文件，迁移前需完全停止相关服务，迁移后 Junction 通常可透明使用，但建议验证服务能否正常启动。',
+  },
+  {
+    pattern: 'rabbitmq',
+    level: 'WARNING', category: '数据库', label: 'RabbitMQ 数据目录',
+    reason: '含事务日志和持久化数据文件，迁移前需完全停止相关服务，迁移后 Junction 通常可透明使用，但建议验证服务能否正常启动。',
+  },
+  {
+    pattern: 'kafka',
+    level: 'WARNING', category: '数据库', label: 'Kafka 数据目录',
+    reason: '含事务日志和持久化数据文件，迁移前需完全停止相关服务，迁移后 Junction 通常可透明使用，但建议验证服务能否正常启动。',
+  },
 
   // ═══════════════════════════════════════════
   // WARNING — 安全软件
@@ -225,6 +263,46 @@ const DANGER_RULES: DangerRule[] = [
     pattern: 'eset',
     level: 'WARNING', category: '安全软件', label: 'ESET 目录',
     reason: 'ESET 含内核级驱动，迁移后驱动可能无法加载，需重新安装 ESET 恢复防护功能。',
+  },
+  {
+    pattern: 'norton',
+    level: 'WARNING', category: '安全软件', label: 'Norton 安全软件目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: 'symantec',
+    level: 'WARNING', category: '安全软件', label: 'Symantec 目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: 'mcafee',
+    level: 'WARNING', category: '安全软件', label: 'McAfee/Trellix 目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: '360安全',
+    level: 'WARNING', category: '安全软件', label: '360 安全卫士目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: '360total',
+    level: 'WARNING', category: '安全软件', label: '360 Total Security 目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: 'huorong',
+    level: 'WARNING', category: '安全软件', label: '火绒安全目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: 'bitdefender',
+    level: 'WARNING', category: '安全软件', label: 'Bitdefender 目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
+  },
+  {
+    pattern: 'malwarebytes',
+    level: 'WARNING', category: '安全软件', label: 'Malwarebytes 目录',
+    reason: '含内核级驱动组件，路径写进系统服务注册表，迁移后驱动可能无法加载，需重新安装该安全软件恢复防护。',
   },
 
   // ═══════════════════════════════════════════
@@ -277,6 +355,15 @@ const DANGER_RULES: DangerRule[] = [
   },
 
   // ═══════════════════════════════════════════
+  // WARNING — 游戏平台库
+  // ═══════════════════════════════════════════
+  {
+    pattern: 'steamapps',
+    level: 'WARNING', category: '游戏平台', label: 'Steam 游戏库目录',
+    reason: 'Steam 游戏库迁移后，Steam 客户端无法自动识别新路径下的游戏，需在 Steam 设置的「下载」→「Steam 库文件夹」中手动添加新路径并重新扫描游戏。游戏数据本身不会丢失。',
+  },
+
+  // ═══════════════════════════════════════════
   // WARNING — ProgramData 根目录
   // 注意：必须排在 BLOCKED 的 c:\programdata\microsoft\windows 之后，
   // 确保更具体的子路径先被 BLOCKED 命中，不会降级到 WARNING
@@ -293,6 +380,8 @@ const BLOCKED_CATEGORY_TIPS: Record<string, string> = {
   '系统目录': '迁移系统核心目录会导致 Windows 组件崩溃，无法开机。',
   '浏览器': '浏览器安装目录含系统级注册和自动修复机制，迁移后链接会被自动覆盖，且所有扩展插件将损坏。\n如需释放空间，请迁移浏览器缓存（在「数据迁移」页面的「应用数据」分区中）。',
   'GPU驱动': 'GPU 驱动路径写死进系统服务注册表，迁移后驱动无法加载，轻则降级到基本显示模式，重则蓝屏。',
+  '办公软件': 'Microsoft Office 使用 ClickToRun 虚拟化安装机制，迁移后自动修复服务会覆盖 Junction 并触发重装，且 COM 注册表记录无法跟随迁移，Office 全系应用将无法启动。',
+  '运行时': '.NET 运行时路径被大量应用和系统组件硬编码引用，迁移后依赖 .NET 的应用将无法启动。',
   '开发工具': '开发工具目录含被 Windows 内核内存映射的 DLL 和后台语言服务，复制阶段容易失败，迁移前需完全退出所有相关进程。',
 };
 
@@ -316,6 +405,7 @@ Viap 作者对因迁移此类目录导致的数据损失不承担责任。`;
 export function useDangerousPathCheck(): {
   checkBlocked: (sourcePath: string) => string | null;
   checkWarning: (sourcePath: string) => WarningInfo | null;
+  isBlockedPath: (sourcePath: string) => boolean;
 } {
   /**
    * 路径匹配：支持 ^pattern$ 精确匹配（如 ^c:\users$ 只匹配根目录，不匹配子目录），
@@ -358,5 +448,15 @@ export function useDangerousPathCheck(): {
     return null;
   }, []);
 
-  return { checkBlocked, checkWarning };
+  /** 仅判断路径是否为 BLOCKED 级别（不生成错误消息），用于列表过滤 */
+  const isBlockedPath = useCallback((sourcePath: string): boolean => {
+    const normalized = sourcePath.toLowerCase().replace(/\//g, '\\');
+    for (const rule of DANGER_RULES) {
+      if (rule.level !== 'BLOCKED') continue;
+      if (matchPath(normalized, rule.pattern)) return true;
+    }
+    return false;
+  }, []);
+
+  return { checkBlocked, checkWarning, isBlockedPath };
 }

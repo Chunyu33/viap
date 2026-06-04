@@ -1,20 +1,16 @@
 // 应用列表组件 — 桌面工具风格
 // 表格化行布局，紧凑信息密度，弱化操作按钮视觉
 
-import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw, LoaderCircle, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Package, Search, X, Link2, Check, ArrowRightLeft, FolderOpen, RotateCw, LoaderCircle, ArrowUpDown, ArrowUp, ArrowDown, ShieldCheck, ShieldOff } from 'lucide-react';
 import { InstalledApp } from '../types';
 import { useState, useMemo, useDeferredValue, memo, useEffect } from 'react';
 import FilterSelect from './FilterSelect';
 import EmptyState from './EmptyState';
+import { useViapStore } from '../store';
+import { useDangerousPathCheck } from '../hooks/useDangerousPathCheck';
 
 type MigrationFilter = 'all' | 'migrated' | 'not_migrated';
 type DriveFilter = 'all' | 'c' | 'other';
-
-// 模块级状态缓存：Tab 切换时 AppList 被卸载，搜索/筛选条件保留在此
-// 下次挂载时自动恢复，用户无感知
-let cachedSearchQuery = '';
-let cachedMigrationFilter: MigrationFilter = 'all';
-let cachedDriveFilter: DriveFilter = 'all';
 
 function extractDriveLetters(apps: InstalledApp[]): string[] {
   const drives = new Set<string>();
@@ -309,27 +305,32 @@ export default function AppList({
     }
   };
   const handleOpenFolder = onOpenFolder ?? defaultOpenFolder;
-  const [inputQuery, setInputQuery] = useState(cachedSearchQuery);
-  const [migrationFilter, setMigrationFilter] = useState<MigrationFilter>(cachedMigrationFilter);
-  const [driveFilter, setDriveFilter] = useState<DriveFilter>(cachedDriveFilter);
+  // ── Zustand 全局 UI 状态：跨 Tab 保持 ──
+  const searchQuery = useViapStore((s) => s.searchQuery);
+  const setSearchQuery = useViapStore((s) => s.setSearchQuery);
+  const migrationFilter = useViapStore((s) => s.migrationFilter);
+  const setMigrationFilter = useViapStore((s) => s.setMigrationFilter);
+  const driveFilter = useViapStore((s) => s.driveFilter as DriveFilter);
+  const setDriveFilter = useViapStore((s) => s.setDriveFilter);
+  const sortKey = useViapStore((s) => s.sortKey);
+  const sortOrder = useViapStore((s) => s.sortOrder);
+  const setSort = useViapStore((s) => s.setSort);
+  const resetUI = useViapStore((s) => s.resetUI);
+
+  // BLOCKED 应用显隐切换：默认隐藏，仅展示可安全操作的应用
+  const [showBlockedApps, setShowBlockedApps] = useState(false);
+  const { isBlockedPath } = useDangerousPathCheck();
+
+  const [inputQuery, setInputQuery] = useState(searchQuery);
   const deferredSearchQuery = useDeferredValue(inputQuery);
 
-  // 排序状态：本地内存排序，刷新时重置
-  const [sortKey, setSortKey] = useState<'name' | 'size' | null>(null);
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-
-  // 将搜索/筛选状态同步到模块级缓存，跨越 Tab 切换保持
-  useEffect(() => { cachedSearchQuery = inputQuery; }, [inputQuery]);
-  useEffect(() => { cachedMigrationFilter = migrationFilter; }, [migrationFilter]);
-  useEffect(() => { cachedDriveFilter = driveFilter; }, [driveFilter]);
+  // 同步 inputQuery → store.searchQuery（用于跨 Tab 恢复）
+  useEffect(() => { setSearchQuery(inputQuery); }, [inputQuery, setSearchQuery]);
 
   // 刷新时重置排序状态
   useEffect(() => {
-    if (refreshing) {
-      setSortKey(null);
-      setSortOrder('asc');
-    }
-  }, [refreshing]);
+    if (refreshing) { resetUI(); }
+  }, [refreshing, resetUI]);
   const migratedPathSet = useMemo(
     () => new Set(migratedPaths.map((path) => path.toLowerCase())),
     [migratedPaths],
@@ -344,7 +345,14 @@ export default function AppList({
         viapInstallPath.toLowerCase().replace(/\//g, '\\')
       : false;
 
-  const availableDrives = useMemo(() => extractDriveLetters(apps), [apps]);
+  // 可见应用（受 BLOCKED 过滤影响）：用于筛选下拉选项的动态列表
+  // 避免隐藏的 BLOCKED 应用所在盘符仍出现在盘符筛选中
+  const visibleApps = useMemo(() => {
+    if (showBlockedApps) return apps;
+    return apps.filter(app => !isBlockedPath(app.install_location));
+  }, [apps, showBlockedApps, isBlockedPath]);
+
+  const availableDrives = useMemo(() => extractDriveLetters(visibleApps), [visibleApps]);
   const otherDrives = useMemo(() => availableDrives.filter(d => d !== 'C'), [availableDrives]);
 
   const filteredApps = useMemo(() => {
@@ -363,22 +371,24 @@ export default function AppList({
         if (driveFilter === 'c' && dl !== 'C') return false;
         if (driveFilter === 'other' && dl === 'C') return false;
       }
+      // BLOCKED 应用默认隐藏（系统目录/浏览器/GPU 驱动等不可迁移项）
+      if (!showBlockedApps && isBlockedPath(app.install_location)) {
+        return false;
+      }
       return true;
     });
-  }, [apps, deferredSearchQuery, migrationFilter, driveFilter, migratedPathSet]);
+  }, [apps, deferredSearchQuery, migrationFilter, driveFilter, migratedPathSet, showBlockedApps, isBlockedPath]);
 
   // 排序点击处理：同 key 三态切换 asc → desc → 清除
   const handleSort = (key: 'name' | 'size') => {
     if (sortKey === key) {
       if (sortOrder === 'asc') {
-        setSortOrder('desc');
+        setSort(key, 'desc');
       } else {
-        setSortKey(null);
-        setSortOrder('asc');
+        setSort(null, 'asc');
       }
     } else {
-      setSortKey(key);
-      setSortOrder('asc');
+      setSort(key, 'asc');
     }
   };
 
@@ -414,7 +424,7 @@ export default function AppList({
   }, [filteredApps, sizeMap]);
 
   const migrationOptions: { value: MigrationFilter; label: string }[] = [
-    { value: 'all', label: '全部状态' },
+    { value: 'all', label: '全部' },
     { value: 'migrated', label: '已迁移' },
     { value: 'not_migrated', label: '未迁移' },
   ];
@@ -499,17 +509,36 @@ export default function AppList({
           options={driveOptions}
           className="w-[120px]"
         />
-        <span
-          className="text-[11px] flex-shrink-0 ml-1 flex items-center gap-1"
-          style={{ color: 'var(--text-tertiary)' }}
-        >
-          {filteredApps.length} 个
+        {/* BLOCKED 应用显隐切换 + 刷新 */}
+        <span className="text-[11px] flex-shrink-0 ml-1 flex items-center gap-1">
+          <button
+            onClick={() => setShowBlockedApps(!showBlockedApps)}
+            className="flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
+            style={{
+              background: 'transparent',
+              borderColor: 'var(--border-color)',
+            }}
+            title={showBlockedApps ? '隐藏不可迁移的系统应用' : '显示所有应用（含不可迁移项）'}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+          >
+            {showBlockedApps
+              ? <ShieldOff className="w-3.5 h-3.5" style={{ color: 'var(--color-warning)' }} />
+              : <ShieldCheck className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
+            }
+          </button>
           {onRefresh && (
             <button
               onClick={onRefresh}
-              className="btn btn-ghost btn-icon w-5 h-5 flex items-center justify-center"
+              className="flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
+              style={{
+                background: 'transparent',
+                borderColor: 'var(--border-color)',
+              }}
               title="刷新应用列表"
               disabled={refreshing}
+              onMouseEnter={(e) => { if (!refreshing) (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
               <RotateCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
@@ -650,7 +679,7 @@ export default function AppList({
         )}
       </div>
 
-      {/* footer: 总占用 — 大小数据与列表解耦，仅在此处渲染一次 */}
+      {/* footer: 应用总数 + 总占用 */}
       <div
         className="flex-shrink-0 flex items-center gap-2 text-[12px]"
         style={{
@@ -659,6 +688,13 @@ export default function AppList({
           borderTop: '1px solid var(--border-color)',
         }}
       >
+        <span className="tabular-nums" style={{ color: 'var(--text-primary)' }}>
+          <span className="mr-1 font-bold" style={{ color: 'var(--text-primary)' }}>
+            {filteredApps.length}
+          </span>
+          个应用
+        </span>
+        <span style={{ color: 'var(--border-color-strong)' }}>·</span>
         {sizesLoading ? (
           <span className="inline-block w-3 h-3 border border-[var(--color-primary)] border-t-transparent rounded-full animate-spin" />
         ) : (

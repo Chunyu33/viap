@@ -8,10 +8,11 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useUpdater } from '../hooks/useUpdater';
 import AppIconSvg from '../assets/icon.svg';
 import {
-  FolderCog, ChevronRight, User, Mail,
+  FolderCog, ChevronRight, Copy, Check,
   FolderArchive, Trash2, RefreshCw,
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
-  Github, Video, ExternalLink, BookOpen, Heart, Rocket,
+  Github, ExternalLink, BookOpen, Heart, Rocket,
+  Video, Users, MessageSquare,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -19,6 +20,7 @@ import Toast, { useToast } from '../components/Toast';
 import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
+import Modal from '../components/Modal';
 import type { DataDirConfig, GhostLinkPreview } from '../types';
 
 interface MigrationStats {
@@ -46,14 +48,8 @@ function formatSize(bytes: number): string {
 const APP_INFO = {
   name: 'Viap',
   description: 'Windows 应用管理与存储重定向工具',
-  author: 'Evan Lau',
   email: '1378813463@qq.com',
 };
-
-const ABOUT_ITEMS = [
-  { label: '作者', value: APP_INFO.author, icon: User },
-  { label: '邮箱', value: APP_INFO.email, icon: Mail },
-];
 
 const SETTINGS_KEY = 'viap_settings';
 // 默认目标路径初始为空，由用户手动配置；仅允许选择 C 盘以外的目录
@@ -122,7 +118,101 @@ function SectionHeader({ label }: { label: string }) {
   );
 }
 
-export default function Settings() {
+/** 问题反馈弹窗 — 复用 Modal 组件，展示邮箱/GitHub Issues/QQ群 */
+function FeedbackModal({ isOpen, onClose, email, copiedLabel, onCopy }: {
+  isOpen: boolean;
+  onClose: () => void;
+  email: string;
+  copiedLabel: string | null;
+  onCopy: (text: string, label: string) => void;
+}) {
+  const ISSUES_URL = 'https://github.com/Chunyu33/viap/issues';
+  const QQ_GROUP = '834582563';
+
+  // 弹窗内复制的样式：左侧标签 + 右侧值 + 复制/打开按钮
+  const rowStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '12px 0', borderBottom: '1px solid var(--border-color)',
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)',
+  };
+  const valueStyle: React.CSSProperties = {
+    fontSize: '12px', color: 'var(--text-tertiary)', fontFamily: 'monospace',
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="反馈/建议" width={480}>
+      {/* 邮箱 */}
+      <div style={rowStyle}>
+        <span style={labelStyle}>📧 邮箱</span>
+        <div className="flex items-center gap-2">
+          <span style={valueStyle}>{email}</span>
+          <button
+            onClick={() => onCopy(email, 'email')}
+            className="flex items-center gap-1 text-[11px] transition-colors cursor-pointer border-none bg-transparent"
+            style={{ color: copiedLabel === 'email' ? 'var(--color-primary)' : 'var(--text-tertiary)' }}
+          >
+            {copiedLabel === 'email'
+              ? <Check className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
+              : <Copy className="w-3 h-3" />
+            }
+            {copiedLabel === 'email' ? '已复制' : '复制'}
+          </button>
+        </div>
+      </div>
+
+      {/* GitHub Issues */}
+      <div style={rowStyle}>
+        <span style={labelStyle}>🔗 GitHub Issues</span>
+        <div className="flex items-center gap-2">
+          <a
+            href={ISSUES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-[11px] no-underline transition-colors cursor-pointer"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            打开 <ExternalLink className="w-3 h-3" />
+          </a>
+          <span style={{ color: 'var(--border-color)', fontSize: '11px' }}>|</span>
+          <button
+            onClick={() => onCopy(ISSUES_URL, 'issues')}
+            className="flex items-center gap-1 text-[11px] transition-colors cursor-pointer border-none bg-transparent"
+            style={{ color: copiedLabel === 'issues' ? 'var(--color-primary)' : 'var(--text-tertiary)' }}
+          >
+            {copiedLabel === 'issues'
+              ? <Check className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
+              : <Copy className="w-3 h-3" />
+            }
+            {copiedLabel === 'issues' ? '已复制' : '复制'}
+          </button>
+        </div>
+      </div>
+
+      {/* QQ 交流群 */}
+      <div style={{ ...rowStyle, borderBottom: 'none' }}>
+        <span style={labelStyle}>💬 QQ交流群</span>
+        <div className="flex items-center gap-2">
+          <span style={valueStyle}>{QQ_GROUP}</span>
+          <button
+            onClick={() => onCopy(QQ_GROUP, 'feedback-qq')}
+            className="flex items-center gap-1 text-[11px] transition-colors cursor-pointer border-none bg-transparent"
+            style={{ color: copiedLabel === 'feedback-qq' ? 'var(--color-primary)' : 'var(--text-tertiary)' }}
+          >
+            {copiedLabel === 'feedback-qq'
+              ? <Check className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
+              : <Copy className="w-3 h-3" />
+            }
+            {copiedLabel === 'feedback-qq' ? '已复制' : '复制'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [stats, setStats] = useState<MigrationStats | null>(null);
   const [cleaning, setCleaning] = useState(false);
@@ -132,10 +222,21 @@ export default function Settings() {
   const [manualOpen, setManualOpen] = useState(false);
   const [donateModalOpen, setDonateModalOpen] = useState(false);
   const [promoModalOpen, setPromoModalOpen] = useState(false);
+  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('...');
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const currentYear = new Date().getFullYear();
+
+  /** 一键复制到剪贴板，成功后短暂显示已复制状态 */
+  async function handleCopy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLabel(label);
+      setTimeout(() => setCopiedLabel(null), 1500);
+    } catch { /* 剪贴板不可用则静默忽略 */ }
+  }
 
   const { toast, showToast, hideToast } = useToast();
   const themeState = useThemeContext();
@@ -287,7 +388,7 @@ export default function Settings() {
           <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
             {/* 默认应用迁移目录 */}
             <button onClick={handleSelectAppTargetPath}
-              className="setting-item w-full text-left"
+              className="setting-item setting-item-clickable w-full text-left"
               style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
@@ -308,8 +409,8 @@ export default function Settings() {
             </button>
             {/* 默认数据迁移目录 */}
             <button onClick={handleSelectDataTargetPath}
-              className="setting-item w-full text-left"
-              style={{ padding: '10px 14px', cursor: 'pointer' }}>
+              className="setting-item setting-item-clickable w-full text-left"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
                   <FolderArchive className="w-4 h-4" style={{ color: 'var(--color-warning)' }} />
@@ -528,7 +629,7 @@ export default function Settings() {
           <SectionHeader label="帮助" />
           <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
             <button onClick={() => setManualOpen(true)}
-              className="setting-item w-full text-left"
+              className="setting-item setting-item-clickable w-full text-left"
               style={{ padding: '10px 14px', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-primary-light)' }}>
@@ -560,20 +661,8 @@ export default function Settings() {
               </div>
               <span className="badge badge-primary">v{appVersion}</span>
             </div>
-            {ABOUT_ITEMS.map((item) => (
-              <div key={item.label} className="setting-item"
-                style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
-                    <item.icon className="w-4 h-4" style={{ color: 'var(--text-tertiary)' }} />
-                  </div>
-                  <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>{item.label}</span>
-                </div>
-                <span className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>{item.value}</span>
-              </div>
-            ))}
             {/* GitHub */}
-            <a href="https://github.com/Chunyu33" target="_blank" rel="noopener noreferrer"
+            <a href="https://github.com/Chunyu33/viap" target="_blank" rel="noopener noreferrer"
               className="setting-item no-underline"
               style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
@@ -587,26 +676,65 @@ export default function Settings() {
                 <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
               </div>
             </a>
-            {/* Bilibili */}
-            <a href="https://space.bilibili.com/387797235" target="_blank" rel="noopener noreferrer"
-              className="setting-item no-underline"
-              style={{ padding: '10px 14px', cursor: 'pointer' }}>
+            {/* B站/抖音同名 */}
+            <div className="setting-item"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
                   <Video className="w-4 h-4" style={{ color: 'var(--text-tertiary)' }} />
                 </div>
-                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>Bilibili</span>
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>B站/抖音同名</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Evan的像素空间</span>
-                <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
+              <button
+                onClick={() => handleCopy('Evan的像素空间', 'bilibili')}
+                className="flex items-center gap-1.5 text-[12px] transition-colors cursor-pointer border-none bg-transparent"
+                style={{ color: copiedLabel === 'bilibili' ? 'var(--color-primary)' : 'var(--text-tertiary)' }}
+              >
+                <span>Evan的像素空间</span>
+                {copiedLabel === 'bilibili'
+                  ? <Check className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
+                  : <Copy className="w-3 h-3" />
+                }
+              </button>
+            </div>
+            {/* QQ交流群 */}
+            <div className="setting-item"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <Users className="w-4 h-4" style={{ color: 'var(--text-tertiary)' }} />
+                </div>
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>QQ交流群</span>
               </div>
-            </a>
+              <button
+                onClick={() => handleCopy('834582563', 'qq')}
+                className="flex items-center gap-1.5 text-[12px] transition-colors cursor-pointer border-none bg-transparent"
+                style={{ color: copiedLabel === 'qq' ? 'var(--color-primary)' : 'var(--text-tertiary)' }}
+              >
+                <span>834582563</span>
+                {copiedLabel === 'qq'
+                  ? <Check className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
+                  : <Copy className="w-3 h-3" />
+                }
+              </button>
+            </div>
+            {/* 问题反馈 */}
+            <button onClick={() => setFeedbackModalOpen(true)}
+              className="setting-item setting-item-clickable w-full text-left"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <MessageSquare className="w-4 h-4" style={{ color: 'var(--text-tertiary)' }} />
+                </div>
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>反馈/建议</span>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
+            </button>
             {/* 更多实用工具 */}
             <button
               onClick={() => setPromoModalOpen(true)}
-              className="setting-item w-full text-left"
-              style={{ padding: '10px 14px', cursor: 'pointer' }}>
+              className="setting-item setting-item-clickable w-full text-left"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-primary-light)' }}>
                   <Rocket className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
@@ -621,7 +749,7 @@ export default function Settings() {
             {/* 支持作者 */}
             <button
               onClick={() => setDonateModalOpen(true)}
-              className="setting-item w-full text-left"
+              className="setting-item setting-item-clickable w-full text-left"
               style={{ padding: '10px 14px', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-danger-light)' }}>
@@ -646,6 +774,13 @@ export default function Settings() {
       <UserManual isOpen={manualOpen} onClose={() => setManualOpen(false)} />
       <ProjectPromoModal isOpen={promoModalOpen} onClose={() => setPromoModalOpen(false)} />
       <DonateModal isOpen={donateModalOpen} onClose={() => setDonateModalOpen(false)} />
+      <FeedbackModal
+        isOpen={feedbackModalOpen}
+        onClose={() => setFeedbackModalOpen(false)}
+        email={APP_INFO.email}
+        copiedLabel={copiedLabel}
+        onCopy={handleCopy}
+      />
       <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
     </div>
   );

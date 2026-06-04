@@ -6,12 +6,13 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown,
 } from 'lucide-react';
 import { MigrationRecord, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
+import { useViapStore } from '../store';
 
 // broken_fixable: Junction 损坏但 target 存在，数据完整，可手动修复
 // broken_lost: target 不存在，数据已丢失
@@ -42,6 +43,35 @@ function shortenPath(path: string): string {
   const parts = path.split('\\');
   if (parts.length <= 2) return path;
   return `${parts[0]}\\...\\${parts.slice(-2).join('\\')}`;
+}
+
+/** 列头排序按钮 — 三态切换 asc → desc → 清除 */
+type SortKey = 'name' | 'path' | 'size';
+type SortBy = 'date_desc' | 'date_asc' | 'size_desc' | 'size_asc' | 'name_asc' | 'name_desc' | 'path_asc' | 'path_desc';
+
+function SortHeader({ label, sortKey, sortBy, onSort, style }: {
+  label: string;
+  sortKey: SortKey;
+  sortBy: SortBy;
+  onSort: (key: SortKey) => void;
+  style?: React.CSSProperties;
+}) {
+  const isActive = sortBy.startsWith(sortKey);
+  const isAsc = sortBy.endsWith('_asc');
+
+  return (
+    <button
+      onClick={() => onSort(sortKey)}
+      className="flex items-center gap-0.5 cursor-pointer border-none bg-transparent uppercase tracking-wider"
+      style={{ ...style, color: isActive ? 'var(--color-primary)' : 'var(--text-tertiary)', fontSize: '10px' }}
+    >
+      {label}
+      {isActive
+        ? (isAsc ? <ArrowUp className="w-2.5 h-2.5" /> : <ArrowDown className="w-2.5 h-2.5" />)
+        : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />
+      }
+    </button>
+  );
 }
 
 // health cache
@@ -213,8 +243,9 @@ function HistoryRow({
   );
 }
 
-export default function MigrationHistory() {
-  const [records, setRecords] = useState<MigrationRecord[]>([]);
+export default function MigrationHistory({ visible: _visible }: { visible: boolean }) {
+  const storeApi = useViapStore;
+  const [records, setRecords] = useState<MigrationRecord[]>(() => storeApi.getState().historyRecords);
   const [loading, setLoading] = useState(true);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [linkStatuses, setLinkStatuses] = useState<Record<string, LinkStatus>>({});
@@ -222,7 +253,20 @@ export default function MigrationHistory() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'App' | 'LargeFolder'>('all');
-  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'size_desc' | 'size_asc'>('date_desc');
+  const [sortBy, setSortBy] = useState<SortBy>('date_desc');
+
+  /** 列头点击排序：同 key 三态切换 asc → desc → 清除（回到 date_desc） */
+  function handleColumnSort(key: SortKey) {
+    const map: Record<SortKey, [SortBy, SortBy]> = {
+      name: ['name_asc', 'name_desc'],
+      path: ['path_asc', 'path_desc'],
+      size: ['size_desc', 'size_asc'],  // 体积默认降序更符合直觉
+    };
+    const [asc, desc] = map[key];
+    if (sortBy === asc) { setSortBy(desc); }
+    else if (sortBy === desc) { setSortBy('date_desc'); }
+    else { setSortBy(asc); }
+  }
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 20;
 
@@ -231,6 +275,7 @@ export default function MigrationHistory() {
       setLoading(true);
       const history = await invoke<MigrationRecord[]>('get_migration_history');
       setRecords(history);
+      storeApi.setState({ historyRecords: history, historyRecordsLoaded: true });
 
       const initialStatuses: Record<string, LinkStatus> = {};
       const needCheck: MigrationRecord[] = [];
@@ -307,7 +352,15 @@ export default function MigrationHistory() {
     } finally { setRestoringId(null); }
   }
 
-  useEffect(() => { loadHistory(); }, []);
+  useEffect(() => {
+    // 优先从 Zustand 缓存恢复，避免重复加载
+    if (storeApi.getState().historyRecordsLoaded) {
+      setRecords(storeApi.getState().historyRecords);
+      setLoading(false);
+      return;
+    }
+    loadHistory();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalSize = records.reduce((sum, r) => sum + r.size, 0);
   const brokenCount = Object.values(linkStatuses).filter(s => s === 'broken_fixable' || s === 'broken_lost').length;
@@ -326,6 +379,10 @@ export default function MigrationHistory() {
         case 'date_asc': return a.migrated_at - b.migrated_at;
         case 'size_desc': return b.size - a.size;
         case 'size_asc': return a.size - b.size;
+        case 'name_asc': return a.app_name.localeCompare(b.app_name, 'zh-CN');
+        case 'name_desc': return b.app_name.localeCompare(a.app_name, 'zh-CN');
+        case 'path_asc': return (a.original_path || '').localeCompare(b.original_path || '');
+        case 'path_desc': return (b.original_path || '').localeCompare(a.original_path || '');
         default: return b.migrated_at - a.migrated_at;
       }
     });
@@ -339,134 +396,139 @@ export default function MigrationHistory() {
 
   return (
     <div className="h-full overflow-hidden flex flex-col" style={{ padding: '12px 16px' }}>
-      <div className="h-full flex flex-col w-full gap-3">
-        {/* header */}
-        <div className="flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-4 text-[12px]">
-            {records.length > 0 && (
+      {/* search / filter / sort + stats + refresh — 固定在顶部，不参与滚动 */}
+      <div className="flex items-center gap-2 flex-shrink-0"
+        style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
+          <div className="relative flex-1 max-w-xs">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
+            <input
+              type="text" placeholder="搜索名称..." value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full h-8 pl-7 pr-7 text-[12px] rounded border outline-none transition-colors"
+              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-sm"
+                style={{ color: 'var(--text-tertiary)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-tertiary)'; }}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+          <FilterSelect value={filterType} onChange={setFilterType}
+            options={[
+              { value: 'all' as const, label: '全部类型' },
+              { value: 'App' as const, label: '应用' },
+              { value: 'LargeFolder' as const, label: '文件夹' },
+            ]}
+            className="w-[110px]" />
+          <FilterSelect value={sortBy} onChange={setSortBy}
+            options={[
+              { value: 'date_desc' as const, label: '最新优先' },
+              { value: 'date_asc' as const, label: '最早优先' },
+              { value: 'name_asc' as const, label: '名称 A-Z' },
+              { value: 'name_desc' as const, label: '名称 Z-A' },
+              { value: 'path_asc' as const, label: '路径 A-Z' },
+              { value: 'path_desc' as const, label: '路径 Z-A' },
+              { value: 'size_desc' as const, label: '体积最大' },
+              { value: 'size_asc' as const, label: '体积最小' },
+            ]}
+            className="w-[110px]" />
+          {/* stats — 原独立行移至此处，节省垂直空间 */}
+          {records.length > 0 && (
+            <div className="flex items-center gap-3 text-[12px] ml-2">
+              <span style={{ color: 'var(--text-secondary)' }}>
+                <History className="w-3.5 h-3.5 inline mr-1" style={{ color: 'var(--text-primary)' }} />
+                <strong style={{ color: 'var(--text-primary)' }}>{records.length}</strong> 项
+              </span>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                已释放 <strong style={{ color: 'var(--color-success)' }}>{formatSize(totalSize)}</strong>
+              </span>
+              {brokenCount > 0 && (
+                <span style={{ color: 'var(--color-danger)' }}>
+                  <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+                  <strong>{brokenCount}</strong> 个异常
+                </span>
+              )}
+              {filteredRecords.length !== records.length && (
+                <span style={{ color: 'var(--text-tertiary)' }}>
+                  显示 {filteredRecords.length}/{records.length}
+                </span>
+              )}
+            </div>
+          )}
+          <button onClick={loadHistory} disabled={loading} className="btn h-8 text-[12px] flex-shrink-0 ml-auto">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+      {/* loading / 空态 */}
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--color-primary)' }} />
+        </div>
+      ) : records.length === 0 ? (
+        <EmptyState icon={<History />} title="暂无迁移记录" description="迁移应用或文件夹后将在此显示" />
+      ) : (
+        <>
+          {/* column header — 固定，不参与滚动 */}
+          <div className="flex items-center gap-3 flex-shrink-0 text-[10px] uppercase tracking-wider"
+            style={{ padding: '0 8px', height: '24px', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-color-strong)' }}>
+            <div className="flex-shrink-0 w-7" />
+            <SortHeader label="名称" sortKey="name" sortBy={sortBy} onSort={handleColumnSort}
+              style={{ width: '180px', flexShrink: 0 }} />
+            <SortHeader label="原路径" sortKey="path" sortBy={sortBy} onSort={handleColumnSort}
+              style={{ flex: 1, minWidth: 0 }} />
+            <div className="flex-shrink-0 w-5" />
+            <SortHeader label="大小" sortKey="size" sortBy={sortBy} onSort={handleColumnSort}
+              style={{ width: '64px', textAlign: 'right', flexShrink: 0 }} />
+            <span className="flex-shrink-0" style={{ width: '84px' }} />
+          </div>
+
+          {/* 列表 — 独立滚动容器 */}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            {pageRecords.length === 0 ? (
+              <EmptyState icon={<Search />} title="无匹配记录" description="尝试调整筛选条件或搜索关键词" />
+            ) : (
               <>
-                <span style={{ color: 'var(--text-secondary)' }}>
-                  <History className="w-3.5 h-3.5 inline mr-1" style={{ color: 'var(--text-primary)' }} />
-                  <strong style={{ color: 'var(--text-primary)' }}>{records.length}</strong> 项记录
-                </span>
-                <span style={{ color: 'var(--text-secondary)' }}>
-                  已释放 <strong style={{ color: 'var(--color-success)' }}>{formatSize(totalSize)}</strong>
-                </span>
-                {brokenCount > 0 && (
-                  <span style={{ color: 'var(--color-danger)' }}>
-                    <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
-                    <strong>{brokenCount}</strong> 个异常
-                  </span>
+                {pageRecords.map(record => (
+                  <HistoryRow key={record.id} record={record}
+                    onRestore={handleRestore}
+                    isRestoring={restoringId === record.id}
+                    linkStatus={linkStatuses[record.id] || 'unknown'} />
+                ))}
+
+                {/* pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-center gap-1.5 py-3">
+                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
+                      className="btn h-6 text-[11px] px-2">上一页</button>
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                      <button key={p} onClick={() => setCurrentPage(p)}
+                        className="h-6 min-w-[24px] text-[11px] rounded border transition-colors"
+                        style={{
+                          background: p === currentPage ? 'var(--color-primary)' : 'transparent',
+                          borderColor: p === currentPage ? 'var(--color-primary)' : 'var(--border-color)',
+                          color: p === currentPage ? 'var(--text-inverse)' : 'var(--text-secondary)',
+                        }}>
+                        {p}
+                      </button>
+                    ))}
+                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                      className="btn h-6 text-[11px] px-2">下一页</button>
+                  </div>
                 )}
               </>
             )}
           </div>
-          <button onClick={loadHistory} disabled={loading} className="btn h-7 text-[12px]">
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            刷新
-          </button>
-        </div>
-
-        {/* search / filter / sort */}
-        {records.length > 0 && (
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="relative flex-1 max-w-xs">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
-              <input
-                type="text" placeholder="搜索名称..." value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full h-8 pl-7 pr-7 text-[12px] rounded border outline-none transition-colors"
-                style={{ background: 'var(--bg-input)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
-                onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
-                onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-sm"
-                  style={{ color: 'var(--text-tertiary)' }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-tertiary)'; }}
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-            <FilterSelect value={filterType} onChange={setFilterType}
-              options={[
-                { value: 'all' as const, label: '全部类型' },
-                { value: 'App' as const, label: '应用' },
-                { value: 'LargeFolder' as const, label: '文件夹' },
-              ]}
-              className="w-[110px]" />
-            <FilterSelect value={sortBy} onChange={setSortBy}
-              options={[
-                { value: 'date_desc' as const, label: '最新优先' },
-                { value: 'date_asc' as const, label: '最早优先' },
-                { value: 'size_desc' as const, label: '体积最大' },
-                { value: 'size_asc' as const, label: '体积最小' },
-              ]}
-              className="w-[110px]" />
-            {filteredRecords.length !== records.length && (
-              <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                显示 {filteredRecords.length}/{records.length}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* body */}
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center">
-            <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--color-primary)' }} />
-          </div>
-        ) : records.length === 0 ? (
-          <EmptyState icon={<History />} title="暂无迁移记录" description="迁移应用或文件夹后将在此显示" />
-        ) : pageRecords.length === 0 ? (
-          <EmptyState icon={<Search />} title="无匹配记录" description="尝试调整筛选条件或搜索关键词" />
-        ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {/* column header */}
-            <div className="flex items-center gap-3 flex-shrink-0 text-[10px] uppercase tracking-wider"
-              style={{ padding: '0 8px', height: '24px', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-color-strong)' }}>
-              <div className="flex-shrink-0 w-7" />
-              <span className="flex-shrink-0" style={{ width: '180px' }}>名称</span>
-              <span className="flex-1 min-w-0">路径</span>
-              <div className="flex-shrink-0 w-5" />
-              <span className="flex-shrink-0 w-16 text-right">大小</span>
-              <span className="flex-shrink-0" style={{ width: '84px' }} />
-            </div>
-
-            {pageRecords.map(record => (
-              <HistoryRow key={record.id} record={record}
-                onRestore={handleRestore}
-                isRestoring={restoringId === record.id}
-                linkStatus={linkStatuses[record.id] || 'unknown'} />
-            ))}
-
-            {/* pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-1.5 py-3">
-                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
-                  className="btn h-6 text-[11px] px-2">上一页</button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-                  <button key={p} onClick={() => setCurrentPage(p)}
-                    className="h-6 min-w-[24px] text-[11px] rounded border transition-colors"
-                    style={{
-                      background: p === currentPage ? 'var(--color-primary)' : 'transparent',
-                      borderColor: p === currentPage ? 'var(--color-primary)' : 'var(--border-color)',
-                      color: p === currentPage ? 'var(--text-inverse)' : 'var(--text-secondary)',
-                    }}>
-                    {p}
-                  </button>
-                ))}
-                <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
-                  className="btn h-6 text-[11px] px-2">下一页</button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+        </>
+      )}
       <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
     </div>
   );

@@ -1,7 +1,7 @@
 [package]
 name = "viap"
-version = "1.0.6"
-description = "A Tauri App"
+version = "1.0.7"
+description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
 

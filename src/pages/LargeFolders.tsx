@@ -17,6 +17,7 @@ import MigrationModal from '../components/MigrationModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
+import { useViapStore } from '../store';
 import {
   LargeFolder, ProcessLockResult, LargeFolderSizeEvent,
   MigrationProgressEvent,
@@ -278,8 +279,9 @@ function FolderRow({
  * 在 invoke 前给用户即时反馈，避免等待后端才报错
  * 返回错误消息字符串，或 null 表示安全
  */
-export default function LargeFolders() {
-  const [folders, setFolders] = useState<LargeFolder[]>([]);
+export default function LargeFolders({ visible }: { visible: boolean }) {
+  const storeApi = useViapStore;
+  const [folders, setFolders] = useState<LargeFolder[]>(() => storeApi.getState().largeFolders);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [restoringFolderId, setRestoringFolderId] = useState<string | null>(null);
@@ -363,6 +365,7 @@ export default function LargeFolders() {
       setLoading(true);
       const result = await invoke<LargeFolder[]>('get_large_folders');
       setFolders(result);
+      storeApi.setState({ largeFolders: result, largeFoldersLoaded: true });
       // 在前端监听器就绪后启动大小扫描，避免竞态导致事件丢失
       await invoke('start_folder_size_scan', { folders: result });
     } catch (error) {
@@ -407,7 +410,11 @@ export default function LargeFolders() {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-  useEffect(() => { fetchFolders(); }, [fetchFolders]);
+  useEffect(() => {
+    if (!visible) return;
+    if (storeApi.getState().largeFoldersLoaded) return;
+    fetchFolders();
+  }, [visible, fetchFolders]);
 
   async function handleRefresh() { setRefreshing(true); await fetchFolders(); setRefreshing(false); }
 
@@ -841,7 +848,8 @@ export default function LargeFolders() {
     <div className="h-full overflow-hidden flex flex-col" style={{ padding: '12px 16px' }}>
       <div className="h-full flex flex-col w-full gap-3">
         {/* top stats + actions */}
-        <div className="flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center justify-between flex-shrink-0"
+          style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
           <div className="flex items-center gap-4 text-[12px]">
             <span style={{ color: 'var(--text-secondary)' }}>
               可释放 <strong style={{ color: 'var(--text-primary)' }}>{loading ? '...' : formatSize(totalReclaimable)}</strong>
