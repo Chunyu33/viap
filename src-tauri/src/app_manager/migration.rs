@@ -417,7 +417,7 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         // ═══════════════════════════════════════
         // BLOCKED — Microsoft Office ClickToRun
         // ═══════════════════════════════════════
-        DangerRule { pattern: r"microsoft office\root",                    level: DangerLevel::Blocked, category: "办公软件", label: "Microsoft Office 安装目录" },
+        DangerRule { pattern: r"\microsoft office",                       level: DangerLevel::Blocked, category: "办公软件", label: "Microsoft Office 安装目录" },
         DangerRule { pattern: r"programdata\microsoft\clicktorun",         level: DangerLevel::Blocked, category: "办公软件", label: "Office ClickToRun 服务目录" },
 
         // ═══════════════════════════════════════
@@ -425,6 +425,7 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         // ═══════════════════════════════════════
         DangerRule { pattern: r"nvidia corporation\installer2",         level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动安装目录" },
         DangerRule { pattern: r"nvidia\displaydriver",                  level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 显卡驱动目录" },
+        DangerRule { pattern: r"\nvidia corporation",                   level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动目录" },
         DangerRule { pattern: r"\nvidia\",                              level: DangerLevel::Blocked, category: "GPU驱动", label: "NVIDIA 驱动目录" },
         DangerRule { pattern: r"amd\ccc2",                             level: DangerLevel::Blocked, category: "GPU驱动", label: "AMD 显卡控制中心目录" },
         DangerRule { pattern: r"advanced micro devices",               level: DangerLevel::Blocked, category: "GPU驱动", label: "AMD 驱动目录" },
@@ -480,8 +481,7 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
         // ═══════════════════════════════════════
         DangerRule { pattern: r"microsoft visual studio", level: DangerLevel::Warning, category: "开发工具", label: "Visual Studio 安装目录" },
         DangerRule { pattern: r"jetbrains",              level: DangerLevel::Warning, category: "开发工具", label: "JetBrains IDE 目录" },
-        DangerRule { pattern: r"(?i)microsoft.*visual studio code|visual studio code", level: DangerLevel::Warning, category: "开发工具", label: "VSCode 用户/数据目录",
-},
+        DangerRule { pattern: r"\microsoft vs code", level: DangerLevel::Warning, category: "开发工具", label: "VSCode 安装目录" },
 
         // ═══════════════════════════════════════
         // WARNING — 即时通讯应用数据

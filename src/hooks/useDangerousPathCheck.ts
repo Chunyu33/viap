@@ -118,9 +118,9 @@ const DANGER_RULES: DangerRule[] = [
   // BLOCKED — Microsoft Office ClickToRun
   // ═══════════════════════════════════════════
   {
-    pattern: 'microsoft office\\root',
+    pattern: '\\microsoft office',
     level: 'BLOCKED', category: '办公软件', label: 'Microsoft Office 安装目录',
-    reason: 'Office 使用 ClickToRun 虚拟化文件系统，安装路径写进 COM 注册和激活记录。ClickToRun 自我修复服务会把 Junction 识别为损坏安装并自动覆盖，迁移无效且可能触发重新安装。',
+    reason: 'Office 使用 ClickToRun 虚拟化文件系统，安装路径写进 COM 注册和激活记录。其自我修复服务会把 Junction 识别为损坏安装并自动覆盖，迁移无效且可能触发重新安装。',
   },
   {
     pattern: 'programdata\\microsoft\\clicktorun',
@@ -142,6 +142,11 @@ const DANGER_RULES: DangerRule[] = [
     pattern: 'nvidia\\displaydriver',
     level: 'BLOCKED', category: 'GPU驱动', label: 'NVIDIA 显卡驱动目录',
     reason: 'NVIDIA 驱动 DLL 路径写死进系统服务注册表，迁移后显卡驱动失效。',
+  },
+  {
+    pattern: '\\nvidia corporation',
+    level: 'BLOCKED', category: 'GPU驱动', label: 'NVIDIA 驱动目录',
+    reason: 'NVIDIA 驱动路径写死进系统服务注册表，迁移后驱动服务找不到 DLL，轻则降级到基本显示模式，重则蓝屏。',
   },
   {
     pattern: '\\nvidia\\',
@@ -332,11 +337,11 @@ const DANGER_RULES: DangerRule[] = [
     reason: 'JetBrains IDE（IntelliJ、Rider、GoLand 等）有后台索引服务和 JVM 进程...',
   },
   {
-    pattern: 'microsoft visual studio code',
+    pattern: 'microsoft vs code',
     level: 'WARNING',
     category: '开发工具',
-    label: 'VSCode 目录',
-    reason: 'VSCode 会在用户目录生成 .vscode 配置与扩展缓存，同时存在安装目录与用户数据目录，迁移时可能造成扩展锁定或配置丢失。',
+    label: 'VSCode 安装目录',
+    reason: 'VSCode 会在用户目录生成 .vscode 配置与扩展缓存，安装目录迁移时可能造成扩展锁定或配置丢失。迁移前请完全退出 VSCode（包括系统托盘图标）。',
   },
 
   // ═══════════════════════════════════════════

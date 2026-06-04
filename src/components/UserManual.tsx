@@ -108,8 +108,81 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
         </div>
       </Section>
 
-      {/* ==================== 3. 强力卸载 ==================== */}
-      <Section title="三、强力卸载">
+      {/* ==================== 3. 已知局限性 ==================== */}
+      <Section title="三、已知局限性（非万能方案）">
+        <DocP>
+          Viap 的 Junction 方案并非万能，以下类型的软件在迁移后<strong>可能出现异常甚至无法使用</strong>。
+          这不是 Viap 的缺陷，而是由软件自身的安装机制决定的。
+        </DocP>
+
+        <div className="rounded p-3 mb-3 text-[11px] leading-relaxed"
+          style={{ background: 'var(--color-danger-light)', border: '1px solid var(--color-danger)' }}>
+          <strong style={{ color: 'var(--color-danger)' }}>绝对不可迁移（已自动拦截）：</strong>
+          <ul className="list-disc pl-4 mt-1 space-y-1" style={{ color: 'var(--text-secondary)' }}>
+            <li>
+              <strong>Microsoft Office（ClickToRun）：</strong>
+              Office 使用 ClickToRun 虚拟化文件系统，安装路径写进 COM 注册和激活记录。
+              其自我修复服务会把 Junction 识别为损坏安装并自动覆盖，迁移无效且可能触发重新安装。
+            </li>
+            <li>
+              <strong>浏览器（Edge / Chrome 等）：</strong>
+              浏览器安装目录含系统级自动修复服务，更新或修复时会将 Junction 替换为实际目录，
+              所有扩展插件也将因路径签名变化而损坏。
+            </li>
+            <li>
+              <strong>GPU 显卡驱动（NVIDIA / AMD / Intel）：</strong>
+              驱动 DLL 路径硬编码在系统服务注册表中，迁移后驱动无法加载，轻则降级到基本显示，重则蓝屏。
+            </li>
+            <li>
+              <strong>.NET Runtime：</strong>
+              运行时路径被大量应用的 runtimeconfig.json 和系统环境变量硬编码引用，
+              迁移后所有依赖 .NET 的应用将无法启动。
+            </li>
+            <li>
+              <strong>Windows 系统目录：</strong>
+              Windows、System32、WinSxS 等系统核心目录含大量硬链接和内核级依赖，迁移会导致系统崩溃无法开机。
+            </li>
+          </ul>
+        </div>
+
+        <div className="rounded p-3 mb-3 text-[11px] leading-relaxed"
+          style={{ background: 'var(--color-warning-light)', border: '1px solid var(--color-warning)' }}>
+          <strong style={{ color: 'var(--color-warning)' }}>高风险类型（迁移前需评估并完全停止相关服务）：</strong>
+          <ul className="list-disc pl-4 mt-1 space-y-1" style={{ color: 'var(--text-secondary)' }}>
+            <li>
+              <strong>安全软件（杀毒/防火墙）：</strong>
+              含内核级驱动组件，路径写进系统服务注册表，迁移后防护功能可能失效，需重新安装。
+            </li>
+            <li>
+              <strong>数据库（MySQL / PostgreSQL / MongoDB / Redis 等）：</strong>
+              数据目录含事务日志和锁文件，服务运行中迁移会损坏数据。需在完全停止服务后操作，
+              迁移后可能还需修改配置文件中的数据目录路径。
+            </li>
+            <li>
+              <strong>虚拟化软件（VMware / VirtualBox / Hyper-V）：</strong>
+              虚拟磁盘和配置文件含绝对路径引用，迁移后虚拟机无法直接启动，需手动重新注册。
+            </li>
+            <li>
+              <strong>开发工具（Visual Studio / JetBrains / VSCode）：</strong>
+              含被系统内核持续映射的 DLL 和后台语言服务进程，复制阶段容易失败。
+              迁移前需完全退出所有相关进程（包括系统托盘的 background service）。
+            </li>
+            <li>
+              <strong>Steam 等游戏平台库：</strong>
+              游戏库迁移后平台无法自动识别新路径，需在平台设置中手动添加新路径并重新扫描。
+            </li>
+          </ul>
+        </div>
+
+        <DocP>
+          <strong>总结：</strong>Viap 最适合迁移"普通应用"——即那些不依赖系统级注册、
+          不含内核驱动、不持续后台运行的应用。如遇上述高风险类型，Viap 会主动拦截或弹出风险提示。
+          即使通过了检测，也建议在迁移前<strong>关闭目标应用并备份重要数据</strong>。
+        </DocP>
+      </Section>
+
+      {/* ==================== 4. 强力卸载 ==================== */}
+      <Section title="四、强力卸载">
         <DocP>
           Viap 的卸载功能设计参考了 <strong>Geek Uninstaller</strong> 等专业卸载工具的标准流程，
           比 Windows 自带的"设置 → 应用 → 卸载"更加彻底。
@@ -165,8 +238,8 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
         </DocP>
       </Section>
 
-      {/* ==================== 4. 其他功能 ==================== */}
-      <Section title="四、其他功能">
+      {/* ==================== 5. 其他功能 ==================== */}
+      <Section title="五、其他功能">
         <DocP>
           <strong>数据迁移（文件夹迁移）：</strong>管理常见的大型数据文件夹（微信/QQ 聊天记录、系统桌面/文档、
           下载目录、VS Code 扩展等），支持一键迁移到其他磁盘。同时支持添加自定义文件夹进行管理。
@@ -186,7 +259,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       </Section>
 
       {/* ==================== 5. 数据安全 ==================== */}
-      <Section title="五、数据安全说明">
+      <Section title="六、数据安全说明">
         <DocP>
           迁移过程遵循 <strong>"先复制、后验证、再替换"</strong> 的安全流程：
         </DocP>
@@ -204,7 +277,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       </Section>
 
       {/* ==================== 6. 使用协议 ==================== */}
-      <SectionLast title="六、使用协议">
+      <SectionLast title="七、使用协议">
         <div className="rounded p-4 text-[11px] leading-relaxed"
           style={{ background: 'var(--bg-row-hover)', border: '1px solid var(--border-color-strong)' }}>
           <p className="mb-2 font-semibold" style={{ color: 'var(--text-primary)' }}>
