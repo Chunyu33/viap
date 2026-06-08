@@ -535,6 +535,11 @@ impl AppScanner {
 
                 let install_location = resolve_install_location_from_registry(&subkey);
                 if install_location.is_empty() { return None; }
+                // 双重保险：防止 resolve_install_location_from_registry 边缘情况（如注册表
+                // InstallLocation 填了容器目录且 format 差异导致 is_container_directory 漏网）
+                if is_container_directory(Path::new(&install_location)) {
+                    return None;
+                }
 
                 let loc_lower = install_location.to_lowercase();
                 if loc_lower.contains("\\windowsapps\\")
@@ -661,8 +666,13 @@ impl AppScanner {
             return None;
         }
 
+        // parent() 在某些 Windows API 场景下可能带尾部反斜杠，统一 trim 再重建
         let dir_path = target_path.parent()?.to_path_buf();
-        let install_location = dir_path.to_string_lossy().to_string();
+        let install_location = dir_path
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_string();
+        let dir_path = std::path::Path::new(&install_location).to_path_buf();
 
         // 去重：已知路径跳过
         if existing.contains(&normalize_path(&install_location)) {
@@ -671,6 +681,17 @@ impl AppScanner {
 
         // 跳过系统目录中的 exe
         if is_system_path(&install_location) {
+            return None;
+        }
+        // 跳过容器目录：exe 直接在 AppData/Local 等聚合目录下，父目录不是安装根
+        if is_container_directory(&dir_path) {
+            return None;
+        }
+        // 主动验证：目录必须是该 exe 的专属安装目录
+        // 防止 Desktop\foo.exe、AppData\Local\bar.exe 等孤立 exe 把父目录误作安装根
+        if !validate_install_dir(&dir_path, target_path) {
+            orbit_log!("DEBUG", "scanner",
+                "LNK 跳过孤立 exe（目录与 exe 无关联）: {:?}", target_path);
             return None;
         }
 
@@ -839,7 +860,7 @@ fn resolve_install_location_from_registry(subkey: &RegKey) -> String {
     // 1) InstallLocation
     let raw: String = subkey.get_value("InstallLocation").unwrap_or_default();
     let loc = raw.trim().trim_matches('"').trim_end_matches(['\\', '/']).to_string();
-    if !loc.is_empty() {
+    if !loc.is_empty() && !is_container_directory(Path::new(&loc)) {
         return loc;
     }
 
@@ -886,6 +907,10 @@ fn validate_display_icon(display_icon: &str) -> String {
 fn find_fallback_exe(install_location: &str) -> Option<String> {
     let dir = Path::new(install_location);
     if !dir.is_dir() {
+        return None;
+    }
+    // 容器目录不搜索，避免找到无关 exe 导致图标错误
+    if is_container_directory(dir) {
         return None;
     }
     // 先查目录根下的 exe（如 D:\app\app.exe）
@@ -1001,6 +1026,15 @@ fn derive_install_location_from_icon(icon_or_uninstall: &str) -> Option<String> 
         || lower.contains("\\common files\\")
     {
         return None;
+    }
+    // 容器目录不能作为安装根（如 exe 直接在 AppData\Local 下）
+    if is_container_directory(&dir) {
+        return None;
+    }
+    // 主动验证安装目录合法性
+    // 防止 DisplayIcon/UninstallString 指向孤立 exe 时把父目录误作安装根
+    if p.is_file() && !validate_install_dir(&dir, p) {
+        return extract_dir_from_command_string(icon_or_uninstall);
     }
     Some(dir.to_string_lossy().trim_end_matches(['\\', '/']).to_string())
 }
@@ -1254,6 +1288,127 @@ fn is_system_path(path: &str) -> bool {
         || lower.contains("\\program files (x86)\\windowsapps")
 }
 
+/// 判断路径是否为系统"容器目录"——这类目录本身不是应用的安装根目录，
+/// 只是存放多个应用/文件的聚合目录，不能作为 install_location
+#[cfg(windows)]
+fn is_container_directory(path: &Path) -> bool {
+    // 注册表字段常带尾部反斜杠（如 C:\Users\xxx\AppData\Local\），
+    // 统一 trim 后再匹配，避免 ends_with 因尾斜杠失效
+    let lower = path.to_string_lossy().to_lowercase();
+    let lower = lower.trim_end_matches(['\\', '/']).to_string();
+
+    // 明确的容器目录：AppData 的子目录本身
+    const CONTAINER_SUFFIXES: &[&str] = &[
+        "\\appdata\\local",
+        "\\appdata\\roaming",
+        "\\appdata\\locallow",
+        "\\appdata\\local\\programs", // Electron 应用聚合目录，不是单个应用的安装根
+        "\\appdata",
+        "\\desktop",                  // 桌面快捷方式放置处，不是安装目录
+        "\\downloads",                // 下载目录
+    ];
+    for suffix in CONTAINER_SUFFIXES {
+        if lower.ends_with(suffix) {
+            return true;
+        }
+    }
+
+    // 已知的系统级容器目录（完整路径匹配）
+    const CONTAINER_PATHS: &[&str] = &[
+        "\\programdata",
+        "\\users\\public",
+    ];
+    for p in CONTAINER_PATHS {
+        if lower.ends_with(p) {
+            return true;
+        }
+    }
+
+    // 驱动器根目录（如 C:\、D:\）
+    if path.components().count() <= 1 {
+        return true;
+    }
+    // lower 已 trim 过尾部斜杠，直接检测盘符格式 X:
+    if lower.len() == 2 && lower.as_bytes()[1] == b':' {
+        return true;
+    }
+
+    false
+}
+
+/// 验证 `dir` 是否是 `exe_path` 的合法安装目录。
+///
+/// 判定逻辑（满足任意一条即通过）：
+/// 1. 目录名与 exe 文件名（去扩展名）存在包含关系（大小写不敏感）
+/// 2. 目录下除该 exe 外还有其他 exe（多 exe 套件）
+/// 3. 目录下有 dll 文件（说明 exe 依赖本地库，不是单文件绿色工具）
+/// 4. 目录下有配置文件（.ini/.cfg/.json/.xml/.toml/.yaml）
+/// 5. 目录下有已知的支撑子目录（resources/locales/plugins 等）
+///
+/// 全部不满足 → 该目录只是一个容器，exe 是孤立文件，不能作为安装目录
+#[cfg(windows)]
+fn validate_install_dir(dir: &Path, exe_path: &Path) -> bool {
+    // 条件1：目录名与 exe 名相关
+    let dir_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let exe_stem = exe_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if !dir_name.is_empty()
+        && !exe_stem.is_empty()
+        && (dir_name.contains(&exe_stem) || exe_stem.contains(&dir_name))
+    {
+        return true;
+    }
+
+    // 条件2~5：扫描目录内容
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+
+    let mut other_exe_count = 0u32;
+    let mut has_dll = false;
+    let mut has_config = false;
+    let mut has_supporting_subdir = false;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Windows 路径大小写不敏感，用 normalize_path 统一比较，避免误计自身
+        if normalize_path(&path.to_string_lossy()) == normalize_path(&exe_path.to_string_lossy()) {
+            continue;
+        }
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if is_supporting_subdir(name) {
+                    has_supporting_subdir = true;
+                }
+            }
+            continue;
+        }
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            match ext.to_lowercase().as_str() {
+                "exe" => other_exe_count += 1,
+                "dll" => has_dll = true,
+                "ini" | "cfg" | "json" | "xml" | "toml" | "yaml" | "yml" | "conf" => {
+                    has_config = true;
+                }
+                _ => {}
+            }
+        }
+        if other_exe_count >= 1 || has_dll || has_config || has_supporting_subdir {
+            return true;
+        }
+    }
+
+    other_exe_count >= 1 || has_dll || has_config || has_supporting_subdir
+}
+
 // ============================================================================
 // 应用候选与评分（exe 驱动模型）
 // ============================================================================
@@ -1340,7 +1495,7 @@ fn score_application_candidate(
     // 数字占比惩罚：exe 名含大量数字但与父目录名不匹配（如 PCQQ2021.exe）
     if matches!(name_match, NameMatchKind::None) {
         let digit_count = stem.chars().filter(|c| c.is_ascii_digit()).count();
-        if stem.len() > 0 {
+        if !stem.is_empty() {
             let digit_ratio = digit_count as f32 / stem.len() as f32;
             if digit_ratio > 0.30 {
                 score -= 0.15;
@@ -1779,6 +1934,11 @@ fn maybe_push_app(
     seen: &mut HashSet<String>,
     out: &mut Vec<InstalledApp>,
 ) {
+    // 容器目录不能作为安装根（如 AppData\Local 下直接有 exe，Tier 3 扫到后
+    // 通过 directory_looks_like_app → maybe_push_app 进入，此前无容器检查）
+    if is_container_directory(dir) {
+        return;
+    }
     let install_location = dir.to_string_lossy().to_string();
     let loc_key = normalize_path(&install_location);
     let exe_key = normalize_path(&exe_path.to_string_lossy());
@@ -1948,4 +2108,37 @@ pub fn check_process_locks(source_path: String) -> Result<ProcessLockResult, Str
         is_locked: !locked_processes.is_empty(),
         processes: locked_processes,
     })
+}
+
+// ============================================================================
+// 单元测试
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_validate_install_dir_rejects_lone_exe() {
+        let tmp = std::env::temp_dir().join("viap_test_lone_exe");
+        let _ = fs::create_dir_all(&tmp);
+        let exe = tmp.join("AradIns.exe");
+        let _ = fs::write(&exe, b"MZ");
+        // 目录名是 "viap_test_lone_exe"，与 "AradIns" 无关，且目录下无 dll/config
+        assert!(!validate_install_dir(&tmp, &exe));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_validate_install_dir_accepts_app_with_dll() {
+        let tmp = std::env::temp_dir().join("viap_test_app_with_dll");
+        let _ = fs::create_dir_all(&tmp);
+        let exe = tmp.join("MyApp.exe");
+        let dll = tmp.join("helper.dll");
+        let _ = fs::write(&exe, b"MZ");
+        let _ = fs::write(&dll, b"MZ");
+        assert!(validate_install_dir(&tmp, &exe));
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
