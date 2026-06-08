@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2,
 } from 'lucide-react';
 import { MigrationRecord, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
@@ -14,8 +14,8 @@ import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
 import { useViapStore } from '../store';
 
-// broken_fixable: Junction 损坏但 target 存在，数据完整，可手动修复
-// broken_lost: target 不存在，数据已丢失
+// broken_fixable: Junction 损坏但 target 仍存在（通常是用户手动绕过 Viap 操作导致）
+// broken_lost: target 已不存在，数据已丢失，只能清理
 type LinkStatus = 'checking' | 'healthy' | 'broken_fixable' | 'broken_lost' | 'unknown';
 
 function formatSize(bytes: number): string {
@@ -98,12 +98,13 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, linkStatus,
+  record, onRestore, isRestoring, linkStatus, onCleanup,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
   isRestoring: boolean;
   linkStatus: LinkStatus;
+  onCleanup?: (id: string) => void;
 }) {
   const isLargeFolder = record.record_type === 'LargeFolder';
   const [expanded, setExpanded] = useState(false);
@@ -158,11 +159,10 @@ function HistoryRow({
         </div>
 
         {/* status */}
-        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '链接损坏但数据完整' : linkStatus === 'broken_lost' ? '数据丢失' : ''}>
+        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '用户手动删除或改动，建议清理' : linkStatus === 'broken_lost' ? '数据已丢失，只能清理' : ''}>
           {linkStatus === 'checking' && <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-tertiary)' }} />}
           {linkStatus === 'healthy' && <CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--color-success)' }} />}
-          {linkStatus === 'broken_fixable' && <span title="链接损坏但数据完整，可恢复"><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--color-warning)' }} /></span>}
-          {linkStatus === 'broken_lost' && <span title="目标数据已丢失"><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--color-danger)' }} /></span>}
+          {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost') && <span title="用户手动绕过 Viap 操作导致，建议清理"><AlertTriangle className="w-3.5 h-3.5" style={{ color: linkStatus === 'broken_lost' ? 'var(--color-danger)' : 'var(--color-warning)' }} /></span>}
         </div>
 
         {/* size */}
@@ -170,16 +170,29 @@ function HistoryRow({
           {formatSize(record.size)}
         </span>
 
-        {/* restore */}
-        <button
-          onClick={e => { e.stopPropagation(); onRestore(record.id, record.record_type || 'App'); }}
-          disabled={isRestoring}
-          className="btn btn-sm h-6 text-[11px] flex-shrink-0"
-          title="恢复"
-        >
-          {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
-          恢复
-        </button>
+        {/* action: 损坏状态 → 清理, 正常 → 恢复 */}
+        {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost') ? (
+          <button
+            onClick={e => { e.stopPropagation(); onCleanup?.(record.id); }}
+            disabled={isRestoring}
+            className="btn btn-sm h-6 text-[11px] flex-shrink-0"
+            style={{ color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+            title="清理残留记录（数据已丢失，无法恢复）"
+          >
+            {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+            清理
+          </button>
+        ) : (
+          <button
+            onClick={e => { e.stopPropagation(); onRestore(record.id, record.record_type || 'App'); }}
+            disabled={isRestoring || linkStatus === 'checking'}
+            className="btn btn-sm h-6 text-[11px] flex-shrink-0"
+            title={linkStatus === 'checking' ? '检测中…' : '恢复'}
+          >
+            {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+            恢复
+          </button>
+        )}
 
         {/* expand toggle */}
         <div className="flex-shrink-0 w-4">
@@ -227,8 +240,8 @@ function HistoryRow({
                 : 'var(--text-secondary)'
             }}>
               {linkStatus === 'healthy' ? '正常'
-                : linkStatus === 'broken_fixable' ? '链接损坏（数据完整，可点击恢复）'
-                : linkStatus === 'broken_lost' ? '严重损坏（目标数据丢失）'
+                : linkStatus === 'broken_fixable' ? '损坏（用户手动删除或改动，建议清理）'
+                : linkStatus === 'broken_lost' ? '严重损坏（数据已丢失，只能清理）'
                 : linkStatus === 'checking' ? '检查中'
                 : '未知'}
             </p>
@@ -326,6 +339,26 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
       console.error('Failed to load history:', error);
       showToast('加载历史记录失败', 'error');
     } finally { setLoading(false); }
+  }
+
+  /** 清理损坏的迁移记录（用户手动绕过 Viap 操作导致，直接清理残留） */
+  async function handleCleanupBroken(historyId: string) {
+    try {
+      setRestoringId(historyId);
+      const result = await invoke<MigrationResult>('cleanup_broken_record', { historyId });
+      if (result.success) {
+        showToast(result.message, 'success');
+        // 清除健康缓存后重新加载列表
+        setCachedStatus(historyId, 'unknown' as LinkStatus);
+        await loadHistory();
+      } else {
+        showToast(result.message || '清理失败', 'error');
+      }
+    } catch (error) {
+      showToast(`清理失败: ${error}`, 'error');
+    } finally {
+      setRestoringId(null);
+    }
   }
 
   async function handleRestore(historyId: string, _recordType: string) {
@@ -501,7 +534,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                   <HistoryRow key={record.id} record={record}
                     onRestore={handleRestore}
                     isRestoring={restoringId === record.id}
-                    linkStatus={linkStatuses[record.id] || 'unknown'} />
+                    linkStatus={linkStatuses[record.id] || 'unknown'}
+                    onCleanup={handleCleanupBroken} />
                 ))}
 
                 {/* pagination */}

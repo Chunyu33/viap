@@ -155,6 +155,47 @@ pub fn delete_migration_record_by_path(original_path: &str) {
     crate::storage::migrated_app_metadata::remove_migrated_app(original_path);
 }
 
+/// 清理单条损坏的迁移记录（broken_lost）
+/// 适用于用户通过外部途径（非 Viap）卸载了应用后，历史记录仍残留的场景
+/// 执行内容：删除残留 Junction → 删除空目标目录 → 标记记录为 ghost_cleaned
+#[tauri::command]
+pub fn cleanup_broken_record(history_id: String) -> Result<MigrationResult, String> {
+    let mut storage = load_history();
+
+    let record_index = storage
+        .records
+        .iter()
+        .position(|r| r.id == history_id && r.status == "active")
+        .ok_or("未找到该迁移记录")?;
+
+    let record = storage.records[record_index].clone();
+    let original = std::path::Path::new(&record.original_path);
+    let target = std::path::Path::new(&record.target_path);
+
+    // 删除 Junction（若仍存在）—— remove_dir 只删 Junction 本身，不跟踪目标
+    if crate::utils::is_junction(original) {
+        let _ = std::fs::remove_dir(original);
+    }
+
+    // 删除目标目录残留（若存在且为空/已卸载）
+    if target.exists() {
+        let _ = std::fs::remove_dir_all(target);
+    }
+
+    // 标记记录为 ghost_cleaned
+    storage.records[record_index].status = "ghost_cleaned".to_string();
+    save_history(&storage)?;
+
+    // 同步清理兜底元数据
+    crate::storage::migrated_app_metadata::remove_migrated_app(&record.original_path);
+
+    Ok(MigrationResult {
+        success: true,
+        message: format!("已清理「{}」的迁移记录", record.app_name),
+        new_path: None,
+    })
+}
+
 // ============================================================================
 // 查询命令
 // ============================================================================

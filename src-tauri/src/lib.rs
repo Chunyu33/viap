@@ -236,6 +236,7 @@ pub fn run() {
             storage::history::get_migration_history,
             storage::history::get_migrated_paths,
             storage::history::restore_app,
+            storage::history::cleanup_broken_record,
             storage::history::check_link_status,
             storage::history::clean_ghost_links,
             storage::history::preview_ghost_links,
