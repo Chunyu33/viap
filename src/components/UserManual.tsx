@@ -40,9 +40,10 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       {/* ==================== 1. 概述 ==================== */}
       <Section title="一、概述">
         <DocP>
-          Viap 是一款 Windows 应用管理与存储重定向工具。它通过 <strong>NTFS 目录联结（Junction）</strong> 技术，
-          将已安装的应用或大型数据文件夹从系统盘（通常是 C 盘）迁移到其他磁盘，同时在原始位置创建一个
-          "重定向点"，使操作系统和应用本身都认为文件仍在原位。
+          Viap 是一款 Windows 应用管理与存储重定向工具。它通过 <strong>NTFS 目录链接</strong> 技术
+          （同盘优先 Junction、跨盘自动软链接），将已安装的应用或大型数据文件夹从系统盘
+          （通常是 C 盘）迁移到其他磁盘，同时在原始位置创建一个"重定向点"，
+          使操作系统和应用本身都认为文件仍在原位。
         </DocP>
         <DocP>
           核心优势：<strong>应用无需重新安装，功能完全不受影响</strong>，用户无感知。
@@ -50,25 +51,38 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       </Section>
 
       {/* ==================== 2. 迁移原理 ==================== */}
-      <Section title="二、迁移：NTFS 目录联结原理">
+      <Section title="二、迁移：NTFS 目录链接原理">
         <DocP>
-          <strong>目录联结（Junction）</strong> 是 Windows NTFS 文件系统原生支持的符号链接类型。
-          它在文件系统层面创建一个 "指针"：当任何程序访问原始路径时，
-          系统自动将请求重定向到目标位置。这对所有应用程序完全透明。
+          Viap 使用两种 Windows NTFS 原生目录链接技术，根据迁移场景自动选择：
+        </DocP>
+        <ul className="list-disc pl-5 mb-3 space-y-1">
+          <li>
+            <strong>同盘迁移（如 C 盘 → C 盘其他位置）：</strong>优先使用 <strong>Junction（目录联结）</strong>，
+            这是 NTFS 原生的轻量级链接，<strong>无需管理员权限</strong>，创建即生效。
+          </li>
+          <li>
+            <strong>跨盘迁移（如 C 盘 → D 盘）：</strong>自动切换为 <strong>软链接（Symbolic Link）</strong>，
+            Junction 不支持跨卷。软链接在普通用户环境下可能需要管理员权限或开启
+            Windows 开发者模式。若权限不足，Viap 会给出明确提示，且<strong>数据已完整复制到目标位置，不会丢失</strong>。
+          </li>
+        </ul>
+        <DocP>
+          两种链接在文件系统层面效果一致：当任何程序访问原始路径时，系统自动将请求重定向到目标位置，
+          对所有应用程序完全透明。
         </DocP>
 
         <DocP>
-          <strong>迁移流程（5 步）：</strong>
+          <strong>迁移流程：</strong>
         </DocP>
         <ol className="list-decimal pl-5 mb-3 space-y-1">
           <li>将原始文件夹中的所有文件完整复制到用户选择的目标位置</li>
           <li>验证复制完整性，确保无数据丢失</li>
-          <li>将原始文件夹重命名为备份</li>
-          <li>在原始位置创建 Junction，指向目标位置</li>
-          <li>确认新路径可正常访问后，删除备份</li>
+          <li>删除原始文件夹</li>
+          <li>在原始位置创建目录链接（同盘 Junction / 跨盘软链接），指向目标位置</li>
+          <li>写入迁移记录，完成</li>
         </ol>
         <DocP>
-          恢复流程反之：删除 Junction → 将文件从目标位置移回原位。
+          恢复流程反之：删除链接 → 将文件从目标位置移回原位。
         </DocP>
 
         {/* 与 Windows 自带功能的区别 */}
@@ -92,7 +106,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
 
           <div className="rounded p-3 mb-3 text-[11px] leading-relaxed"
             style={{ background: 'var(--color-primary-light)', border: '1px solid var(--color-primary)' }}>
-            <strong style={{ color: 'var(--color-primary)' }}>Viap Junction 的优势：</strong>
+            <strong style={{ color: 'var(--color-primary)' }}>Viap 目录链接的优势：</strong>
             <ul className="list-disc pl-4 mt-1 space-y-0.5" style={{ color: 'var(--text-secondary)' }}>
               <li>适用于<strong>任意文件夹</strong>，包括已安装应用、游戏数据、聊天记录等</li>
               <li>文件系统级别的重定向，对所有程序透明，100% 兼容</li>
@@ -103,7 +117,8 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
 
           <DocP>
             <strong>一句话总结：</strong>Windows 自带功能是"告诉系统文件夹换了个地方"，
-            Viap 是"在文件系统底层做了一个透明的跳转"——后者更底层、更通用。
+            Viap 是"在文件系统底层做了一个透明的跳转"——同盘零权限即可完成，跨盘自动适配。
+            无论哪种方式，对应用完全透明。
           </DocP>
         </div>
       </Section>
@@ -111,7 +126,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       {/* ==================== 3. 已知局限性 ==================== */}
       <Section title="三、已知局限性（非万能方案）">
         <DocP>
-          Viap 的 Junction 方案并非万能，以下类型的软件在迁移后<strong>可能出现异常甚至无法使用</strong>。
+          Viap 的目录链接方案并非万能，以下类型的软件在迁移后<strong>可能出现异常甚至无法使用</strong>。
           这不是 Viap 的缺陷，而是由软件自身的安装机制决定的。
         </DocP>
 
@@ -250,7 +265,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
         </DocP>
         <DocP>
           <strong>幽灵链接清理：</strong>当目标磁盘被移除或手动删除迁移后的文件夹后，
-          Junction 指向的目标将不存在，成为"幽灵链接"。此功能扫描并清理这些失效的记录。
+          链接指向的目标将不存在，成为"幽灵链接"。此功能扫描并清理这些失效的记录。
         </DocP>
         <DocP>
           <strong>应用管理（应用迁移）：</strong>扫描系统中已安装的应用，将其安装目录迁移到其他磁盘。
@@ -267,7 +282,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
           <li><strong>迁移前：</strong>检测是否有程序正在占用文件夹，防止迁移过程中文件被修改</li>
           <li><strong>复制阶段：</strong>完整复制所有文件到目标位置，保留目录结构</li>
           <li><strong>验证阶段：</strong>确认目标位置文件完整且可访问</li>
-          <li><strong>替换阶段：</strong>将原始文件夹重命名为备份后才创建 Junction</li>
+          <li><strong>替换阶段：</strong>删除原始文件夹后创建目录链接</li>
           <li><strong>回滚能力：</strong>如果在任何阶段出错，可从备份恢复</li>
         </ul>
         <DocP>

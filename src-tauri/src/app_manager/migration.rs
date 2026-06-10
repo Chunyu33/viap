@@ -404,6 +404,62 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
     })
 }
 
+/// 创建目录链接，自动选择最兼容的方式：
+/// - 同卷：优先 Junction（无需任何权限），失败时降级软链接
+/// - 跨卷：只能软链接（Junction 不支持跨卷）
+///
+/// 返回 Ok(link_type_str) 供日志记录，Err 附带用户可读的原因和解决方案
+#[cfg(windows)]
+fn create_directory_link(target: &Path, link: &Path) -> Result<&'static str, String> {
+    let link_drive = link.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase());
+    let target_drive = target.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase());
+    let same_drive = link_drive.is_some() && link_drive == target_drive;
+
+    if same_drive {
+        // 同卷：优先 Junction，不需要任何特权
+        match junction::create(target, link) {
+            Ok(_) => return Ok("Junction"),
+            Err(e) => {
+                log_warn!("migration", "Junction 创建失败，降级软链接: {}", e);
+            }
+        }
+    }
+
+    // 跨卷 或 Junction 降级：尝试软链接
+    match symlink_dir(target, link) {
+        Ok(_) => Ok("Symlink"),
+        Err(e) => {
+            let os_err = e.raw_os_error().unwrap_or(0);
+            let reason = if os_err == 1314 || os_err == 5 {
+                if same_drive {
+                    format!(
+                        "创建目录链接失败：权限不足（错误码 {}）。\n\n\
+                         Junction 和软链接均失败，这是极少见的情况。\n\
+                         请以管理员身份运行本程序后重试。",
+                        os_err
+                    )
+                } else {
+                    format!(
+                        "跨盘迁移需要创建软链接，但当前用户权限不足（错误码 {}）。\n\n\
+                         解决方案（任选其一）：\n\
+                         • 以管理员身份运行本程序后重试\n\
+                         • 在 Windows 设置 → 开发者选项 中开启「开发者模式」后重试\n\n\
+                         注意：您的数据已完整复制到目标位置，仅链接步骤失败。",
+                        os_err
+                    )
+                }
+            } else {
+                format!(
+                    "创建目录链接失败（错误码 {}）：{}\n\n\
+                     请以管理员身份运行本程序后重试。",
+                    os_err, e
+                )
+            };
+            Err(reason)
+        }
+    }
+}
+
 /// 危险路径分级
 #[derive(Debug, Clone, PartialEq)]
 enum DangerLevel {
@@ -578,7 +634,7 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
                         _          => "该目录包含系统级组件，不支持迁移。",
                     };
                     return Some((DangerLevel::Blocked, format!(
-                        "🚫 无法迁移：{label} 属于「{category}」，不支持通过 Junction 迁移。\n\n{tip}",
+                        "🚫 无法迁移：{label} 属于「{category}」，不支持迁移。\n\n{tip}",
                         label = rule.label,
                         category = rule.category,
                         tip = tip,
@@ -600,7 +656,7 @@ fn check_dangerous_path(source: &str) -> Option<(DangerLevel, String)> {
 }
 
 /// 核心迁移命令
-/// 将应用从源路径迁移到目标路径，并创建 Windows 目录联接（Junction）
+/// 将应用从源路径迁移到目标路径，并创建目录链接（同卷 Junction / 跨卷软链接）
 ///
 /// 新增参数：
 /// - `cancel_flag`: 共享的取消标志，前端可通过 cancel_migration 命令设置
@@ -886,7 +942,7 @@ pub fn migrate_app(
                 emit_progress(app_handle, &source, 93.0, "linking",
                     "正在创建目录链接...", source_size, source_size);
 
-                match symlink_dir(&target_path, source_path) {
+                match create_directory_link(&target_path, source_path) {
                     Ok(_) => {
                         let is_app = matches!(record_type, MigrationRecordType::App);
                         if let Err(e) = crate::storage::history::add_migration_record(
@@ -914,8 +970,7 @@ pub fn migrate_app(
                                 return Ok(MigrationResult {
                                     success: false,
                                     message: format!(
-                                        "创建目录链接失败，已自动将数据恢复到原位置。\n\n\
-                                         失败原因：{}\n\n您的数据已完整恢复到：{}",
+                                        "{}\n\n您的数据已完整恢复到：{}",
                                         symlink_err, source
                                     ),
                                     new_path: None,
@@ -923,7 +978,7 @@ pub fn migrate_app(
                             }
                             Err(rename_back_err) => {
                                 orbit_log!("ERROR", "migration",
-                                    "同盘快路径：symlink 失败且 rename 回滚失败。symlink_err={}, rename_err={}, data_at={}",
+                                    "同盘快路径：链接创建失败且 rename 回滚失败。link_err={}, rename_err={}, data_at={}",
                                     symlink_err, rename_back_err, target_path_str
                                 );
                                 return Ok(MigrationResult {
@@ -1056,8 +1111,8 @@ pub fn migrate_app(
             });
         }
 
-        // 步骤 5: 创建目录联接
-        match symlink_dir(&target_path, source_path) {
+        // 步骤 5: 创建目录链接（Junction 或软链接）
+        match create_directory_link(&target_path, source_path) {
             Ok(_) => {
                 // 步骤 6: 写入迁移历史
                 let is_app = matches!(record_type, MigrationRecordType::App);
@@ -1104,12 +1159,7 @@ pub fn migrate_app(
                         Ok(MigrationResult {
                             success: false,
                             message: format!(
-                                "创建目录链接失败，已自动将数据恢复到原位置。\n\n\
-                                 失败原因：{}\n\n\
-                                 常见原因及解决方案：\n\
-                                 • 权限不足 → 请以管理员身份运行本程序后重试\n\
-                                 • 源路径被占用 → 请重启后重试\n\n\
-                                 您的数据已完整恢复到：{}",
+                                "{}\n\n您的数据已完整恢复到：{}",
                                 symlink_err, source
                             ),
                             new_path: None,

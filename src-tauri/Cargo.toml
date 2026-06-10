@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.1.0"
+version = "1.1.1"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
@@ -48,6 +48,8 @@ trash = "5"
 rayon = "1.10"
 # SHA1 哈希，用于图标磁盘缓存 key 计算
 sha1 = "0.10"
+# Windows NTFS Junction 创建（无需管理员权限，同盘优先）
+junction = "1.0"
 
 # Windows API 绑定，用于提取应用图标
 [target.'cfg(windows)'.dependencies]
