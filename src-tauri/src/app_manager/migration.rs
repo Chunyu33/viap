@@ -5,8 +5,10 @@ use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
+use rayon::prelude::*;
 use serde::Serialize;
 use sysinfo::Disks;
 use tauri::Emitter;
@@ -83,13 +85,14 @@ fn emit_progress(
 }
 
 
-/// 分块复制单个文件，在每 64KB 块之间检查取消标志
+/// 分块复制单个文件，在每 2MB 块之间检查取消标志
 /// 避免大文件（数 GB）的 fs::copy 阻塞期间无法取消和上报进度
 /// 权限拒绝时中断迁移（步骤 0.5 已做预检，此处不应再出现被锁文件）
 fn copy_file_with_cancel(
     src: &Path,
     dest: &Path,
     cancel_flag: &Arc<AtomicBool>,
+    internal_cancel: &Arc<AtomicBool>,
 ) -> Result<u64, String> {
     // 被锁文件：步骤 0.5 已做预检，此处出现说明文件在复制过程中被新进程锁定，直接中断
     let file = match fs::File::open(src) {
@@ -108,8 +111,8 @@ fn copy_file_with_cancel(
         .map_err(|e| format!("读取文件元数据失败 {}: {}", src.display(), e))?
         .len();
 
-    // 小文件（< 1MB）直接使用 fs::copy，免去分块开销
-    if file_size < 1024 * 1024 {
+    // 小文件（< 256KB）直接使用 fs::copy，免去分块开销
+    if file_size < 256 * 1024 {
         if let Err(e) = fs::copy(src, dest) {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 return Err(format!(
@@ -122,15 +125,16 @@ fn copy_file_with_cancel(
         return Ok(file_size);
     }
 
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    const BUF_SIZE: usize = 2 * 1024 * 1024; // 2MB
+    let mut reader = BufReader::with_capacity(BUF_SIZE, file);
     let dest_file = fs::File::create(dest)
         .map_err(|e| format!("创建目标文件失败 {}: {}", dest.display(), e))?;
-    let mut writer = BufWriter::with_capacity(64 * 1024, dest_file);
-    let mut buffer = [0u8; 64 * 1024];
+    let mut writer = BufWriter::with_capacity(BUF_SIZE, dest_file);
+    let mut buffer = vec![0u8; BUF_SIZE];
     let mut copied: u64 = 0;
 
     loop {
-        if cancel_flag.load(Ordering::Relaxed) {
+        if cancel_flag.load(Ordering::Relaxed) || internal_cancel.load(Ordering::Relaxed) {
             // 删除未完成的目标文件，避免残留
             let _ = fs::remove_file(dest);
             return Err("用户取消了迁移".to_string());
@@ -147,13 +151,38 @@ fn copy_file_with_cancel(
     writer.flush()
         .map_err(|e| format!("刷新文件缓冲区失败 {}: {}", dest.display(), e))?;
 
+    // 同步 Windows 文件属性（只读、隐藏、系统、存档位），避免属性丢失导致应用异常
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::fs::MetadataExt;
+        if let Ok(src_meta) = fs::metadata(src) {
+            let attrs = src_meta.file_attributes();
+            const SAFE_ATTR_MASK: u32 = 0x27; // READONLY|HIDDEN|SYSTEM|ARCHIVE
+            let safe_attrs = attrs & SAFE_ATTR_MASK;
+            if safe_attrs != 0 {
+                extern "system" {
+                    fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
+                }
+                let path_wide: Vec<u16> = dest
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                unsafe {
+                    SetFileAttributesW(path_wide.as_ptr(), safe_attrs);
+                }
+            }
+        }
+    }
+
     Ok(copied)
 }
 
 /// 带进度上报和取消支持的文件复制
 ///
 /// 替代 fs_extra::copy_items，逐个文件复制以便：
-/// 1. 在每个文件 / 每 64KB 之间检查取消标志
+/// 1. 在每个文件 / 每 2MB 之间检查取消标志
 /// 2. 按实际复制量上报进度百分比
 ///
 /// 返回 (总文件大小, 因权限拒绝跳过的字节数)
@@ -189,54 +218,79 @@ fn copy_dir_with_progress(
         return Ok((0, 0));
     }
 
-    // 阶段 2：逐个复制文件，上报进度
-    let total_files = file_list.len() as u64;
-    let mut copied_size: u64 = 0;
-    let mut skipped_size: u64 = 0;
-    let mut last_report_pct: u64 = 0;
-
-    for (idx, (src, dest, size)) in file_list.iter().enumerate() {
-        if cancel_flag.load(Ordering::Relaxed) {
-            return Err("用户取消了迁移".to_string());
+    // 阶段 1.5：预建所有目标目录，避免并行复制循环内重复 create_dir_all
+    {
+        let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        for (_, dest, _) in &file_list {
+            if let Some(parent) = dest.parent() {
+                dirs.insert(parent.to_path_buf());
+            }
         }
-
-        // 创建目标父目录
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("创建目录失败 {}: {}", parent.display(), e))?;
-        }
-
-        // 使用分块复制替代 fs::copy，确保大文件复制期间仍可取消
-        // 返回值：实际复制的字节数，权限拒绝时返回 0
-        let actually_copied = copy_file_with_cancel(src, dest, cancel_flag)?;
-        if actually_copied == 0 && *size > 0 {
-            // 权限拒绝跳过的文件，记录其大小用于完整性校验容差
-            skipped_size += size;
-        }
-
-        copied_size += size;
-
-        // 每 1% 或每 50 个文件上报一次进度（避免过于频繁的事件）
-        let current_pct = if total_size > 0 {
-            ((copied_size as f64 / total_size as f64) * 100.0) as u64
-        } else {
-            100
-        };
-
-        if current_pct > last_report_pct || idx as u64 % 50 == 0 || idx == file_list.len() - 1 {
-            last_report_pct = current_pct;
-            emit_progress(
-                app_handle,
-                task_id,
-                current_pct as f64,
-                "copying",
-                &format!("正在复制文件 ({}/{})", idx + 1, total_files),
-                copied_size,
-                total_size,
-            );
+        for dir in dirs {
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("创建目录失败 {}: {}", dir.display(), e))?;
         }
     }
 
+    // 阶段 2：rayon 并行复制文件，AtomicU64 共享状态 + Mutex 错误收集
+    let internal_cancel = Arc::new(AtomicBool::new(false));
+    let copied_size = Arc::new(AtomicU64::new(0));
+    let skipped_size = Arc::new(AtomicU64::new(0));
+    let last_report_pct = Arc::new(AtomicU64::new(0));
+    let error_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    file_list.par_iter().for_each(|(src, dest, size)| {
+        // 任一条件触发即跳过：已有错误 / 用户取消 / 内部取消
+        if error_slot.lock().unwrap().is_some()
+            || internal_cancel.load(Ordering::Relaxed)
+            || cancel_flag.load(Ordering::Relaxed)
+        {
+            return;
+        }
+
+        match copy_file_with_cancel(src, dest, cancel_flag, &internal_cancel) {
+            Ok(actually_copied) => {
+                if actually_copied == 0 && *size > 0 {
+                    skipped_size.fetch_add(*size, Ordering::Relaxed);
+                }
+                let new_copied = copied_size.fetch_add(*size, Ordering::Relaxed) + size;
+
+                let current_pct = (new_copied as f64 / total_size as f64 * 100.0) as u64;
+                let prev = last_report_pct.load(Ordering::Relaxed);
+                if current_pct > prev
+                    && last_report_pct
+                        .compare_exchange(prev, current_pct, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    emit_progress(
+                        app_handle, task_id,
+                        current_pct as f64, "copying",
+                        &format!("正在复制... ({}%)", current_pct),
+                        new_copied, total_size,
+                    );
+                }
+            }
+            Err(e) => {
+                let mut slot = error_slot.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(e);
+                    internal_cancel.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    // 检查并发复制是否有错误
+    if let Some(err) = error_slot.lock().unwrap().take() {
+        return Err(err);
+    }
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err("用户取消了迁移".to_string());
+    }
+
+    let skipped_size = skipped_size.load(Ordering::Relaxed);
+    // 返回 WalkDir 阶段统计的 total_size 而非 AtomicU64 累加的 copied_size，
+    // 确保完整性校验基准不受并行取消影响
     Ok((total_size, skipped_size))
 }
 
@@ -627,6 +681,18 @@ pub fn migrate_app(
         let target_path = target_parent_path.join(&folder_name);
         let target_path_str = target_path.to_string_lossy().to_string();
 
+        // 防止 target 是 source 的子目录（会导致 WalkDir 无限递归写满磁盘）
+        if target_path.starts_with(source_path) {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目标路径不能是源路径的子目录。\n源路径：{}\n目标路径：{}",
+                    source, target_path_str
+                ),
+                new_path: None,
+            });
+        }
+
         if target_path.exists() {
             if !force_overwrite {
                 // 判断是否为失败迁移残留：source 是普通目录且 target 也存在
@@ -691,7 +757,7 @@ pub fn migrate_app(
         }
 
         let has_exe_in_source = WalkDir::new(source_path)
-            .max_depth(2)
+            .max_depth(5) // 深度5覆盖 Electron/部分游戏的 bin/ 等深层 exe 目录
             .into_iter()
             .filter_map(|e| e.ok())
             .any(|e| {
@@ -785,6 +851,101 @@ pub fn migrate_app(
         // 步骤 1.1：及时响应取消（get_dir_size_safe 对大目录可能耗时较长）
         if cancel_flag.load(Ordering::Relaxed) {
             return Err("用户取消了迁移".to_string());
+        }
+
+        // 步骤 1.5：同盘迁移走 rename 快路径（原子操作，毫秒级，零数据风险）
+        let source_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
+        let target_drive = target_path_str.chars().next().map(|c| c.to_ascii_uppercase());
+        if source_drive == target_drive && source_drive.is_some() {
+            emit_progress(app_handle, &source, 50.0, "copying",
+                "同盘迁移，正在移动目录...", source_size, source_size);
+
+            let rename_succeeded = if let Err(e) = fs::rename(source_path, &target_path) {
+                // os error 17 = ERROR_NOT_SAME_DEVICE，跨盘 rename 的预期失败，回退到复制模式
+                let is_cross_device = e.raw_os_error() == Some(17);
+                if is_cross_device {
+                    log_warn!("migration", "同盘 rename 跨设备失败，回退到复制模式: {}", e);
+                    false
+                } else {
+                    // 其他错误（目标已存在、权限不足等）不能静默回退，直接报错
+                    return Ok(MigrationResult {
+                        success: false,
+                        message: format!(
+                            "移动目录失败（错误码 {}）：{}\n\
+                             如目标路径已存在残留目录，请手动删除后重试。",
+                            e.raw_os_error().unwrap_or(0), e
+                        ),
+                        new_path: None,
+                    });
+                }
+            } else {
+                true
+            };
+
+            if rename_succeeded {
+                emit_progress(app_handle, &source, 93.0, "linking",
+                    "正在创建目录链接...", source_size, source_size);
+
+                match symlink_dir(&target_path, source_path) {
+                    Ok(_) => {
+                        let is_app = matches!(record_type, MigrationRecordType::App);
+                        if let Err(e) = crate::storage::history::add_migration_record(
+                            &app_name, &source, &target_path_str, source_size, record_type,
+                        ) {
+                            log_warn!("migration", "保存迁移记录失败: {}", e);
+                        }
+                        if is_app {
+                            crate::storage::migrated_app_metadata::add_migrated_app(
+                                &app_name, &source, &target_path_str,
+                            );
+                        }
+                        emit_progress(app_handle, &source, 100.0, "done",
+                            "迁移完成", source_size, source_size);
+                        return Ok(MigrationResult {
+                            success: true,
+                            message: format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str),
+                            new_path: Some(target_path_str),
+                        });
+                    }
+                    Err(symlink_err) => {
+                        let rollback = fs::rename(&target_path, source_path);
+                        match rollback {
+                            Ok(_) => {
+                                return Ok(MigrationResult {
+                                    success: false,
+                                    message: format!(
+                                        "创建目录链接失败，已自动将数据恢复到原位置。\n\n\
+                                         失败原因：{}\n\n您的数据已完整恢复到：{}",
+                                        symlink_err, source
+                                    ),
+                                    new_path: None,
+                                });
+                            }
+                            Err(rename_back_err) => {
+                                orbit_log!("ERROR", "migration",
+                                    "同盘快路径：symlink 失败且 rename 回滚失败。symlink_err={}, rename_err={}, data_at={}",
+                                    symlink_err, rename_back_err, target_path_str
+                                );
+                                return Ok(MigrationResult {
+                                    success: false,
+                                    message: format!(
+                                        "SYMLINK_FAILED_DATA_AT_TARGET:{target}\n\
+                                         创建目录链接失败，自动回滚也未成功。\n\n\
+                                         ⚠️ 您的数据完整保存在新位置：{target}\n\n\
+                                         请手动执行：mklink /J \"{source}\" \"{target}\"\n\n\
+                                         链接失败原因：{symlink_err}",
+                                        target = target_path_str,
+                                        source = source,
+                                        symlink_err = symlink_err,
+                                    ),
+                                    new_path: Some(target_path_str),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // 仅跨盘错误走到这里，继续执行下方的全量复制流程
         }
 
         // 步骤 2: 复制文件（带进度上报和取消支持）

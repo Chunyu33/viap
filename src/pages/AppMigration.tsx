@@ -156,6 +156,12 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   const [cleanupLoading, setCleanupLoading] = useState(false);
   const [scanningResidue, setScanningResidue] = useState(false);
 
+  // 强制删除预览弹窗状态 — 列出安装目录内容供用户确认后再删
+  const [forceRmPreviewOpen, setForceRmPreviewOpen] = useState(false);
+  const [forceRmPreviewApp, setForceRmPreviewApp] = useState<InstalledApp | null>(null);
+  const [forceRmPreviewItems, setForceRmPreviewItems] = useState<LeftoverItem[]>([]);
+  const [forceRmLoading, setForceRmLoading] = useState(false);
+
   // Toast 通知
   const { toast, showToast, hideToast } = useToast();
 
@@ -588,15 +594,26 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     }
   }
 
-  // 强制删除 + 残留扫描流程（供预览失败和卸载失败两处复用）
-  async function forceRemoveApp(app: InstalledApp, useRecycleBin: boolean) {
+  // 强制删除预览弹窗 — 切换勾选
+  function handleForceRmToggleItem(path: string) {
+    setForceRmPreviewItems(prev =>
+      prev.map(item => item.path === path ? { ...item, selected: !item.selected } : item)
+    );
+  }
+
+  // 强制删除预览弹窗 — 确认删除
+  async function handleForceRmConfirm() {
+    const app = forceRmPreviewApp;
+    if (!app) return;
     const currentUninstallKey = `${app.display_name}|${app.registry_path}`;
     try {
+      setForceRmLoading(true);
       setUninstallingKey(currentUninstallKey);
       const result = await invoke<UninstallResult>('force_remove_application', {
-        input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: useRecycleBin },
+        input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: true },
       });
       if (result.success) {
+        setForceRmPreviewOpen(false);
         showToast(result.message, 'success');
         const confirmScan = await confirm(
           `${app.display_name} 强制删除完成。\n\n是否扫描残留文件？`,
@@ -613,7 +630,37 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     } catch (error) {
       showToast(`强制删除失败: ${error}`, 'error');
     } finally {
+      setForceRmLoading(false);
       setUninstallingKey(null);
+    }
+  }
+
+  /** 强制删除入口：先预览文件列表 → 用户确认 → 执行删除 */
+  async function forceRemoveApp(app: InstalledApp, _useRecycleBin: boolean) {
+    try {
+      // 第一步：预览安装目录内容
+      const items = await invoke<LeftoverItem[]>('preview_force_remove', {
+        input: { app_id: app.display_name, install_location: app.install_location },
+      });
+      if (items.length === 0) {
+        // 目录为空，直接尝试删除
+        const result = await invoke<UninstallResult>('force_remove_application', {
+          input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: true },
+        });
+        if (result.success) {
+          showToast(`${app.display_name} 已删除（目录为空）`, 'success');
+          await handleRefresh();
+        } else {
+          showToast(result.message || '删除失败', 'error');
+        }
+        return;
+      }
+      // 第二步：打开预览弹窗等待用户确认
+      setForceRmPreviewApp(app);
+      setForceRmPreviewItems(items);
+      setForceRmPreviewOpen(true);
+    } catch (error) {
+      showToast(`预览安装目录失败: ${error}`, 'error');
     }
   }
 
@@ -1389,6 +1436,24 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         onClose={handleCloseCleanupModal}
         onToggleItem={handleToggleLeftover}
         onConfirm={handleConfirmCleanup}
+      />
+
+      {/* 强制删除预览弹窗 — 列出安装目录内容，用户确认后执行 force_remove */}
+      <CleanupModal
+        isOpen={forceRmPreviewOpen}
+        appName={forceRmPreviewApp?.display_name || ''}
+        items={forceRmPreviewItems}
+        loading={forceRmLoading}
+        scanning={false}
+        onClose={() => {
+          if (!forceRmLoading) {
+            setForceRmPreviewOpen(false);
+            setForceRmPreviewApp(null);
+            setForceRmPreviewItems([]);
+          }
+        }}
+        onToggleItem={handleForceRmToggleItem}
+        onConfirm={handleForceRmConfirm}
       />
 
       {/* 迁移目标选择弹窗（区分 默认 / 自定义 / 取消） */}

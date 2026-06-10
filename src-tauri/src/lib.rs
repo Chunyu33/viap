@@ -165,6 +165,11 @@ fn preview_uninstall(input: uninstaller::UninstallInput) -> Result<uninstaller::
 }
 
 #[tauri::command]
+fn preview_force_remove(input: uninstaller::UninstallInput) -> Result<Vec<uninstaller::LeftoverItem>, String> {
+    uninstaller::preview_force_remove(input)
+}
+
+#[tauri::command]
 fn force_remove_application(input: uninstaller::UninstallInput) -> Result<uninstaller::UninstallResult, String> {
     let install_location = input.install_location.clone();
     let result = uninstaller::force_remove_application(input)?;
@@ -258,6 +263,7 @@ pub fn run() {
             cancel_migration,
             // 卸载
             preview_uninstall,
+            preview_force_remove,
             force_remove_application,
             uninstall_application,
             scan_app_residue,

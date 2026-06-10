@@ -421,6 +421,53 @@ pub fn force_remove_application(input: UninstallInput) -> Result<UninstallResult
     }
 }
 
+/// 预览强制删除：扫描安装目录，列出将被删除的所有文件和子目录
+/// 前端通过此接口获取文件列表，展示给用户确认后再执行 force_remove_application
+pub fn preview_force_remove(input: UninstallInput) -> Result<Vec<LeftoverItem>, String> {
+    #[cfg(windows)]
+    {
+        let install_location = input
+            .install_location
+            .as_ref()
+            .ok_or("缺少安装路径参数")?;
+        let dir = Path::new(install_location);
+        if !dir.exists() || !dir.is_dir() {
+            return Err(format!("安装目录不存在: {}", install_location));
+        }
+
+        let mut items: Vec<LeftoverItem> = Vec::new();
+        // 仅展示顶级内容（文件 + 子目录），子目录标注体积
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let item_type = if path.is_dir() { "Folder" } else { "File" };
+                let size_mb = if path.is_dir() {
+                    bytes_to_mb(compute_dir_size(&path))
+                } else {
+                    bytes_to_mb(path.metadata().map(|m| m.len()).unwrap_or(0))
+                };
+                items.push(LeftoverItem {
+                    path: path.to_string_lossy().to_string(),
+                    item_type: item_type.to_string(),
+                    size_mb,
+                    selected: true,
+                });
+            }
+        }
+
+        // 按体积降序排列，大文件排前面
+        items.sort_by(|a, b| b.size_mb.partial_cmp(&a.size_mb).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(items)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = input;
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(windows)]
 fn execute_force_remove(
     input: &UninstallInput,
