@@ -46,29 +46,29 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
           使操作系统和应用本身都认为文件仍在原位。
         </DocP>
         <DocP>
-          核心优势：<strong>应用无需重新安装，功能完全不受影响</strong>，用户无感知。
+          核心优势：多数普通应用无需重新安装即可继续使用；对含系统服务、驱动、商店包或强路径校验的软件，
+          Viap 会尽量拦截或提示风险。
         </DocP>
       </Section>
 
       {/* ==================== 2. 迁移原理 ==================== */}
       <Section title="二、迁移：NTFS 目录链接原理">
         <DocP>
-          Viap 使用两种 Windows NTFS 原生目录链接技术，根据迁移场景自动选择：
+          Viap 使用 Windows NTFS 原生目录链接技术进行重定向：
         </DocP>
         <ul className="list-disc pl-5 mb-3 space-y-1">
           <li>
-            <strong>同盘迁移（如 C 盘 → C 盘其他位置）：</strong>优先使用 <strong>Junction（目录联结）</strong>，
-            这是 NTFS 原生的轻量级链接，<strong>无需管理员权限</strong>，创建即生效。
+            <strong>应用/文件夹迁移：</strong>优先使用 <strong>Junction（目录联结）</strong>。
+            Junction 是 NTFS 原生的轻量级目录重定向，通常无需管理员权限，适合把 C 盘应用迁移到其他 NTFS 磁盘。
           </li>
           <li>
-            <strong>跨盘迁移（如 C 盘 → D 盘）：</strong>自动切换为 <strong>软链接（Symbolic Link）</strong>，
-            Junction 不支持跨卷。软链接在普通用户环境下可能需要管理员权限或开启
-            Windows 开发者模式。若权限不足，Viap 会给出明确提示，且<strong>数据已完整复制到目标位置，不会丢失</strong>。
+            <strong>特殊场景：</strong>如果遇到系统权限、目标文件系统或路径类型不支持的情况，
+            Viap 会停止操作并给出错误提示，不会在未完成验证时直接替换原路径。
           </li>
         </ul>
         <DocP>
           两种链接在文件系统层面效果一致：当任何程序访问原始路径时，系统自动将请求重定向到目标位置，
-          对所有应用程序完全透明。
+          对大多数普通应用透明。
         </DocP>
 
         <DocP>
@@ -78,7 +78,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
           <li>将原始文件夹中的所有文件完整复制到用户选择的目标位置</li>
           <li>验证复制完整性，确保无数据丢失</li>
           <li>删除原始文件夹</li>
-          <li>在原始位置创建目录链接（同盘 Junction / 跨盘软链接），指向目标位置</li>
+          <li>在原始位置创建目录链接，指向目标位置</li>
           <li>写入迁移记录，完成</li>
         </ol>
         <DocP>
@@ -109,7 +109,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
             <strong style={{ color: 'var(--color-primary)' }}>Viap 目录链接的优势：</strong>
             <ul className="list-disc pl-4 mt-1 space-y-0.5" style={{ color: 'var(--text-secondary)' }}>
               <li>适用于<strong>任意文件夹</strong>，包括已安装应用、游戏数据、聊天记录等</li>
-              <li>文件系统级别的重定向，对所有程序透明，100% 兼容</li>
+              <li>文件系统级别的重定向，对大多数普通程序透明</li>
               <li>原始路径保持不变，应用无需任何配置修改</li>
               <li>可随时恢复，操作可逆</li>
             </ul>
@@ -117,8 +117,8 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
 
           <DocP>
             <strong>一句话总结：</strong>Windows 自带功能是"告诉系统文件夹换了个地方"，
-            Viap 是"在文件系统底层做了一个透明的跳转"——同盘零权限即可完成，跨盘自动适配。
-            无论哪种方式，对应用完全透明。
+            Viap 是"在文件系统底层做了一个透明的跳转"。它适合普通应用和数据目录，
+            但不建议用于系统管控目录、驱动、商店应用和带强自修复机制的软件。
           </DocP>
         </div>
       </Section>
@@ -156,6 +156,13 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
             <li>
               <strong>Windows 系统目录：</strong>
               Windows、System32、WinSxS 等系统核心目录含大量硬链接和内核级依赖，迁移会导致系统崩溃无法开机。
+            </li>
+            <li>
+              <strong>微软商店应用（Microsoft Store / UWP / MSIX）：</strong>
+              通常位于 <code style={{ color: 'var(--color-danger)' }}>C:\Program Files\WindowsApps</code>，
+              由 AppX 部署服务、包签名、ACL 权限和商店更新机制共同管理。强行通过目录链接迁移会导致应用无法启动、
+              商店更新失败或权限损坏，因此 Viap 不将其作为可迁移应用处理。部分商店应用可在 Windows 设置中使用
+              “移动”按钮，或通过存储设置调整新应用默认保存位置，应优先使用这些系统能力。
             </li>
           </ul>
         </div>
@@ -269,7 +276,9 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
         </DocP>
         <DocP>
           <strong>应用管理（应用迁移）：</strong>扫描系统中已安装的应用，将其安装目录迁移到其他磁盘。
-          迁移后应用仍可正常启动、更新和卸载。适用于 C 盘空间不足时，将大型应用（如 IDE、游戏）移出系统盘。
+          对普通桌面应用，迁移后通常仍可正常启动、更新和卸载。适用于 C 盘空间不足时，将大型应用（如 IDE、游戏）移出系统盘。
+          微软商店应用由 Windows 包管理系统维护，不建议通过目录链接迁移；部分应用会在 Windows 设置中提供“移动”按钮，
+          也可通过存储设置调整新应用默认保存位置，应优先使用 Windows 提供的迁移方式。
         </DocP>
       </Section>
 
@@ -283,7 +292,7 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
           <li><strong>复制阶段：</strong>完整复制所有文件到目标位置，保留目录结构</li>
           <li><strong>验证阶段：</strong>确认目标位置文件完整且可访问</li>
           <li><strong>替换阶段：</strong>删除原始文件夹后创建目录链接</li>
-          <li><strong>回滚能力：</strong>如果在任何阶段出错，可从备份恢复</li>
+          <li><strong>失败保护：</strong>如果复制或验证阶段出错，会保留原路径，不会创建半成品链接</li>
         </ul>
         <DocP>
           <strong>建议：</strong>迁移重要数据前，建议先手动备份。虽然 Viap 设计了完整的安全机制，

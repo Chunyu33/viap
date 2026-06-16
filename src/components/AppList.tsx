@@ -30,6 +30,7 @@ interface AppListProps {
   onOpenFolder?: (app: InstalledApp) => void;
   uninstallingKey?: string | null;
   restoringKey?: string | null;
+  restoreProgressMap?: Record<string, number>;
   migratedPaths?: string[];
   selectedKeys?: Set<string>;
   onToggleSelect?: (app: InstalledApp) => void;
@@ -45,7 +46,7 @@ interface AppListProps {
   /** Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮 */
   viapInstallPath?: string;
   /** 流式扫描阶段 */
-  scanPhase?: 'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
+  scanPhase?: 'idle' | 'snapshot' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   /** 当前累计扫描到的应用数 */
   scanTotalCount?: number;
 }
@@ -57,30 +58,14 @@ function formatSize(kb: number): string {
   return `${(kb / (1024 * 1024)).toFixed(2)} GB`;
 }
 
-function AppIcon({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: boolean }) {
-  // icon_base64 是当前稳定方案，icon_url 预留后续自定义协议迁移
-  if (app.icon_base64) {
-    return (
-      <div
-        className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 overflow-hidden"
-        style={{ background: 'var(--color-gray-100)' }}
-      >
-        <img
-          src={app.icon_base64}
-          alt=""
-          className="w-5 h-5 object-contain"
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-        />
-      </div>
-    );
-  }
+function AppIconFallback({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: boolean }) {
   const initial = app.display_name.charAt(0).toUpperCase();
   const hue = (app.display_name.charCodeAt(0) * 37) % 360;
-  // 图标仍在加载中时，首字母降低不透明度 + 外围显示旋转加载环
+
+  // 图标仍在加载中时保留轻量动效，避免用户误以为列表卡住。
   if (iconsLoading) {
     return (
       <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 relative">
-        {/* 旋转加载环 */}
         <div
           className="absolute inset-0 rounded-full animate-spin"
           style={{
@@ -89,7 +74,6 @@ function AppIcon({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: bool
             borderRightColor: `hsl(${hue}, 55%, 55%)`,
           }}
         />
-        {/* 首字母占位 */}
         <span
           className="text-[11px] font-semibold"
           style={{ color: `hsl(${hue}, 55%, 55%)`, opacity: 0.5 }}
@@ -99,19 +83,44 @@ function AppIcon({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: bool
       </div>
     );
   }
+
   return (
     <div
       className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 text-[11px] font-semibold text-white"
       style={{ background: `hsl(${hue}, 55%, 55%)` }}
+      title="未能提取应用图标，显示首字母占位"
     >
       {initial}
     </div>
   );
 }
 
+function AppIcon({ app, iconsLoading }: { app: InstalledApp; iconsLoading?: boolean }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const iconSource = app.icon_url || app.icon_base64;
+  if (iconSource && !imageFailed) {
+    return (
+      <div
+        className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0 overflow-hidden"
+        style={{ background: 'var(--color-gray-100)' }}
+      >
+        <img
+          src={iconSource}
+          alt=""
+          className="w-5 h-5 object-contain"
+          // 有些卸载器/辅助 exe 没有可提取图标，失败后切换到稳定占位而不是留下灰块。
+          onError={() => setImageFailed(true)}
+        />
+      </div>
+    );
+  }
+  return <AppIconFallback app={app} iconsLoading={iconsLoading} />;
+}
+
 const AppRow = memo(function AppRow({
   app, onMigrate, onRestore, onUninstall, onOpenFolder,
   isUninstalling, isMigrated, isRestoring,
+  restoreProgress,
   isSelected, onToggleSelect, showCheckbox,
   appSize, isViap, iconsLoading,
 }: {
@@ -123,6 +132,7 @@ const AppRow = memo(function AppRow({
   isUninstalling: boolean;
   isMigrated: boolean;
   isRestoring: boolean;
+  restoreProgress?: number;
   isSelected?: boolean;
   onToggleSelect?: (app: InstalledApp) => void;
   showCheckbox?: boolean;
@@ -226,8 +236,15 @@ const AppRow = memo(function AppRow({
             onClick={() => onRestore(app)}
             disabled={isRestoring}
             className="btn btn-sm h-6 text-[11px]"
+            style={isRestoring ? {
+              // 直接在按钮背景绘制进度条，列表行无需额外占用空间。
+              background: `linear-gradient(to right, var(--color-primary-light) 0%, var(--color-primary-light) ${Math.round(restoreProgress ?? 0)}%, transparent ${Math.round(restoreProgress ?? 0)}%)`,
+              borderColor: 'var(--color-primary)',
+              color: 'var(--color-primary)',
+            } : undefined}
           >
-            {isRestoring ? '还原中...' : '还原'}
+            {/* 恢复过程由后端推送百分比，按钮内直接展示，避免只显示 loading。 */}
+            {isRestoring ? `${Math.round(restoreProgress ?? 0)}%` : '还原'}
           </button>
         ) : (
           <button
@@ -285,6 +302,7 @@ function LoadingSkeleton() {
 export default function AppList({
   apps, loading, onMigrate, onRestore, onUninstall, onOpenFolder,
   uninstallingKey = null, restoringKey = null, migratedPaths = [],
+  restoreProgressMap = {},
   selectedKeys, onToggleSelect, onSelectAll, onBatchMigrate,
   onStopBatchMigrate,
   batchMigrating = false, batchProgress,
@@ -631,6 +649,7 @@ export default function AppList({
           <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
           <span>
             {refreshing && '正在刷新应用列表...'}
+            {!refreshing && scanPhase === 'snapshot' && `已读取上次快照，正在校验应用列表...`}
             {!refreshing && scanPhase === 'tier1' && `正在扫描快捷方式...`}
             {!refreshing && scanPhase === 'tier2' && `正在扫描文件系统...`}
             {!refreshing && scanPhase === 'tier3' && `正在加载图标...`}
@@ -660,6 +679,7 @@ export default function AppList({
                   onOpenFolder={handleOpenFolder}
                   isUninstalling={uninstallingKey === `${app.display_name}|${app.registry_path}`}
                   isRestoring={restoringKey === `${app.display_name}|${app.registry_path}`}
+                  restoreProgress={restoreProgressMap[`${app.display_name}|${app.registry_path}`]}
                   isMigrated={isAppMigrated(app)}
                   isSelected={selectedKeys?.has(key)}
                   onToggleSelect={onToggleSelect}

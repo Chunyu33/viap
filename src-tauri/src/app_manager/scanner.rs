@@ -53,7 +53,7 @@ use winreg::HKEY;
 /// 事件名：`scan-progress`
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanProgressEvent {
-    /// 当前阶段："tier1" | "tier2" | "tier3" | "icons" | "sizes" | "sizes_done" | "done"
+    /// 当前阶段："snapshot" | "tier1" | "tier2" | "tier3" | "icons" | "sizes" | "sizes_done" | "done"
     pub phase: String,
     /// 本批新增应用列表（增量，不含历史已推送的）
     pub apps: Vec<InstalledApp>,
@@ -72,6 +72,7 @@ pub struct ScanProgressEvent {
 pub struct IconUpdate {
     pub install_location: String,
     pub icon_base64: String,
+    pub icon_url: String,
 }
 
 /// 单个应用大小更新
@@ -80,6 +81,15 @@ pub struct SizeUpdate {
     pub install_location: String,
     /// 目录大小，单位 KB
     pub size_kb: u64,
+}
+
+/// 扫描性能指标事件 payload
+/// 事件名：`scan-performance`，前端 debug 面板临时展示各阶段耗时。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanPerformanceEvent {
+    pub phase: String,
+    pub elapsed_ms: u128,
+    pub total_count: usize,
 }
 
 // ============================================================================
@@ -212,6 +222,22 @@ impl AppScanner {
         let total_start = Instant::now();
         let mut all_apps: Vec<InstalledApp> = Vec::new();
 
+        if let Some(snapshot_apps) = crate::app_manager::snapshot::load_snapshot() {
+            let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+                phase: "snapshot".to_string(),
+                apps: snapshot_apps.clone(),
+                icon_updates: vec![],
+                size_updates: vec![],
+                total_count: snapshot_apps.len(),
+                is_final: false,
+            });
+            let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+                phase: "snapshot".to_string(),
+                elapsed_ms: total_start.elapsed().as_millis(),
+                total_count: snapshot_apps.len(),
+            });
+        }
+
         // ── Tier 1：注册表 ──────────────────────────────────────────────
         let t1_apps = self.scan_registry_deep()?;
         orbit_log!("INFO", "scanner", "Tier1 完成: {} 个, {}ms", t1_apps.len(), total_start.elapsed().as_millis());
@@ -223,6 +249,11 @@ impl AppScanner {
             size_updates: vec![],
             total_count: t1_apps.len(),
             is_final: false,
+        });
+        let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+            phase: "tier1".to_string(),
+            elapsed_ms: total_start.elapsed().as_millis(),
+            total_count: t1_apps.len(),
         });
 
         all_apps.extend(t1_apps);
@@ -257,6 +288,11 @@ impl AppScanner {
             total_count: all_apps.len() + t2_apps.len(),
             is_final: false,
         });
+        let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+            phase: "tier2".to_string(),
+            elapsed_ms: total_start.elapsed().as_millis(),
+            total_count: all_apps.len() + t2_apps.len(),
+        });
 
         for app in &t2_apps {
             existing_paths.insert(normalize_path(&app.install_location));
@@ -278,6 +314,11 @@ impl AppScanner {
                 total_count: all_apps.len() + t3_apps.len(),
                 is_final: false,
             });
+            let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+                phase: "tier3".to_string(),
+                elapsed_ms: total_start.elapsed().as_millis(),
+                total_count: all_apps.len() + t3_apps.len(),
+            });
 
             all_apps.extend(t3_apps);
         } else {
@@ -289,6 +330,11 @@ impl AppScanner {
             size_updates: vec![],
                 total_count: all_apps.len(),
                 is_final: false,
+            });
+            let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+                phase: "tier3_skipped".to_string(),
+                elapsed_ms: total_start.elapsed().as_millis(),
+                total_count: all_apps.len(),
             });
         }
 
@@ -309,6 +355,7 @@ impl AppScanner {
         }
         // 兜底应用可能导致排序变化，重新排序
         all_apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+        crate::app_manager::snapshot::attach_icon_urls(&mut all_apps);
 
         // ── 写入内存缓存（图标通过后续后台线程补充）─────────────────
         if let Ok(mut cache) = self.registry_cache.lock() {
@@ -328,6 +375,11 @@ impl AppScanner {
             total_count: all_apps.len(),
             is_final: true,
         });
+        let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+            phase: "done".to_string(),
+            elapsed_ms: total_start.elapsed().as_millis(),
+            total_count: all_apps.len(),
+        });
 
         // ── 图标后台线程：done 之后 rayon 并行提取，不阻塞列表 ────────
         let apps_for_icons = all_apps.clone();
@@ -346,11 +398,15 @@ impl AppScanner {
                             find_fallback_exe(&app.install_location).unwrap_or_default()
                         };
                         if icon_path.is_empty() { return None; }
-                        let b64 = crate::system::icon::extract_icon_to_base64(&icon_path);
-                        if b64.is_empty() { return None; }
+                        // 后台线程只负责预热磁盘/内存缓存；前端通过 icon_url 懒加载真实 PNG，
+                        // 避免把几十个 Base64 图标通过 IPC 一次次推送给 WebView。
+                        let _ = crate::system::icon::extract_icon_to_base64(&icon_path);
+                        let icon_url = crate::app_manager::snapshot::icon_url_for_path(&icon_path);
+                        if icon_url.is_empty() { return None; }
                         Some(IconUpdate {
                             install_location: app.install_location.clone(),
-                            icon_base64: b64,
+                            icon_base64: String::new(),
+                            icon_url,
                         })
                     })
                     .collect();
@@ -367,6 +423,11 @@ impl AppScanner {
                 // 与大小线程错开磁盘 IO
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
+            let _ = handle_for_icons.emit("scan-performance", ScanPerformanceEvent {
+                phase: "icons_done".to_string(),
+                elapsed_ms: total_start.elapsed().as_millis(),
+                total_count: total,
+            });
         });
 
         // ── 大小后台线程（冷启动自适应批次）───────────────────────────
@@ -456,8 +517,14 @@ impl AppScanner {
                 total_count: total,
                 is_final: false,
             });
+            let _ = handle_for_sizes.emit("scan-performance", ScanPerformanceEvent {
+                phase: "sizes_done".to_string(),
+                elapsed_ms: total_start.elapsed().as_millis(),
+                total_count: total,
+            });
         });
 
+        crate::app_manager::snapshot::save_snapshot(&all_apps);
         orbit_log!("INFO", "scanner", "流式扫描完成: {} 个应用, 总耗时 {}ms", all_apps.len(), total_start.elapsed().as_millis());
         Ok(all_apps)
     }

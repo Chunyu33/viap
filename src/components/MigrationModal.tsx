@@ -94,6 +94,8 @@ export default function MigrationModal({
   const isSuccess = step === 'success';
   const isError = step === 'error';
   const displayProgress = progress >= 0 && progress <= 100 ? progress : 0;
+  // 后端会在扫描/复制阶段持续推送体积信息，这里单独展示，避免用户误以为进度卡住。
+  const showProgressDetail = isLoading && !hasProcessLocks && Boolean(message);
 
   return (
     <div
@@ -182,6 +184,16 @@ export default function MigrationModal({
               style={{ color: 'var(--text-tertiary)' }}
             >
               正在检测进程占用，检测完成后才会开始复制文件...
+            </p>
+          )}
+
+          {/* 迁移阶段详情：展示已扫描/已复制体积，让磁盘忙碌时 UI 也有明确反馈 */}
+          {showProgressDetail && (
+            <p
+              className="text-center text-xs mb-3"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              {message}
             </p>
           )}
 

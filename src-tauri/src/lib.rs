@@ -20,6 +20,26 @@ use std::sync::atomic::Ordering;
 use crate::models::*;
 use crate::app_manager::uninstaller;
 
+fn empty_icon_response() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(204)
+        .header("content-type", "image/png")
+        .body(Vec::new())
+        .unwrap()
+}
+
+fn icon_response(png_bytes: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    if png_bytes.is_empty() {
+        return empty_icon_response();
+    }
+    tauri::http::Response::builder()
+        .status(200)
+        .header("content-type", "image/png")
+        .header("cache-control", "public, max-age=604800")
+        .body(png_bytes)
+        .unwrap()
+}
+
 // ============================================================================
 // Tauri 命令 — 系统信息
 // ============================================================================
@@ -220,6 +240,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .register_asynchronous_uri_scheme_protocol("viap-icon", |_ctx, request, responder| {
+            let encoded_path = request.uri().path().to_string();
+            std::thread::spawn(move || {
+                // 图标请求来自 WebView 的 img 标签，失败时返回空响应即可保留占位图。
+                let response = crate::app_manager::snapshot::decode_icon_path(&encoded_path)
+                    .map(|icon_path| crate::system::icon::extract_icon_png_bytes(&icon_path))
+                    .map(icon_response)
+                    .unwrap_or_else(empty_icon_response);
+                responder.respond(response);
+            });
+        })
         .manage(MigrationState::default())
         .invoke_handler(tauri::generate_handler![
             // 系统接口

@@ -9,12 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::{Read, Write};
-#[cfg(windows)]
-use std::os::windows::fs::symlink_dir;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
-
-use fs_extra::dir::{move_dir, CopyOptions};
 
 use crate::models::*;
 use crate::utils;
@@ -468,7 +464,7 @@ pub fn import_history(src_path: String) -> Result<u32, String> {
 /// 5. 移动文件回原位置（失败时回滚重建 Junction）
 /// 6. 更新记录状态
 #[tauri::command]
-pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
+pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<MigrationResult, String> {
     #[cfg(windows)]
     {
         // 步骤 0: 尝试获取恢复锁，防止并发恢复任务互相干扰
@@ -500,6 +496,7 @@ pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
             return crate::folder_manager::restore_large_folder_by_history(
                 history_id,
                 record,
+                app_handle,
             );
         }
 
@@ -522,7 +519,7 @@ pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
 
         // 原路径存在但不是 Reparse Point → 真正的普通目录，拒绝恢复保护用户数据
         if original_path.exists() && !is_junction {
-            // 原路径是普通目录，说明之前的恢复操作中断了（move_dir 部分成功）
+            // 原路径是普通目录，说明之前的恢复操作中断了（复制回原位部分成功）
             // 根据 target 是否还存在给出不同提示
             let target_still_exists = target_path.exists()
                 && std::fs::read_dir(&target_path)
@@ -564,14 +561,18 @@ pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
             });
         }
 
-        // 步骤 3: 还原前空间检查
-        let file_size = utils::get_dir_size_safe(&target_path);
-        let original_parent = original_path.parent()
-            .ok_or("无法获取原路径的父目录")?;
-        utils::check_disk_space_for_restore(original_parent, file_size)?;
+        crate::app_manager::migration::emit_progress(
+            &app_handle,
+            &record.original_path,
+            0.0,
+            "checking",
+            "正在检查恢复条件...",
+            0,
+            record.size,
+        );
 
         // 步骤 3.5: 进程占用检测（必须在删除 Junction 之前）
-        // 应用运行中 → move_dir 必然失败 → 触发回滚 → 回滚可能因 move_dir 部分成功而失效
+        // 应用运行中会导致复制/清理失败，提前拒绝可以避免进入恢复半程状态
         // 提前检测并拒绝，不动任何文件，是最安全的策略
         {
             let mut sys = sysinfo::System::new_all();
@@ -608,60 +609,12 @@ pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
             }
         }
 
-        // 步骤 4: 删除 Junction（只在确认是 Reparse Point 时才删除）
-        if is_junction {
-            fs::remove_dir(&original_path).map_err(|e| {
-                format!("删除链接失败: {}。请确保没有程序正在使用该目录。", e)
-            })?;
-        }
-        // 若原路径既不是 Junction 也不存在 → 直接进入步骤 5，move_dir 会将目标移回
-
-        // 步骤 5: 移动文件回原位置（失败时回滚重建 Junction）
-        let mut options = CopyOptions::new();
-        options.overwrite = false;
-        options.copy_inside = false;
-
-        // move_dir 失败时的回滚策略：
-        // 仅在 target_path 仍然完整存在时才重建 Junction，否则说明 move_dir 已部分成功
-        // 部分成功时 target 可能为空/不完整，重建 Junction 会让应用指向残缺数据，危险
-        move_dir(&target_path, original_parent, &options).map_err(|e| {
-            // 检查 target 是否仍然存在且非空（move_dir 未破坏它）
-            let target_intact = target_path.exists()
-                && std::fs::read_dir(&target_path)
-                    .map(|mut d| d.next().is_some())
-                    .unwrap_or(false);
-
-            if target_intact {
-                // target 完整，安全重建 Junction
-                let _ = symlink_dir(&target_path, &original_path);
-                format!(
-                    "移动文件失败: {}。\n已恢复链接，数据完好保存在：{}\n\
-                     请关闭相关程序后重试。",
-                    e, target_path.display()
-                )
-            } else {
-                // target 已被部分移走，不重建 Junction（避免指向残缺数据）
-                // original_path 此时包含 move_dir 已复制的部分文件
-                format!(
-                    "严重警告：移动文件过程中发生错误（{}），文件处于中间状态。\n\n\
-                     部分文件已移至：{}\n\
-                     剩余文件在：{}\n\n\
-                     请手动将 {} 目录下所有内容合并到 {}，\n\
-                     然后删除空的 {} 目录。",
-                    e,
-                    record.original_path,
-                    record.target_path,
-                    record.target_path,
-                    record.original_path,
-                    record.target_path,
-                )
-            }
-        })?;
-
-        // 防御性清理：move_dir 跨卷时可能残留空目录或碎片文件
-        if target_path.exists() {
-            let _ = fs::remove_dir_all(&target_path);
-        }
+        let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+            original_path,
+            target_path,
+            &record.original_path,
+            &app_handle,
+        )?;
 
         // 步骤 6: 更新记录
         storage.records[record_index].status = "restored".to_string();
@@ -670,12 +623,20 @@ pub fn restore_app(history_id: String) -> Result<MigrationResult, String> {
         // 同步移除兜底元数据，避免恢复后仍显示为"已迁移"
         crate::storage::migrated_app_metadata::remove_migrated_app(&record.original_path);
 
+        let mut message = format!(
+            "恢复成功！应用 {} 已从 {} 恢复到 {}（{}）",
+            record.app_name,
+            record.target_path,
+            record.original_path,
+            crate::app_manager::migration::format_bytes(restore_result.restored_size)
+        );
+        if let Some(warning) = restore_result.cleanup_warning {
+            message.push_str(&format!("\n\n{}", warning));
+        }
+
         Ok(MigrationResult {
             success: true,
-            message: format!(
-                "恢复成功！应用 {} 已从 {} 恢复到 {}",
-                record.app_name, record.target_path, record.original_path
-            ),
+            message,
             new_path: Some(record.original_path),
         })
     }

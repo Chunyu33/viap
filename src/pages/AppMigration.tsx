@@ -34,6 +34,7 @@ import {
 interface IconUpdate {
   install_location: string;
   icon_base64: string;
+  icon_url: string;
 }
 
 interface SizeUpdate {
@@ -43,12 +44,73 @@ interface SizeUpdate {
 }
 
 interface ScanProgressEvent {
-  phase: 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
+  phase: 'snapshot' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   apps: InstalledApp[];           // 仅 tier1/tier2/tier3/done(缓存命中) 时有值
   icon_updates: IconUpdate[];     // 仅 icons 时有值
   size_updates: SizeUpdate[];     // 仅 sizes 时有值，由后台线程推送
   total_count: number;
   is_final: boolean;
+}
+
+interface ScanPerformanceEvent {
+  /** 后端阶段名，保持原样展示便于对照日志 */
+  phase: string;
+  /** 从本次扫描开始到该阶段完成的累计耗时 */
+  elapsed_ms: number;
+  /** 该阶段累计应用数量 */
+  total_count: number;
+}
+
+interface DebugMetric {
+  /** 前端调试面板展示的阶段名 */
+  phase: string;
+  /** 阶段累计耗时，单位毫秒 */
+  elapsedMs: number;
+  /** 阶段累计应用数量 */
+  totalCount: number;
+}
+
+const SETTINGS_KEY = 'viap_settings';
+
+const SCAN_PHASE_LABELS: Record<string, string> = {
+  snapshot: 'snapshot',
+  tier1: 'tier1',
+  tier2: 'tier2',
+  tier3: 'tier3',
+  tier3_skipped: 'tier3_skipped',
+  done: 'done',
+  icons_done: 'icons_done',
+  sizes_done: 'sizes_done',
+};
+
+function loadShowScanDebug(): boolean {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    // 调试浮层默认关闭，避免普通用户被开发指标干扰。
+    return saved.showScanDebug === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 使用注册表路径优先做身份键，避免扫描刷新时同一应用图标被误覆盖 */
+function appIdentityKey(app: InstalledApp): string {
+  return (app.registry_path || app.install_location).toLowerCase();
+}
+
+/** 合并后台扫描结果时保留已加载图标，避免快照/图标懒加载被空字段覆盖 */
+function mergeAppsPreservingIcons(nextApps: InstalledApp[], previousApps: InstalledApp[]): InstalledApp[] {
+  const previousByKey = new Map(previousApps.map(app => [appIdentityKey(app), app]));
+  return nextApps.map(app => {
+    const previous = previousByKey.get(appIdentityKey(app));
+    if (!previous) return app;
+    // 后端扫描结果可能先于图标懒加载事件返回，保留已可用的图标源避免闪回占位。
+    return {
+      ...app,
+      icon_base64: app.icon_base64 || previous.icon_base64,
+      icon_url: app.icon_url || previous.icon_url,
+    };
+  });
 }
 
 // Zustand store API 引用 — 组件外（回调/handler）通过 getState() 读写
@@ -112,10 +174,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   const [appsLoading, setAppsLoading] = useState(true);
   const [sizesLoading, setSizesLoading] = useState(false);
   // 流式扫描阶段状态，用于展示进度提示
-  const [scanPhase, setScanPhase] = useState<'idle' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done'>('idle');
+  const [scanPhase, setScanPhase] = useState<'idle' | 'snapshot' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done'>('idle');
   const [scanTotalCount, setScanTotalCount] = useState(0);
   const [sizeMap, setSizeMap] = useState<Map<string, number>>(() => new Map(storeApi.getState().sizeMap));
   const [refreshing, setRefreshing] = useState(false);
+  // 扫描耗时用于用户反馈时定位慢阶段，默认由设置页开关控制。
+  const [showScanDebug, setShowScanDebug] = useState(() => loadShowScanDebug());
+  const [debugMetrics, setDebugMetrics] = useState<DebugMetric[]>([]);
 
   // 将应用列表相关的状态更新标记为低优先级，避免阻塞用户交互
   const [, startTransition] = useTransition();
@@ -138,6 +203,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   const [uninstallingKey, setUninstallingKey] = useState<string | null>(null);
   // 还原状态
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [restoreProgressMap, setRestoreProgressMap] = useState<Record<string, number>>({});
   // 批量迁移
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [batchMigrating, setBatchMigrating] = useState(false);
@@ -250,6 +316,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   // Tier 1 完成后立即显示首批应用（~200ms），图标和大小在后台静默填入
   // 若 appStore 已缓存（Tab 切换后再回来），直接恢复 state，零 IPC 开销
   async function fetchInstalledApps() {
+    setShowScanDebug(loadShowScanDebug());
     // ── 缓存命中 ──
     if (storeApi.getState().isScanned) {
       startTransition(() => setApps([...storeApi.getState().apps]));
@@ -303,12 +370,14 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     // ── 首次扫描 ──
     setAppsLoading(true);
     setScanPhase('idle');
+    setDebugMetrics([]);
 
     // appMap：扫描期间的临时缓存，仅用于 tier1 预览阶段
     const appMap = new Map<string, InstalledApp>();
+    // 有快照时保持完整旧列表，避免 Tier1/Tier2 的增量结果让列表短暂变少。
+    let hasSnapshotPreview = false;
 
-    // 图标缓冲：合并多批仅用于 tier1 预览期间，
-    // invoke 返回值（fullResult）已含完整图标，图标事件在 done 之后不会到来
+    // 图标缓冲：后端仅推送 icon_url，真实 PNG 由 WebView 通过自定义协议懒加载。
     const pendingIcons = new Map<string, string>();
     let iconTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -321,8 +390,15 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         setApps(prev => {
           let changed = false;
           const next = prev.map(app => {
-            const b64 = snap.get(app.install_location.toLowerCase());
-            if (b64 && b64 !== app.icon_base64) { changed = true; return { ...app, icon_base64: b64 }; }
+            const iconSource = snap.get(app.install_location.toLowerCase());
+            if (iconSource?.startsWith('http://viap-icon.localhost/') && iconSource !== app.icon_url) {
+              changed = true;
+              return { ...app, icon_url: iconSource };
+            }
+            if (iconSource && iconSource !== app.icon_base64) {
+              changed = true;
+              return { ...app, icon_base64: iconSource };
+            }
             return app;
           });
           // 同步回写 appStore，防止 Tab 切换后图标丢失
@@ -349,6 +425,18 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       startTransition(() => setSizeMap(new Map(accumulatedSizes)));
     }
 
+    const performanceUnlisten = await listen<ScanPerformanceEvent>('scan-performance', (event) => {
+      const metric = event.payload;
+      setDebugMetrics(prev => [
+        ...prev.filter(item => item.phase !== metric.phase),
+        {
+          phase: metric.phase,
+          elapsedMs: metric.elapsed_ms,
+          totalCount: metric.total_count,
+        },
+      ]);
+    });
+
     const unlisten = await listen<ScanProgressEvent>('scan-progress', (event) => {
       const { phase, apps: newApps, icon_updates, total_count, is_final } = event.payload;
 
@@ -358,11 +446,24 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         setScanTotalCount(total_count);
       }
 
+      if (phase === 'snapshot') {
+        hasSnapshotPreview = true;
+        const sorted = [...newApps].sort((a, b) =>
+          a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase())
+        );
+        storeApi.setState({ apps: sorted });
+        storeApi.setState({ scanPhase: 'snapshot' });
+        storeApi.setState({ scanTotalCount: sorted.length });
+        startTransition(() => setApps(sorted));
+        setScanTotalCount(sorted.length);
+        setAppsLoading(false);
+      }
+
       if (phase === 'tier1' || phase === 'tier2' || phase === 'tier3') {
         for (const app of newApps) {
           appMap.set(app.install_location.toLowerCase(), app);
         }
-        if (phase === 'tier1' && newApps.length > 0) {
+        if (!hasSnapshotPreview && (phase === 'tier1' || apps.length === 0) && newApps.length > 0) {
           const sorted = [...appMap.values()].sort((a, b) =>
             a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase())
           );
@@ -373,7 +474,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
 
       if (phase === 'icons' && icon_updates.length > 0) {
         for (const u of icon_updates) {
-          pendingIcons.set(u.install_location.toLowerCase(), u.icon_base64);
+          pendingIcons.set(u.install_location.toLowerCase(), u.icon_url || u.icon_base64);
         }
         if (iconTimer) clearTimeout(iconTimer);
         iconTimer = setTimeout(flushIcons, 200);
@@ -410,20 +511,24 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       }
     });
 
-    scanUnlistenRef.current = unlisten;
+    scanUnlistenRef.current = () => {
+      unlisten();
+      performanceUnlisten();
+    };
 
     try {
-      // fullResult 是去重+failsafe+图标的完整结果，唯一的真相源
+      // fullResult 是去重+failsafe+图标 URL 的完整结果，保留已加载图标避免覆盖闪烁。
       const fullResult = await invoke<InstalledApp[]>('get_installed_apps_stream');
 
       // 写入 appStore（不清理 listener —— 后台大小线程仍在推送 sizes/sizes_done 事件）
       if (iconTimer) clearTimeout(iconTimer);
 
-      storeApi.setState({ apps: fullResult });
+      const mergedResult = mergeAppsPreservingIcons(fullResult, storeApi.getState().apps.length > 0 ? storeApi.getState().apps : apps);
+      storeApi.setState({ apps: mergedResult });
       storeApi.setState({ isScanned: true });
       storeApi.setState({ scanPhase: 'done' });
-      storeApi.setState({ scanTotalCount: fullResult.length });
-      startTransition(() => setApps(fullResult));
+      storeApi.setState({ scanTotalCount: mergedResult.length });
+      startTransition(() => setApps(mergedResult));
       setScanPhase('done');
       setAppsLoading(false);
       // 大小由后台线程通过 sizes 事件推送，sizes_done 到来时清理 listener
@@ -573,9 +678,23 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     }
 
     const currentRestoreKey = `${app.display_name}|${app.registry_path}`;
+    let unlisten: UnlistenFn | null = null;
 
     try {
       setRestoringKey(currentRestoreKey);
+      setRestoreProgressMap(prev => ({ ...prev, [currentRestoreKey]: 0 }));
+
+      try {
+        unlisten = await listen<MigrationProgressEvent>('migration-progress', (event) => {
+          const data = event.payload;
+          // 恢复事件以原始路径作为 task_id，只更新当前行，避免迁移页其他任务串进来。
+          if (data.task_id.toLowerCase() === record.original_path.toLowerCase()) {
+            setRestoreProgressMap(prev => ({ ...prev, [currentRestoreKey]: data.percent }));
+          }
+        });
+      } catch (error) {
+        logger.error('注册恢复进度监听失败:', error);
+      }
 
       const result = await invoke<MigrationResult>('restore_app', {
         historyId: record.id,
@@ -590,7 +709,14 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     } catch (error) {
       showToast(`还原失败: ${error}`, 'error');
     } finally {
+      setRestoreProgressMap(prev => {
+        const next = { ...prev };
+        delete next[currentRestoreKey];
+        return next;
+      });
       setRestoringKey(null);
+      // 恢复完成或失败后清理监听，避免重复点击时累积 listener。
+      if (unlisten) unlisten();
     }
   }
 
@@ -1343,6 +1469,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   useEffect(() => {
     // 仅在页面可见时触发：已有缓存 → 恢复本地状态；无缓存 → 开始流式扫描
     if (!visible) return;
+    setShowScanDebug(loadShowScanDebug());
     if (storeApi.getState().isScanned) {
       // 从 Zustand 恢复本地状态（组件因 CSS 定位重建导致 state 丢失时兜底）
       const st = storeApi.getState();
@@ -1371,6 +1498,24 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   return (
     <div className="h-full overflow-hidden flex flex-col" style={{ padding: 'var(--spacing-4) var(--spacing-5)' }}>
       <div className="flex-1 max-w-5xl mx-auto w-full min-h-0 flex flex-col overflow-hidden">
+        {/* 扫描耗时保留在列表上方，方便反馈截图时和应用列表同屏展示。 */}
+        {showScanDebug && debugMetrics.length > 0 && (
+          <div
+            className="fixed top-0 left-0 right-0 z-100 mb-2 px-3 py-2 rounded-md text-[11px] flex flex-wrap gap-x-3 gap-y-1 flex-shrink-0"
+            style={{
+              background: 'var(--color-gray-50)',
+              border: '1px solid var(--color-border)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>scan debug</span>
+            {debugMetrics.map(metric => (
+              <span key={metric.phase}>
+                {SCAN_PHASE_LABELS[metric.phase] ?? metric.phase}: {metric.elapsedMs}ms / {metric.totalCount}
+              </span>
+            ))}
+          </div>
+        )}
         <AppList
           apps={apps}
           loading={appsLoading}
@@ -1380,6 +1525,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
             onOpenFolder={handleOpenFolder}
             uninstallingKey={uninstallingKey}
             restoringKey={restoringKey}
+            restoreProgressMap={restoreProgressMap}
             migratedPaths={migratedPaths}
             selectedKeys={selectedKeys}
             onToggleSelect={handleToggleSelect}

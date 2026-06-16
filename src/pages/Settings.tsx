@@ -12,7 +12,7 @@ import {
   FolderArchive, Trash2, RefreshCw,
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
-  Video, Users, MessageSquare,
+  Video, Users, MessageSquare, Activity,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -53,7 +53,12 @@ const APP_INFO = {
 
 const SETTINGS_KEY = 'viap_settings';
 // 默认目标路径初始为空，由用户手动配置；仅允许选择 C 盘以外的目录
-const DEFAULT_SETTINGS = { defaultAppTargetPath: '', defaultDataTargetPath: '', useRecycleBin: true };
+const DEFAULT_SETTINGS = {
+  defaultAppTargetPath: '',
+  defaultDataTargetPath: '',
+  useRecycleBin: true,
+  showScanDebug: false,
+};
 
 /** 迁移旧版设置：将 defaultTargetPath 升迁为 defaultAppTargetPath */
 function migrateOldSettings(raw: Record<string, unknown>): Record<string, unknown> {
@@ -467,6 +472,25 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   前往
                 </button>
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* other settings */}
+        <section>
+          <SectionHeader label="其他设置" />
+          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+            <div className="setting-item" style={{ padding: '10px 14px' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <Activity className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div>
+                  <p className="setting-label">显示扫描耗时</p>
+                  <p className="setting-desc">开启后在应用管理页右上角显示加载耗时，反馈问题时可截图排查。</p>
+                </div>
+              </div>
+              <Toggle active={settings.showScanDebug} onChange={() => updateSetting('showScanDebug', !settings.showScanDebug)} />
             </div>
           </div>
         </section>

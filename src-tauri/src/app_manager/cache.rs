@@ -63,6 +63,9 @@ pub fn get_cached() -> Option<Vec<InstalledApp>> {
 /// 将扫描结果写入缓存，供后续调用 get_or_scan / get_cached 命中
 pub fn set_cache(apps: Vec<InstalledApp>) {
     let mut cache = APP_CACHE.write().unwrap();
+    let mut apps = apps;
+    crate::app_manager::snapshot::attach_icon_urls(&mut apps);
+    crate::app_manager::snapshot::save_snapshot(&apps);
     cache.apps = apps;
     cache.last_scan_time = Instant::now();
     cache.is_dirty = false;
@@ -88,6 +91,7 @@ pub fn get_or_scan() -> Result<Vec<InstalledApp>, String> {
         .collect();
     let failsafe = crate::storage::migrated_app_metadata::generate_failsafe_apps(&existing);
     apps.extend(failsafe);
+    crate::app_manager::snapshot::attach_icon_urls(&mut apps);
 
     // 图标复用：路径未变的条目保留原有 Base64，减少 CPU 开销
     // 仅在新图标为空且旧缓存非空时才回填，避免用 scan_all_streaming 返回的空值
@@ -127,6 +131,7 @@ pub fn get_or_scan() -> Result<Vec<InstalledApp>, String> {
         cache.last_scan_time = Instant::now();
         cache.is_dirty = false;
     }
+    crate::app_manager::snapshot::save_snapshot(&apps);
 
     Ok(apps)
 }

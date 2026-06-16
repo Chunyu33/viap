@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use serde::Serialize;
@@ -19,6 +20,23 @@ use crate::utils;
 
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
+
+/// 复制计划：扫描阶段一次性生成，后续空间检查和复制阶段复用同一份数据。
+pub(crate) struct CopyPlan {
+    /// 待复制文件列表，扫描阶段生成后直接复用，避免复制前二次遍历磁盘。
+    pub(crate) file_list: Vec<(PathBuf, PathBuf, u64)>,
+    /// 待创建目录列表，保留空目录，避免应用依赖占位目录时异常。
+    pub(crate) dir_list: Vec<PathBuf>,
+    /// 计划复制的总字节数，用于空间检查和复制进度计算。
+    pub(crate) total_size: u64,
+}
+
+pub(crate) struct RestoreDirectoryResult {
+    /// 已恢复到原路径的字节数，用于成功提示或后续日志。
+    pub(crate) restored_size: u64,
+    /// 目标副本清理失败时不影响数据完整性，但需要提示调用方。
+    pub(crate) cleanup_warning: Option<String>,
+}
 
 /// 迁移进度事件（发送到前端）
 #[derive(Clone, Serialize)]
@@ -65,7 +83,7 @@ fn get_available_space(path: &Path) -> u64 {
 }
 
 /// 发送进度事件到前端
-fn emit_progress(
+pub(crate) fn emit_progress(
     app_handle: &tauri::AppHandle,
     task_id: &str,
     percent: f64,
@@ -84,6 +102,122 @@ fn emit_progress(
     });
 }
 
+/// 格式化字节数用于进度文案，避免前端重复实现同一套展示逻辑。
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    let size = bytes as f64;
+
+    if size >= GB {
+        format!("{:.2} GB", size / GB)
+    } else if size >= MB {
+        format!("{:.1} MB", size / MB)
+    } else if size >= KB {
+        format!("{:.1} KB", size / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// 构建复制计划并持续上报扫描进度，避免大目录扫描期间前端长时间停在 0%。
+pub(crate) fn build_copy_plan_with_progress(
+    source: &Path,
+    target: &Path,
+    task_id: &str,
+    cancel_flag: &Arc<AtomicBool>,
+    app_handle: &tauri::AppHandle,
+) -> Result<CopyPlan, String> {
+    emit_progress(app_handle, task_id, 1.0, "counting", "正在扫描文件列表...", 0, 0);
+
+    let mut file_list: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
+    let mut dir_list: Vec<PathBuf> = Vec::new();
+    let mut total_size: u64 = 0;
+    let mut scanned_files: u64 = 0;
+    let mut last_emit = Instant::now();
+
+    for entry_result in WalkDir::new(source).into_iter() {
+        let entry = entry_result
+            .map_err(|e| format!("目录遍历失败 {}: {}", source.display(), e))?;
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("用户取消了迁移".to_string());
+        }
+
+        let rel_path = entry.path().strip_prefix(source)
+            .map_err(|e| format!("路径解析失败: {}", e))?;
+        if rel_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            dir_list.push(target.join(rel_path));
+        } else if entry.file_type().is_file() {
+            let dest = target.join(rel_path);
+            let size = entry.metadata()
+                .map_err(|e| format!("读取文件元数据失败 {}: {}", entry.path().display(), e))?
+                .len();
+            total_size += size;
+            scanned_files += 1;
+            file_list.push((entry.path().to_path_buf(), dest, size));
+        }
+
+        if last_emit.elapsed() >= Duration::from_millis(250) {
+            // 扫描阶段没有总文件数，百分比只表示整体迁移已进入准备区间，真实进展放在文案里。
+            let percent = (1.0 + (scanned_files as f64 / 500.0)).min(8.0);
+            emit_progress(
+                app_handle,
+                task_id,
+                percent,
+                "counting",
+                &format!("已扫描 {} 个文件，{}", scanned_files, format_bytes(total_size)),
+                total_size,
+                0,
+            );
+            last_emit = Instant::now();
+        }
+    }
+
+    emit_progress(
+        app_handle,
+        task_id,
+        9.0,
+        "counting",
+        &format!("扫描完成：{} 个文件，{}", scanned_files, format_bytes(total_size)),
+        total_size,
+        total_size,
+    );
+
+    Ok(CopyPlan { file_list, dir_list, total_size })
+}
+
+/// 同步 Windows 文件属性，避免只读/隐藏/系统属性在迁移后丢失导致应用行为异常。
+#[cfg(windows)]
+fn apply_file_attributes(src: &Path, dest: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+
+    if let Ok(src_meta) = fs::metadata(src) {
+        let attrs = src_meta.file_attributes();
+        const SAFE_ATTR_MASK: u32 = 0x27; // READONLY|HIDDEN|SYSTEM|ARCHIVE
+        let safe_attrs = attrs & SAFE_ATTR_MASK;
+        if safe_attrs != 0 {
+            extern "system" {
+                fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
+            }
+            let path_wide: Vec<u16> = dest
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            unsafe {
+                SetFileAttributesW(path_wide.as_ptr(), safe_attrs);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_file_attributes(_src: &Path, _dest: &Path) {}
 
 /// 分块复制单个文件，在每 2MB 块之间检查取消标志
 /// 避免大文件（数 GB）的 fs::copy 阻塞期间无法取消和上报进度
@@ -113,16 +247,27 @@ fn copy_file_with_cancel(
 
     // 小文件（< 256KB）直接使用 fs::copy，免去分块开销
     if file_size < 256 * 1024 {
-        if let Err(e) = fs::copy(src, dest) {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                return Err(format!(
-                    "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
-                    src.display()
-                ));
+        let copied = match fs::copy(src, dest) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Err(format!(
+                        "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
+                        src.display()
+                    ));
+                }
+                return Err(format!("复制文件失败 {}: {}", src.display(), e));
             }
-            return Err(format!("复制文件失败 {}: {}", src.display(), e));
+        };
+        if copied != file_size {
+            let _ = fs::remove_file(dest);
+            return Err(format!(
+                "复制文件不完整 {}: 预期 {} 字节，实际 {} 字节",
+                src.display(), file_size, copied
+            ));
         }
-        return Ok(file_size);
+        apply_file_attributes(src, dest);
+        return Ok(copied);
     }
 
     const BUF_SIZE: usize = 2 * 1024 * 1024; // 2MB
@@ -151,30 +296,14 @@ fn copy_file_with_cancel(
     writer.flush()
         .map_err(|e| format!("刷新文件缓冲区失败 {}: {}", dest.display(), e))?;
 
-    // 同步 Windows 文件属性（只读、隐藏、系统、存档位），避免属性丢失导致应用异常
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use std::os::windows::fs::MetadataExt;
-        if let Ok(src_meta) = fs::metadata(src) {
-            let attrs = src_meta.file_attributes();
-            const SAFE_ATTR_MASK: u32 = 0x27; // READONLY|HIDDEN|SYSTEM|ARCHIVE
-            let safe_attrs = attrs & SAFE_ATTR_MASK;
-            if safe_attrs != 0 {
-                extern "system" {
-                    fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
-                }
-                let path_wide: Vec<u16> = dest
-                    .as_os_str()
-                    .encode_wide()
-                    .chain(std::iter::once(0))
-                    .collect();
-                unsafe {
-                    SetFileAttributesW(path_wide.as_ptr(), safe_attrs);
-                }
-            }
-        }
+    if copied != file_size {
+        let _ = fs::remove_file(dest);
+        return Err(format!(
+            "复制文件不完整 {}: 预期 {} 字节，实际 {} 字节",
+            src.display(), file_size, copied
+        ));
     }
+    apply_file_attributes(src, dest);
 
     Ok(copied)
 }
@@ -187,40 +316,19 @@ fn copy_file_with_cancel(
 ///
 /// 返回 (总文件大小, 因权限拒绝跳过的字节数)
 fn copy_dir_with_progress(
-    source: &Path,
-    target: &Path,
+    plan: CopyPlan,
     task_id: &str,
     cancel_flag: &Arc<AtomicBool>,
     app_handle: &tauri::AppHandle,
 ) -> Result<(u64, u64), String> {
-    // 阶段 1：遍历统计文件列表和总大小
-    emit_progress(app_handle, task_id, 0.0, "counting", "正在扫描文件...", 0, 0);
+    let CopyPlan { file_list, dir_list, total_size } = plan;
 
-    let mut file_list: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
-    let mut total_size: u64 = 0;
-
-    for entry in WalkDir::new(source).into_iter().filter_map(|e| e.ok()) {
-        if cancel_flag.load(Ordering::Relaxed) {
-            return Err("用户取消了迁移".to_string());
-        }
-        if entry.file_type().is_file() {
-            let rel_path = entry.path().strip_prefix(source)
-                .map_err(|e| format!("路径解析失败: {}", e))?;
-            let dest = target.join(rel_path);
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            total_size += size;
-            file_list.push((entry.path().to_path_buf(), dest, size));
-        }
-    }
-
-    if total_size == 0 {
-        emit_progress(app_handle, task_id, 100.0, "copying", "源目录为空，跳过复制", 0, 0);
-        return Ok((0, 0));
-    }
-
-    // 阶段 1.5：预建所有目标目录，避免并行复制循环内重复 create_dir_all
+    // 阶段 1.5：预建所有目标目录；空目录也必须迁移，否则部分应用会因缺少占位目录异常。
     {
         let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        for dir in dir_list {
+            dirs.insert(dir);
+        }
         for (_, dest, _) in &file_list {
             if let Some(parent) = dest.parent() {
                 dirs.insert(parent.to_path_buf());
@@ -232,7 +340,14 @@ fn copy_dir_with_progress(
         }
     }
 
+    if total_size == 0 {
+        emit_progress(app_handle, task_id, 88.0, "copying", "源目录为空，已复制目录结构", 0, 0);
+        return Ok((0, 0));
+    }
+
     // 阶段 2：rayon 并行复制文件，AtomicU64 共享状态 + Mutex 错误收集
+    emit_progress(app_handle, task_id, 10.0, "copying", "开始复制文件...", 0, total_size);
+
     let internal_cancel = Arc::new(AtomicBool::new(false));
     let copied_size = Arc::new(AtomicU64::new(0));
     let skipped_size = Arc::new(AtomicU64::new(0));
@@ -253,9 +368,9 @@ fn copy_dir_with_progress(
                 if actually_copied == 0 && *size > 0 {
                     skipped_size.fetch_add(*size, Ordering::Relaxed);
                 }
-                let new_copied = copied_size.fetch_add(*size, Ordering::Relaxed) + size;
+                let new_copied = copied_size.fetch_add(actually_copied, Ordering::Relaxed) + actually_copied;
 
-                let current_pct = (new_copied as f64 / total_size as f64 * 100.0) as u64;
+                let current_pct = (10.0 + (new_copied as f64 / total_size as f64 * 78.0)) as u64;
                 let prev = last_report_pct.load(Ordering::Relaxed);
                 if current_pct > prev
                     && last_report_pct
@@ -265,7 +380,7 @@ fn copy_dir_with_progress(
                     emit_progress(
                         app_handle, task_id,
                         current_pct as f64, "copying",
-                        &format!("正在复制... ({}%)", current_pct),
+                        &format!("已复制 {} / {}", format_bytes(new_copied), format_bytes(total_size)),
                         new_copied, total_size,
                     );
                 }
@@ -357,7 +472,7 @@ fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBool>) -> Vec<
 /// Windows 上部分目录（Shell 已知文件夹、Chrome 缓存等）包含只读文件，
 /// fs::remove_dir_all 直接调用会因权限不足失败。
 /// 此函数先遍历清除只读属性，再逐个删除文件和子目录。
-fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
     match fs::remove_dir_all(path) {
         Ok(_) => return Ok(()),
         Err(e) if e.kind() != std::io::ErrorKind::PermissionDenied => return Err(e),
@@ -405,49 +520,31 @@ fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error> {
 }
 
 /// 创建目录链接，自动选择最兼容的方式：
-/// - 同卷：优先 Junction（无需任何权限），失败时降级软链接
-/// - 跨卷：只能软链接（Junction 不支持跨卷）
+/// - 优先 Junction（无需软链接权限，跨本地盘也通常可用）
+/// - Junction 失败时再降级软链接
 ///
 /// 返回 Ok(link_type_str) 供日志记录，Err 附带用户可读的原因和解决方案
 #[cfg(windows)]
-fn create_directory_link(target: &Path, link: &Path) -> Result<&'static str, String> {
-    let link_drive = link.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase());
-    let target_drive = target.to_string_lossy().chars().next().map(|c| c.to_ascii_uppercase());
-    let same_drive = link_drive.is_some() && link_drive == target_drive;
-
-    if same_drive {
-        // 同卷：优先 Junction，不需要任何特权
-        match junction::create(target, link) {
-            Ok(_) => return Ok("Junction"),
-            Err(e) => {
-                log_warn!("migration", "Junction 创建失败，降级软链接: {}", e);
-            }
+pub(crate) fn create_directory_link(target: &Path, link: &Path) -> Result<&'static str, String> {
+    // Junction 不依赖开发者模式/管理员软链接权限，优先尝试可降低跨盘迁移失败率。
+    match junction::create(target, link) {
+        Ok(_) => return Ok("Junction"),
+        Err(e) => {
+            log_warn!("migration", "Junction 创建失败，降级软链接: {}", e);
         }
     }
 
-    // 跨卷 或 Junction 降级：尝试软链接
+    // Junction 降级：尝试软链接，兼容少数 Junction 不可用的文件系统或路径形态。
     match symlink_dir(target, link) {
         Ok(_) => Ok("Symlink"),
         Err(e) => {
             let os_err = e.raw_os_error().unwrap_or(0);
             let reason = if os_err == 1314 || os_err == 5 {
-                if same_drive {
-                    format!(
-                        "创建目录链接失败：权限不足（错误码 {}）。\n\n\
-                         Junction 和软链接均失败，这是极少见的情况。\n\
-                         请以管理员身份运行本程序后重试。",
-                        os_err
-                    )
-                } else {
-                    format!(
-                        "跨盘迁移需要创建软链接，但当前用户权限不足（错误码 {}）。\n\n\
-                         解决方案（任选其一）：\n\
-                         • 以管理员身份运行本程序后重试\n\
-                         • 在 Windows 设置 → 开发者选项 中开启「开发者模式」后重试\n\n\
-                         注意：您的数据已完整复制到目标位置，仅链接步骤失败。",
-                        os_err
-                    )
-                }
+                format!(
+                    "创建目录链接失败：权限不足（错误码 {}）。\n\n\
+                     Junction 和软链接均失败，请以管理员身份运行本程序后重试。",
+                    os_err
+                )
             } else {
                 format!(
                     "创建目录链接失败（错误码 {}）：{}\n\n\
@@ -458,6 +555,130 @@ fn create_directory_link(target: &Path, link: &Path) -> Result<&'static str, Str
             Err(reason)
         }
     }
+}
+
+/// 删除临时目录链接只用 remove_dir，避免 remove_dir_all 误递归到链接目标。
+#[cfg(windows)]
+fn remove_directory_link(link: &Path) -> Result<(), String> {
+    fs::remove_dir(link)
+        .map_err(|e| format!("清理临时目录链接失败 {}: {}", link.display(), e))
+}
+
+/// 在删除源目录前先用临时名称验证链接能力，失败时源目录仍完整保留。
+#[cfg(windows)]
+fn preflight_directory_link(target: &Path, source: &Path) -> Result<(), String> {
+    let parent = source.parent()
+        .ok_or_else(|| format!("源目录缺少父目录，无法预检链接: {}", source.display()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let probe_name = format!(".viap_link_probe_{}_{}", std::process::id(), timestamp);
+    let probe_link = parent.join(probe_name);
+
+    if probe_link.exists() || probe_link.is_symlink() {
+        return Err(format!("临时链接路径已存在: {}", probe_link.display()));
+    }
+
+    // 先验证同一父目录下可创建链接；若失败直接中止，不删除源目录。
+    create_directory_link(target, &probe_link)?;
+    remove_directory_link(&probe_link)
+}
+
+#[cfg(windows)]
+fn rollback_restore_link(original_path: &Path, target_path: &Path) -> String {
+    let cleanup_result = if original_path.exists() && !crate::utils::is_junction(original_path) {
+        remove_directory_robust(original_path)
+            .map_err(|e| format!("清理原路径半成品失败: {}", e))
+    } else {
+        Ok(())
+    };
+
+    let link_result = if !original_path.exists() {
+        create_directory_link(target_path, original_path)
+            .map(|_| ())
+            .map_err(|e| format!("重建目录链接失败: {}", e))
+    } else {
+        Ok(())
+    };
+
+    match (cleanup_result, link_result) {
+        (Ok(_), Ok(_)) => format!(
+            "已自动恢复目录链接，数据仍完整保存在：{}",
+            target_path.display()
+        ),
+        (cleanup, link) => format!(
+            "自动回滚未完全成功。目标数据仍完整保存在：{}；cleanup={:?}；link={:?}",
+            target_path.display(), cleanup.err(), link.err()
+        ),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn restore_directory_with_progress(
+    original_path: &Path,
+    target_path: &Path,
+    task_id: &str,
+    app_handle: &tauri::AppHandle,
+) -> Result<RestoreDirectoryResult, String> {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let restore_plan = build_copy_plan_with_progress(
+        target_path,
+        original_path,
+        task_id,
+        &cancel_flag,
+        app_handle,
+    )?;
+    let total_size = restore_plan.total_size;
+
+    let original_parent = original_path
+        .parent()
+        .ok_or("无法获取原路径的父目录")?;
+    crate::utils::check_disk_space_for_restore(original_parent, total_size)?;
+
+    emit_progress(app_handle, task_id, 9.0, "linking", "正在移除原目录链接...", 0, total_size);
+    if crate::utils::is_junction(original_path) {
+        fs::remove_dir(original_path)
+            .map_err(|e| format!("删除目录链接失败: {}", e))?;
+    } else if original_path.exists() {
+        return Err(format!(
+            "原路径 {} 已存在且不是目录链接，拒绝恢复以保护数据。",
+            original_path.display()
+        ));
+    }
+
+    fs::create_dir_all(original_path)
+        .map_err(|e| format!("创建原路径目录失败 {}: {}", original_path.display(), e))?;
+
+    if let Err(e) = copy_dir_with_progress(restore_plan, task_id, &cancel_flag, app_handle) {
+        let rollback = rollback_restore_link(original_path, target_path);
+        return Err(format!("恢复复制失败：{}\n{}", e, rollback));
+    }
+
+    emit_progress(app_handle, task_id, 90.0, "verifying", "正在校验恢复完整性...", total_size, total_size);
+    let restored_size = crate::utils::get_dir_size_safe(original_path);
+    let tolerance = (total_size as f64 * 0.01) as u64 + 1024 * 1024;
+    if (restored_size as i64 - total_size as i64).abs() > tolerance as i64 {
+        let rollback = rollback_restore_link(original_path, target_path);
+        return Err(format!(
+            "恢复完整性校验失败：预期 {}，实际 {}。\n{}",
+            format_bytes(total_size),
+            format_bytes(restored_size),
+            rollback
+        ));
+    }
+
+    emit_progress(app_handle, task_id, 96.0, "linking", "正在清理目标副本...", restored_size, total_size);
+    let cleanup_warning = if target_path.exists() {
+        remove_directory_robust(target_path)
+            .err()
+            .map(|e| format!("恢复已完成，但目标副本清理失败：{}", e))
+    } else {
+        None
+    };
+
+    emit_progress(app_handle, task_id, 100.0, "done", "恢复完成", restored_size, total_size);
+    Ok(RestoreDirectoryResult { restored_size, cleanup_warning })
 }
 
 /// 危险路径分级
@@ -883,10 +1104,26 @@ pub fn migrate_app(
             return Err("用户取消了迁移".to_string());
         }
 
-        // 步骤 1: 空间检查
-        emit_progress(app_handle, &source, 0.0, "counting", "正在计算源文件夹大小...", 0, 0);
-
-        let source_size = utils::get_dir_size_safe(source_path);
+        // 步骤 1: 构建复制计划 + 空间检查
+        // 复制前必须知道总大小；这里直接产出复制计划，避免后续复制阶段再次遍历整棵目录。
+        let copy_plan = match build_copy_plan_with_progress(
+            source_path,
+            &target_path,
+            &source,
+            cancel_flag,
+            app_handle,
+        ) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let _ = remove_directory_robust(&target_path);
+                return Ok(MigrationResult {
+                    success: false,
+                    message: e,
+                    new_path: None,
+                });
+            }
+        };
+        let source_size = copy_plan.total_size;
 
         let available_space = get_available_space(target_parent_path);
         // 1.2× 源大小 + 100MB 最小预留，避免目标盘被填满
@@ -1009,12 +1246,12 @@ pub fn migrate_app(
             .map_err(|e| format!("创建目标目录失败: {}", e))?;
 
         let (total_size, skipped_size) = match copy_dir_with_progress(
-            source_path, &target_path, &source, cancel_flag, app_handle,
+            copy_plan, &source, cancel_flag, app_handle,
         ) {
             Ok((total, skipped)) => (total, skipped),
             Err(e) => {
                 // 取消或复制错误：清理已创建的目标目录，避免残留半成品
-                let _ = fs::remove_dir_all(&target_path);
+                let _ = remove_directory_robust(&target_path);
                 // 细化错误消息：拒绝访问通常意味着文件被内核映射或系统进程独占
                 let user_message = if e.contains("拒绝访问") || e.contains("Access is denied")
                     || e.contains("os error 5") || e.contains("permission denied")
@@ -1046,7 +1283,7 @@ pub fn migrate_app(
         // 意味着遍历过程遇到了大面积的权限拒绝或重解析点异常（WalkDir 静默跳过）。
         // 若此时继续，校验通过 → 源目录被删除 → 空链接被创建 → 数据丢失。
         if source_size > 0 && total_size == 0 {
-            let _ = fs::remove_dir_all(&target_path);
+            let _ = remove_directory_robust(&target_path);
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
@@ -1072,7 +1309,7 @@ pub fn migrate_app(
         let tolerance = skipped_size.min(max_tolerance) + 1024 * 1024;
 
         if (target_size as i64 - expected_target as i64).abs() > tolerance as i64 {
-            let _ = fs::remove_dir_all(&target_path);
+            let _ = remove_directory_robust(&target_path);
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
@@ -1090,10 +1327,26 @@ pub fn migrate_app(
         // symlink 失败且 rename-back 也失败的双重失败极端情况。
         emit_progress(app_handle, &source, 93.0, "linking", "正在创建目录链接...", source_size, source_size);
 
+        if let Err(e) = preflight_directory_link(&target_path, source_path) {
+            // 删除源目录前先预检链接能力；预检失败时源目录仍在，回滚只需清理目标副本。
+            let _ = remove_directory_robust(&target_path);
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "创建目录链接预检失败，迁移中止。\n\
+                     已自动清理目标副本，原数据完好无损。\n\n\
+                     失败原因：{}\n\n\
+                     建议：以管理员身份运行本程序后重试。",
+                    e
+                ),
+                new_path: None,
+            });
+        }
+
         if let Err(e) = remove_directory_robust(source_path) {
             // 删除源目录失败，可能原因：文件被进程锁定 / 权限不足 / 只读保护
             // 必须清理 target，将状态恢复到迁移前（source 完整，target 不存在）
-            let _ = fs::remove_dir_all(&target_path);
+            let _ = remove_directory_robust(&target_path);
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
@@ -1183,10 +1436,10 @@ pub fn migrate_app(
                                  数据位置：{target}\n\n\
                                  请选择以下任一方式恢复：\n\
                                  方式一（推荐）：将数据移回原位置\n\
-                                 　把「{target}」整个目录移动到「{source}」\n\n\
+                                 把「{target}」整个目录移动到「{source}」\n\n\
                                  方式二：手动创建目录链接\n\
-                                 　以管理员身份运行 CMD，执行：\n\
-                                 　mklink /J \"{source}\" \"{target}\"\n\n\
+                                 以管理员身份运行 CMD，执行：\n\
+                                 mklink /J \"{source}\" \"{target}\"\n\n\
                                  链接失败原因：{symlink_err}",
                                 target = target_path_str,
                                 source = source,
