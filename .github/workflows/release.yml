@@ -64,21 +64,10 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.2 更新内容
+            ## v1.1.3 更新内容
 
-            ### 启动体验优化
-            - 前端首帧就绪后再显示主窗口，减少低配设备启动白屏
-            - 首屏仅挂载应用管理页，其他页面首次访问时再加载
-
-            ### 应用列表性能优化
-            - 应用快照秒开，后台校验刷新
-            - 图标改为自定义协议按需加载 PNG，减少 Base64 IPC 压力
-            - 手动刷新会同步更新应用列表、图标、大小缓存和 debug 耗时
-
-            ### 迁移与恢复增强
-            - 迁移进度更连续，复制计划复用减少重复磁盘遍历
-            - 恢复/还原按钮新增百分比进度反馈
-            - 恢复流程加强校验和失败回滚
+            ### 用户体验优化
+            - 设置页新增字体大小调节，适配高分辨率屏幕
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
