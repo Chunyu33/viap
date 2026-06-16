@@ -218,24 +218,26 @@ impl AppScanner {
     /// 5. 完成 → emit phase="done"，is_final=true
     ///
     /// 同时将最终结果写入内存缓存（通过 cache 模块的全局 APP_CACHE）
-    pub fn scan_all_streaming(&self, app_handle: &tauri::AppHandle) -> Result<Vec<InstalledApp>, String> {
+    pub fn scan_all_streaming(&self, app_handle: &tauri::AppHandle, use_snapshot: bool) -> Result<Vec<InstalledApp>, String> {
         let total_start = Instant::now();
         let mut all_apps: Vec<InstalledApp> = Vec::new();
 
-        if let Some(snapshot_apps) = crate::app_manager::snapshot::load_snapshot() {
-            let _ = app_handle.emit("scan-progress", ScanProgressEvent {
-                phase: "snapshot".to_string(),
-                apps: snapshot_apps.clone(),
-                icon_updates: vec![],
-                size_updates: vec![],
-                total_count: snapshot_apps.len(),
-                is_final: false,
-            });
-            let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
-                phase: "snapshot".to_string(),
-                elapsed_ms: total_start.elapsed().as_millis(),
-                total_count: snapshot_apps.len(),
-            });
+        if use_snapshot {
+            if let Some(snapshot_apps) = crate::app_manager::snapshot::load_snapshot() {
+                let _ = app_handle.emit("scan-progress", ScanProgressEvent {
+                    phase: "snapshot".to_string(),
+                    apps: snapshot_apps.clone(),
+                    icon_updates: vec![],
+                    size_updates: vec![],
+                    total_count: snapshot_apps.len(),
+                    is_final: false,
+                });
+                let _ = app_handle.emit("scan-performance", ScanPerformanceEvent {
+                    phase: "snapshot".to_string(),
+                    elapsed_ms: total_start.elapsed().as_millis(),
+                    total_count: snapshot_apps.len(),
+                });
+            }
         }
 
         // ── Tier 1：注册表 ──────────────────────────────────────────────

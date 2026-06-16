@@ -71,6 +71,12 @@ pub fn set_cache(apps: Vec<InstalledApp>) {
     cache.is_dirty = false;
 }
 
+/// 仅标记缓存失效，不立即扫描；用于前端流式刷新重新接收阶段事件。
+pub fn invalidate() {
+    let mut cache = APP_CACHE.write().unwrap();
+    cache.invalidate();
+}
+
 /// 获取应用列表：缓存有效时直接返回内存数据，否则触发全量扫描
 pub fn get_or_scan() -> Result<Vec<InstalledApp>, String> {
     // 快速路径：缓存命中，仅持有读锁
