@@ -67,6 +67,7 @@ function PageContainer({ visible, children }: { visible: boolean; children: Reac
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('migration');
+  const [mountedTabs, setMountedTabs] = useState<Set<TabType>>(() => new Set(['migration']));
   const [disks, setDisks] = useState<DiskUsage[]>([]);
   const [diskLoading, setDiskLoading] = useState(true);
   const [diskRefreshing, setDiskRefreshing] = useState(false);
@@ -96,6 +97,23 @@ function App() {
   useEffect(() => {
     fetchDiskUsage();
   }, []);
+
+  useEffect(() => {
+    // 窗口默认隐藏，首帧挂载后再显示，避免低配机器看到 WebView 白屏。
+    requestAnimationFrame(() => {
+      invoke('frontend_ready').catch(() => {});
+    });
+  }, []);
+
+  useEffect(() => {
+    // 非首屏页面按需挂载，避免启动时一次初始化全部模块造成白屏等待。
+    setMountedTabs(prev => {
+      if (prev.has(activeTab)) return prev;
+      const next = new Set(prev);
+      next.add(activeTab);
+      return next;
+    });
+  }, [activeTab]);
 
   return (
     <ThemeContext.Provider value={themeState}>
@@ -150,18 +168,26 @@ function App() {
 
         {/* 页面内容区域 — CSS display 切换，组件实例保持存活，opacity 过渡动画 */}
         <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)', position: 'relative' }}>
-          <PageContainer visible={activeTab === 'migration'}>
-            <AppMigration visible={activeTab === 'migration'} />
-          </PageContainer>
-          <PageContainer visible={activeTab === 'folders'}>
-            <LargeFolders visible={activeTab === 'folders'} />
-          </PageContainer>
-          <PageContainer visible={activeTab === 'history'}>
-            <MigrationHistory visible={activeTab === 'history'} />
-          </PageContainer>
-          <PageContainer visible={activeTab === 'settings'}>
-            <Settings visible={activeTab === 'settings'} />
-          </PageContainer>
+          {mountedTabs.has('migration') && (
+            <PageContainer visible={activeTab === 'migration'}>
+              <AppMigration visible={activeTab === 'migration'} />
+            </PageContainer>
+          )}
+          {mountedTabs.has('folders') && (
+            <PageContainer visible={activeTab === 'folders'}>
+              <LargeFolders visible={activeTab === 'folders'} />
+            </PageContainer>
+          )}
+          {mountedTabs.has('history') && (
+            <PageContainer visible={activeTab === 'history'}>
+              <MigrationHistory visible={activeTab === 'history'} />
+            </PageContainer>
+          )}
+          {mountedTabs.has('settings') && (
+            <PageContainer visible={activeTab === 'settings'}>
+              <Settings visible={activeTab === 'settings'} />
+            </PageContainer>
+          )}
         </main>
       </div>
       </TabNavigationContext.Provider>

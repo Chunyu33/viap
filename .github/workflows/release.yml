@@ -5,9 +5,18 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v1.1.2'
+        required: false
+        default: 'v1.1.2'
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -23,6 +32,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,7 +52,7 @@ jobs:
       #     workspaces: './src-tauri -> target'
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build and release
         uses: tauri-apps/tauri-action@v0.5
@@ -50,18 +61,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'v__VERSION__'
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.1 更新内容
+            ## v1.1.2 更新内容
 
-            ### 迁移机制优化
-            - 同盘迁移默认使用更轻量的链接方式，无需管理员权限
-            - 跨盘迁移自动切换机制，权限不足时给出明确提示（数据不会丢失）
-            - 用户手册已同步更新，准确说明不同场景的工作机制
+            ### 启动体验优化
+            - 前端首帧就绪后再显示主窗口，减少低配设备启动白屏
+            - 首屏仅挂载应用管理页，其他页面首次访问时再加载
 
+            ### 应用列表性能优化
+            - 应用快照秒开，后台校验刷新
+            - 图标改为自定义协议按需加载 PNG，减少 Base64 IPC 压力
+            - 手动刷新会同步更新应用列表、图标、大小缓存和 debug 耗时
+
+            ### 迁移与恢复增强
+            - 迁移进度更连续，复制计划复用减少重复磁盘遍历
+            - 恢复/还原按钮新增百分比进度反馈
+            - 恢复流程加强校验和失败回滚
 
             ### 完整 Changelog
-            详见 [CHANGELOG.md](https://github.com/ethan0925/viap/blob/main/CHANGELOG.md)
+            详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
           prerelease: false
           args: ${{ matrix.args }}

@@ -132,7 +132,7 @@ fn is_installer_like_name(name: &str) -> bool {
 /// 从元数据构造 InstalledApp，仅保留：
 /// 1. 原路径仍为目录联接（迁移有效）
 /// 2. 扫描结果中不存在（避免重复）
-/// 同时提取图标信息，确保前端正常渲染
+/// 同时生成图标 URL，确保前端能按需懒加载真实图标
 pub fn generate_failsafe_apps(existing: &HashSet<String>) -> Vec<InstalledApp> {
     let mut result = Vec::new();
     for entry in load_all() {
@@ -152,18 +152,14 @@ pub fn generate_failsafe_apps(existing: &HashSet<String>) -> Vec<InstalledApp> {
         let display_icon = find_main_exe(original)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let icon_base64 = if display_icon.is_empty() {
-            String::new()
-        } else {
-            crate::system::icon::extract_icon_to_base64(&display_icon)
-        };
+        let icon_url = crate::app_manager::snapshot::icon_url_for_path(&display_icon);
         result.push(InstalledApp {
             display_name: entry.app_name,
             install_location: entry.original_path,
             display_icon,
             estimated_size: 0,
-            icon_base64,
-            icon_url: String::new(),
+            icon_base64: String::new(),
+            icon_url,
             registry_path: String::new(),
             publisher: String::new(),
         });

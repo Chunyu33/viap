@@ -166,6 +166,7 @@ function RiskConfirmModal({
 function FolderRow({
   folder, onMigrate, onRestore, onOpenFolder, onRemove,
   isMigrating, isRestoring,
+  restoreProgress,
   showCheckbox, isSelected, onToggleSelect,
 }: {
   folder: LargeFolder;
@@ -175,6 +176,7 @@ function FolderRow({
   onRemove?: (f: LargeFolder) => void;
   isMigrating?: boolean;
   isRestoring?: boolean;
+  restoreProgress?: number;
   showCheckbox?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (f: LargeFolder) => void;
@@ -259,9 +261,20 @@ function FolderRow({
         {notFound ? (
           <span className="text-[11px] mr-2" style={{ color: 'var(--text-tertiary)' }}>不可用</span>
         ) : folder.is_junction ? (
-          <button onClick={() => onRestore(folder)} disabled={isRestoring} className="btn btn-sm h-6 text-[11px]">
+          <button
+            onClick={() => onRestore(folder)}
+            disabled={isRestoring}
+            className="btn btn-sm h-6 text-[11px]"
+            style={isRestoring ? {
+              // 行内按钮绘制恢复进度，避免另加列导致表格抖动。
+              background: `linear-gradient(to right, var(--color-primary-light) 0%, var(--color-primary-light) ${Math.round(restoreProgress ?? 0)}%, transparent ${Math.round(restoreProgress ?? 0)}%)`,
+              borderColor: 'var(--color-primary)',
+              color: 'var(--color-primary)',
+            } : undefined}
+          >
             {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <Undo2 className="w-3 h-3" />}
-            {isRestoring ? '恢复中' : '恢复'}
+            {/* 恢复过程展示后端百分比，让大目录恢复时不再只有 loading。 */}
+            {isRestoring ? `${Math.round(restoreProgress ?? 0)}%` : '恢复'}
           </button>
         ) : (
           <button onClick={() => onMigrate(folder)} disabled={isMigrating} className="btn btn-primary btn-sm h-6 text-[11px]">
@@ -285,6 +298,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [restoringFolderId, setRestoringFolderId] = useState<string | null>(null);
+  const [restoreProgressMap, setRestoreProgressMap] = useState<Record<string, number>>({});
 
   // 迁移进度弹窗状态
   const [migrationModalOpen, setMigrationModalOpen] = useState(false);
@@ -801,9 +815,19 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
       } catch { /* non-critical */ }
     }
     setRestoringFolderId(folder.id);
+    setRestoreProgressMap(prev => ({ ...prev, [folder.id]: 0 }));
+    let unlisten: UnlistenFn | null = null;
     try {
+      try {
+        unlisten = await listen<MigrationProgressEvent>('migration-progress', (event) => {
+          const data = event.payload;
+          // 恢复事件以原路径作为 task_id，只更新当前文件夹按钮。
+          if (data.task_id.toLowerCase() === folder.path.toLowerCase()) {
+            setRestoreProgressMap(prev => ({ ...prev, [folder.id]: data.percent }));
+          }
+        });
+      } catch { /* 监听失败不阻断恢复，按钮会保持 0% */ }
       const result = await invoke<MigrationResult>('restore_large_folder', { junctionPath: folder.path });
-      setRestoringFolderId(null);
       if (result.success) {
         showToast(result.message, 'success');
         await fetchFolders();
@@ -811,8 +835,15 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
         showToast(result.message, 'error');
       }
     } catch (error) {
-      setRestoringFolderId(null);
       showToast(`恢复失败: ${error}`, 'error');
+    } finally {
+      if (unlisten) unlisten();
+      setRestoreProgressMap(prev => {
+        const next = { ...prev };
+        delete next[folder.id];
+        return next;
+      });
+      setRestoringFolderId(null);
     }
   }
 
@@ -925,6 +956,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
                   {systemFolders.map(f => (
                     <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
                       onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                      restoreProgress={restoreProgressMap[f.id]}
                       showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
                   ))}
                 </section>
@@ -938,6 +970,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
                   {appDataFolders.map(f => (
                     <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
                       onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                      restoreProgress={restoreProgressMap[f.id]}
                       showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
                   ))}
                 </section>
@@ -952,6 +985,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
                     <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
                       onOpenFolder={openFolder} onRemove={handleRemoveCustomFolder}
                       isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                      restoreProgress={restoreProgressMap[f.id]}
                       showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
                   ))}
                 </section>

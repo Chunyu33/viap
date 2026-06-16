@@ -4,11 +4,7 @@
 // 迁移和恢复，以及应用数据模板的管理
 
 use std::path::PathBuf;
-use std::fs;
-#[cfg(windows)]
-use std::os::windows::fs::symlink_dir;
 use std::sync::atomic::Ordering;
-use fs_extra::dir::{move_dir, CopyOptions};
 
 use tauri::{AppHandle, Emitter};
 
@@ -363,6 +359,7 @@ pub fn remove_custom_folder(id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn restore_large_folder(
     junction_path: String,
+    app_handle: AppHandle,
 ) -> Result<MigrationResult, String> {
     #[cfg(windows)]
     {
@@ -390,10 +387,11 @@ pub async fn restore_large_folder(
         };
 
         let target_path_str = target_path.to_string_lossy().to_string();
+        let handle = app_handle.clone();
         tauri::async_runtime::spawn_blocking(move || {
             // 将 _guard 移入 blocking 线程，hold 锁直到恢复完成
             let _lock = _guard;
-            restore_large_folder_inner(&junction, &target_path_str)
+            restore_large_folder_inner(&junction, &target_path_str, &handle)
         })
         .await
         .map_err(|e| format!("恢复线程异常: {}", e))?
@@ -407,46 +405,16 @@ pub async fn restore_large_folder(
 fn restore_large_folder_inner(
     junction_path: &std::path::Path,
     target_str: &str,
+    app_handle: &AppHandle,
 ) -> Result<MigrationResult, String> {
     let target_path = PathBuf::from(target_str);
 
-    // 步骤 1: 还原前检查目标盘空间
-    let file_size = utils::get_dir_size_safe(&target_path);
-    let original_parent = junction_path.parent()
-        .ok_or("无法获取原路径的父目录")?;
-    utils::check_disk_space_for_restore(original_parent, file_size)?;
-
-    // 步骤 2: 删除 Junction
-    fs::remove_dir(junction_path).map_err(|e| {
-        format!("无法删除符号链接: {}", e)
-    })?;
-
-    // 步骤 3: 移动文件夹回原位置
-    let mut options = CopyOptions::new();
-    options.overwrite = false;
-    options.copy_inside = false;
-
-    move_dir(&target_path, original_parent, &options).map_err(|move_err| {
-        // 尝试在原位置重建 Junction，恢复用户对数据的访问路径
-        let rollback_label = {
-            #[cfg(windows)]
-            {
-                match symlink_dir(&target_path, junction_path) {
-                    Ok(_) => format!(
-                        "已自动恢复符号链接，数据仍在: {}",
-                        target_path.display()
-                    ),
-                    Err(rb_err) => format!(
-                        "且无法恢复符号链接 ({})。数据仍安全保存在: {}，请手动移回: {}",
-                        rb_err, target_path.display(), junction_path.display()
-                    ),
-                }
-            }
-            #[cfg(not(windows))]
-            { String::new() }
-        };
-        format!("移动文件夹失败: {}。{}", move_err, rollback_label)
-    })?;
+    let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+        junction_path,
+        &target_path,
+        &junction_path.to_string_lossy(),
+        app_handle,
+    )?;
 
     // 步骤 4: 更新迁移记录状态
     let junction_str = junction_path.to_string_lossy().to_string();
@@ -454,12 +422,19 @@ fn restore_large_folder_inner(
         eprintln!("警告: 更新迁移记录状态失败: {}", e);
     }
 
+    let mut message = format!(
+        "恢复成功！文件夹已从 {} 移回 {}（{}）",
+        target_str,
+        junction_str,
+        crate::app_manager::migration::format_bytes(restore_result.restored_size)
+    );
+    if let Some(warning) = restore_result.cleanup_warning {
+        message.push_str(&format!("\n\n{}", warning));
+    }
+
     Ok(MigrationResult {
         success: true,
-        message: format!(
-            "恢复成功！文件夹已从 {} 移回 {}",
-            target_str, junction_str
-        ),
+        message,
         new_path: Some(junction_str),
     })
 }
@@ -470,6 +445,7 @@ fn restore_large_folder_inner(
 pub fn restore_large_folder_by_history(
     history_id: String,
     record: crate::models::MigrationRecord,
+    app_handle: AppHandle,
 ) -> Result<MigrationResult, String> {
     #[cfg(windows)]
     {
@@ -494,12 +470,6 @@ pub fn restore_large_folder_by_history(
                 new_path: None,
             });
         }
-
-        // 还原前空间检查
-        let file_size = utils::get_dir_size_safe(&target_path);
-        let original_parent = junction_path.parent()
-            .ok_or("无法获取原路径的父目录")?;
-        utils::check_disk_space_for_restore(original_parent, file_size)?;
 
         // 进程占用检测
         {
@@ -535,61 +505,31 @@ pub fn restore_large_folder_by_history(
             }
         }
 
-        // 删除 Junction
-        fs::remove_dir(&junction_path).map_err(|e| {
-            format!("无法删除目录联接: {}", e)
-        })?;
-
-        // 移动文件回原位置
-        let mut options = CopyOptions::new();
-        options.overwrite = false;
-        options.copy_inside = false;
-
-        move_dir(&target_path, original_parent, &options).map_err(|e| {
-            let target_intact = target_path.exists()
-                && std::fs::read_dir(&target_path)
-                    .map(|mut d| d.next().is_some())
-                    .unwrap_or(false);
-
-            if target_intact {
-                let _ = symlink_dir(&target_path, &junction_path);
-                format!(
-                    "移动文件失败: {}。\n已恢复链接，数据完好保存在：{}\n请关闭相关程序后重试。",
-                    e, target_path.display()
-                )
-            } else {
-                format!(
-                    "严重警告：移动文件过程中发生错误（{}），文件处于中间状态。\n\n\
-                     部分文件已移至：{}\n\
-                     剩余文件在：{}\n\n\
-                     请手动将 {} 目录下所有内容合并到 {}，\n\
-                     然后删除空的 {} 目录。",
-                    e,
-                    record.original_path,
-                    record.target_path,
-                    record.target_path,
-                    record.original_path,
-                    record.target_path,
-                )
-            }
-        })?;
-
-        // 防御性清理 target 残留
-        if target_path.exists() {
-            let _ = fs::remove_dir_all(&target_path);
-        }
+        let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+            &junction_path,
+            &target_path,
+            &record.original_path,
+            &app_handle,
+        )?;
 
         // 按 ID 更新 history 记录状态
         if let Err(e) = crate::storage::history::update_record_status_by_id(&history_id, "restored") {
             eprintln!("警告: 更新大文件夹恢复记录状态失败: {}", e);
         }
 
+        let mut message = format!(
+            "恢复成功！文件夹已从 {} 移回 {}（{}）",
+            record.target_path,
+            record.original_path,
+            crate::app_manager::migration::format_bytes(restore_result.restored_size)
+        );
+        if let Some(warning) = restore_result.cleanup_warning {
+            message.push_str(&format!("\n\n{}", warning));
+        }
+
         Ok(MigrationResult {
             success: true,
-            message: format!(
-                "恢复成功！文件夹已从 {} 移回 {}",
-                record.target_path, record.original_path
-            ),
+            message,
             new_path: Some(record.original_path),
         })
     }

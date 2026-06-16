@@ -3,12 +3,13 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
   Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2,
 } from 'lucide-react';
-import { MigrationRecord, MigrationResult } from '../types';
+import { MigrationProgressEvent, MigrationRecord, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
@@ -98,11 +99,12 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, linkStatus, onCleanup,
+  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
   isRestoring: boolean;
+  restoreProgress?: number;
   linkStatus: LinkStatus;
   onCleanup?: (id: string) => void;
 }) {
@@ -187,10 +189,17 @@ function HistoryRow({
             onClick={e => { e.stopPropagation(); onRestore(record.id, record.record_type || 'App'); }}
             disabled={isRestoring || linkStatus === 'checking'}
             className="btn btn-sm h-6 text-[11px] flex-shrink-0"
+            style={isRestoring ? {
+              // 恢复进度直接绘制在按钮底色中，保持历史列表列宽稳定。
+              background: `linear-gradient(to right, var(--color-primary-light) 0%, var(--color-primary-light) ${Math.round(restoreProgress ?? 0)}%, transparent ${Math.round(restoreProgress ?? 0)}%)`,
+              borderColor: 'var(--color-primary)',
+              color: 'var(--color-primary)',
+            } : undefined}
             title={linkStatus === 'checking' ? '检测中…' : '恢复'}
           >
             {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
-            恢复
+            {/* 恢复中展示后端百分比，避免历史页只能看到 loading。 */}
+            {isRestoring ? `${Math.round(restoreProgress ?? 0)}%` : '恢复'}
           </button>
         )}
 
@@ -261,6 +270,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   const [records, setRecords] = useState<MigrationRecord[]>(() => storeApi.getState().historyRecords);
   const [loading, setLoading] = useState(true);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [restoreProgressMap, setRestoreProgressMap] = useState<Record<string, number>>({});
   const [linkStatuses, setLinkStatuses] = useState<Record<string, LinkStatus>>({});
   const { toast, showToast, hideToast } = useToast();
 
@@ -362,8 +372,22 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   }
 
   async function handleRestore(historyId: string, _recordType: string) {
+    const record = records.find(item => item.id === historyId);
+    let unlisten: UnlistenFn | null = null;
     try {
       setRestoringId(historyId);
+      setRestoreProgressMap(prev => ({ ...prev, [historyId]: 0 }));
+      if (record) {
+        try {
+          unlisten = await listen<MigrationProgressEvent>('migration-progress', (event) => {
+            const data = event.payload;
+            // 恢复事件以原路径为 task_id，历史页按记录 ID 更新对应行按钮。
+            if (data.task_id.toLowerCase() === record.original_path.toLowerCase()) {
+              setRestoreProgressMap(prev => ({ ...prev, [historyId]: data.percent }));
+            }
+          });
+        } catch { /* 监听失败不阻断恢复 */ }
+      }
       // 统一使用 restore_app，后端根据 record_type 自动分发恢复逻辑
       // 避免 restore_large_folder 不更新 history 状态导致记录残留的问题
       const result = await invoke<MigrationResult>('restore_app', { historyId });
@@ -382,7 +406,15 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
       }
     } catch (error) {
       showToast(`恢复失败: ${error}`, 'error');
-    } finally { setRestoringId(null); }
+    } finally {
+      if (unlisten) unlisten();
+      setRestoreProgressMap(prev => {
+        const next = { ...prev };
+        delete next[historyId];
+        return next;
+      });
+      setRestoringId(null);
+    }
   }
 
   useEffect(() => {
@@ -534,6 +566,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                   <HistoryRow key={record.id} record={record}
                     onRestore={handleRestore}
                     isRestoring={restoringId === record.id}
+                    restoreProgress={restoreProgressMap[record.id]}
                     linkStatus={linkStatuses[record.id] || 'unknown'}
                     onCleanup={handleCleanupBroken} />
                 ))}

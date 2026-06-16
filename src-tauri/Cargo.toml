@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.1.1"
+version = "1.1.2"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
@@ -16,6 +16,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[features]
+# Tauri dev 模式会以 --no-default-features 启动；custom-protocol 只放在默认 feature，
+# 避免开发时 generate_context! 强制校验 frontendDist，导致热更新窗口无法加载 devUrl。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -59,4 +65,3 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_Shell",
 ] }
-

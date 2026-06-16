@@ -19,6 +19,27 @@ use std::sync::atomic::Ordering;
 
 use crate::models::*;
 use crate::app_manager::uninstaller;
+use tauri::Manager;
+
+fn empty_icon_response() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(204)
+        .header("content-type", "image/png")
+        .body(Vec::new())
+        .unwrap()
+}
+
+fn icon_response(png_bytes: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    if png_bytes.is_empty() {
+        return empty_icon_response();
+    }
+    tauri::http::Response::builder()
+        .status(200)
+        .header("content-type", "image/png")
+        .header("cache-control", "public, max-age=604800")
+        .body(png_bytes)
+        .unwrap()
+}
 
 // ============================================================================
 // Tauri 命令 — 系统信息
@@ -30,6 +51,16 @@ fn get_viap_install_path() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = exe.parent().ok_or("无法获取 Viap 安装目录".to_string())?;
     Ok(parent.to_string_lossy().to_string())
+}
+
+/// 前端首帧挂载后再显示窗口，避免 WebView 初始化期间暴露白屏。
+#[tauri::command]
+fn frontend_ready(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        window.show().map_err(|e| format!("显示主窗口失败: {}", e))?;
+        window.set_focus().map_err(|e| format!("聚焦主窗口失败: {}", e))?;
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -49,7 +80,13 @@ fn get_installed_apps() -> Result<Vec<InstalledApp>, String> {
 #[tauri::command]
 async fn get_installed_apps_stream(
     app_handle: tauri::AppHandle,
+    use_snapshot: Option<bool>,
+    force_refresh: Option<bool>,
 ) -> Result<Vec<InstalledApp>, String> {
+    if force_refresh.unwrap_or(false) {
+        app_manager::cache::invalidate();
+    }
+
     // 快速路径：内存缓存命中则直接 emit done 事件（含完整列表），不重新扫描
     if let Some(cached) = app_manager::cache::get_cached() {
         let total = cached.len();
@@ -67,8 +104,9 @@ async fn get_installed_apps_stream(
 
     // 缓存未命中：在阻塞线程池中执行流式扫描
     let app_handle_clone = app_handle.clone();
+    let use_snapshot = use_snapshot.unwrap_or(true);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        app_manager::scanner::SCANNER.scan_all_streaming(&app_handle_clone)
+        app_manager::scanner::SCANNER.scan_all_streaming(&app_handle_clone, use_snapshot)
     })
     .await
     .map_err(|e| format!("扫描线程异常: {}", e))??;
@@ -220,10 +258,35 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                // 前端 ready 信号异常时兜底显示窗口，避免用户误以为程序打不开。
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(false) {
+                        let _ = window.show();
+                    }
+                }
+            });
+            Ok(())
+        })
+        .register_asynchronous_uri_scheme_protocol("viap-icon", |_ctx, request, responder| {
+            let encoded_path = request.uri().path().to_string();
+            std::thread::spawn(move || {
+                // 图标请求来自 WebView 的 img 标签，失败时返回空响应即可保留占位图。
+                let response = crate::app_manager::snapshot::decode_icon_path(&encoded_path)
+                    .map(|icon_path| crate::system::icon::extract_icon_png_bytes(&icon_path))
+                    .map(icon_response)
+                    .unwrap_or_else(empty_icon_response);
+                responder.respond(response);
+            });
+        })
         .manage(MigrationState::default())
         .invoke_handler(tauri::generate_handler![
             // 系统接口
             system::disk_usage::get_disk_usage,
+            frontend_ready,
             get_viap_install_path,
             // 存储层 — 数据目录
             storage::data_dir::get_data_dir_info,
