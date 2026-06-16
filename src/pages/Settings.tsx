@@ -1,7 +1,7 @@
 // 设置页面 — 桌面工具风格
 // 克制配色，紧凑布局
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, confirm } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
@@ -22,6 +22,13 @@ import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
 import type { DataDirConfig, GhostLinkPreview } from '../types';
+import {
+  applyFontSize,
+  DEFAULT_FONT_SIZE_PX,
+  MAX_FONT_SIZE_PX,
+  MIN_FONT_SIZE_PX,
+  normalizeFontSizePx,
+} from '../utils/fontSize';
 
 interface MigrationStats {
   total_space_saved: number;
@@ -58,6 +65,7 @@ const DEFAULT_SETTINGS = {
   defaultDataTargetPath: '',
   useRecycleBin: true,
   showScanDebug: false,
+  fontSizePx: DEFAULT_FONT_SIZE_PX,
 };
 
 /** 迁移旧版设置：将 defaultTargetPath 升迁为 defaultAppTargetPath */
@@ -74,7 +82,8 @@ function loadSettings() {
     if (saved) {
       const raw = JSON.parse(saved);
       const migrated = migrateOldSettings(raw);
-      return { ...DEFAULT_SETTINGS, ...migrated };
+      const merged = { ...DEFAULT_SETTINGS, ...migrated };
+      return { ...merged, fontSizePx: normalizeFontSizePx(merged.fontSizePx) };
     }
   } catch { /* ignore */ }
   return DEFAULT_SETTINGS;
@@ -83,6 +92,12 @@ function loadSettings() {
 function saveSettings(s: typeof DEFAULT_SETTINGS) {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
+
+const FONT_SIZE_PRESETS = [
+  { label: '标准', value: 13 },
+  { label: '适中', value: 14 },
+  { label: '较大', value: 15 },
+];
 
 function Toggle({ active, onChange }: { active: boolean; onChange: () => void }) {
   return (
@@ -308,8 +323,16 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   }
 
   const updateSetting = <K extends keyof typeof DEFAULT_SETTINGS>(k: K, v: typeof DEFAULT_SETTINGS[K]) => {
-    const ns = { ...settings, [k]: v }; setSettings(ns); saveSettings(ns);
+    const nextValue = k === 'fontSizePx' ? normalizeFontSizePx(v) : v;
+    const ns = { ...settings, [k]: nextValue };
+    setSettings(ns);
+    saveSettings(ns);
+    // 字号是外观设置，保存后立即写入 CSS 变量，四个模块无需刷新即可生效。
+    if (k === 'fontSizePx') applyFontSize(nextValue);
   };
+
+  const fontPresetIndex = FONT_SIZE_PRESETS.findIndex(preset => preset.value === settings.fontSizePx);
+  const fontRangeProgress = ((settings.fontSizePx - MIN_FONT_SIZE_PX) / (MAX_FONT_SIZE_PX - MIN_FONT_SIZE_PX)) * 100;
 
   /** 选择默认应用迁移目录（C 盘以外的目录） */
   const handleSelectAppTargetPath = async () => {
@@ -382,6 +405,70 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   icon={<Moon className="w-4 h-4" />} label="深色" />
                 <ThemeButton mode="system" currentMode={themeState.mode} onClick={() => themeState.setTheme('system')}
                   icon={<Monitor className="w-4 h-4" />} label="系统" />
+              </div>
+            </div>
+            <div className="setting-item" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <AppWindow className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div>
+                  <p className="setting-label">字体大小</p>
+                  <p className="setting-desc">调整应用内文字大小，范围 {MIN_FONT_SIZE_PX}-{MAX_FONT_SIZE_PX}px。</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <div
+                  className="relative flex h-7 w-[132px] items-center overflow-hidden rounded p-0.5"
+                  style={{ background: 'var(--bg-row-hover)' }}
+                >
+                  <span
+                    className="absolute inset-y-0.5 left-0.5 rounded transition-all duration-200 ease-out"
+                    style={{
+                      width: 'calc((100% - 4px) / 3)',
+                      opacity: fontPresetIndex >= 0 ? 1 : 0,
+                      transform: `translateX(${fontPresetIndex * 100}%)`,
+                      background: 'var(--color-primary)',
+                    }}
+                  />
+                  {FONT_SIZE_PRESETS.map(preset => (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => updateSetting('fontSizePx', preset.value)}
+                      className="relative z-10 h-full flex-1 rounded text-[11px] transition-colors"
+                      style={{
+                        color: settings.fontSizePx === preset.value ? 'var(--text-inverse)' : 'var(--text-tertiary)',
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="range"
+                  min={MIN_FONT_SIZE_PX}
+                  max={MAX_FONT_SIZE_PX}
+                  step={1}
+                  value={settings.fontSizePx}
+                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
+                  className="theme-range w-24"
+                  style={{ '--range-progress': `${fontRangeProgress}%` } as CSSProperties}
+                  title="调整字体大小"
+                />
+                <input
+                  type="number"
+                  min={MIN_FONT_SIZE_PX}
+                  max={MAX_FONT_SIZE_PX}
+                  value={settings.fontSizePx}
+                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
+                  className="h-7 w-14 rounded border px-2 text-[12px] outline-none"
+                  style={{
+                    borderColor: 'var(--border-color)',
+                    background: 'var(--bg-input)',
+                    color: 'var(--text-primary)',
+                  }}
+                />
               </div>
             </div>
           </div>

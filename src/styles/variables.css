@@ -144,12 +144,12 @@
 
   /* 字体 */
   --font-family: 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-size-xs: 11px;
-  --font-size-sm: 12px;
   --font-size-base: 13px;
-  --font-size-lg: 14px;
-  --font-size-xl: 16px;
-  --font-size-2xl: 20px;
+  --font-size-xs: max(10px, calc(var(--font-size-base) - 2px));
+  --font-size-sm: max(11px, calc(var(--font-size-base) - 1px));
+  --font-size-lg: calc(var(--font-size-base) + 1px);
+  --font-size-xl: calc(var(--font-size-base) + 3px);
+  --font-size-2xl: calc(var(--font-size-base) + 7px);
 
   --font-weight-normal: 400;
   --font-weight-medium: 500;
@@ -163,5 +163,5 @@
   --transition-normal: 180ms ease;
 
   /* 行高 */
-  --row-height: 42px;
+  --row-height: calc(42px + (var(--font-size-base) - 13px) * 1.6);
 }

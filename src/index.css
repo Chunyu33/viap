@@ -69,6 +69,38 @@ input {
   font-family: inherit;
 }
 
+input[type="range"].theme-range {
+  height: 18px;
+  accent-color: var(--color-primary);
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="range"].theme-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-primary) 0%, var(--color-primary) var(--range-progress, 50%), var(--border-color-strong) var(--range-progress, 50%), var(--border-color-strong) 100%);
+}
+
+input[type="range"].theme-range::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 999px;
+  border: 2px solid var(--bg-content);
+  background: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  -webkit-appearance: none;
+}
+
+/* 常用 Tailwind 固定字号映射到用户字号，保证四个模块整体随外观设置缩放。 */
+.text-\[10px\] { font-size: max(10px, calc(var(--font-size-base) - 3px)); }
+.text-\[11px\] { font-size: var(--font-size-xs); }
+.text-\[12px\] { font-size: var(--font-size-sm); }
+.text-\[13px\] { font-size: var(--font-size-base); }
+.text-\[14px\] { font-size: var(--font-size-lg); }
+
 /* 动画 */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-4px); }
