@@ -23,6 +23,12 @@ body {
   user-select: none;
 }
 
+/* 选中的样式 */
+::selection {
+  background-color: var(--color-primary); /* 选中的背景颜色 */
+  color: #ffffff;            /* 选中的字体颜色 */
+}
+
 /* 滚动条 - 桌面工具风格：细、低调 */
 ::-webkit-scrollbar {
   width: 6px;

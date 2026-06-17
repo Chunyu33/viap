@@ -18,6 +18,7 @@ import TargetPickerDialog from '../components/TargetPickerDialog';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import { useViapStore } from '../store';
+import { formatMigrationFailureMessage, parseTargetExistsConflict } from '../utils/migrationMessages';
 import {
   LargeFolder, ProcessLockResult, LargeFolderSizeEvent,
   MigrationProgressEvent,
@@ -49,6 +50,17 @@ function getFolderIcon(iconId: string) {
     edge_cache: <Globe className="w-4 h-4" />,
     vscode_extensions: <Code className="w-4 h-4" />,
     npm_global: <Package className="w-4 h-4" />,
+    npm_cache: <Package className="w-4 h-4" />,
+    yarn_cache: <Package className="w-4 h-4" />,
+    gradle_cache: <Package className="w-4 h-4" />,
+    maven_repository: <Package className="w-4 h-4" />,
+    cargo_home: <Package className="w-4 h-4" />,
+    rustup_home: <Package className="w-4 h-4" />,
+    pip_cache: <Package className="w-4 h-4" />,
+    uv_cache: <Package className="w-4 h-4" />,
+    nuget_packages: <Package className="w-4 h-4" />,
+    claude_code: <Code className="w-4 h-4" />,
+    codex_data: <Code className="w-4 h-4" />,
   };
   return map[iconId] || <FolderOpen className="w-4 h-4" />;
 }
@@ -528,11 +540,38 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
     setLockedProcesses([]);
 
     try {
-      const result = await invoke<MigrationResult>('migrate_large_folder', {
+      let result = await invoke<MigrationResult>('migrate_large_folder', {
         sourcePath: folder.path,
         targetDir,
         userConfirmedWarning,
       });
+
+      const targetConflict = parseTargetExistsConflict(result.message);
+      // 单个数据目录迁移也要处理后端控制协议，否则会把 TARGET_EXISTS_RETRY 直接展示给用户。
+      if (!result.success && targetConflict) {
+        const promptMsg = targetConflict.isRetry
+          ? `目标位置已存在同名目录：\n${targetConflict.existingPath}\n\n该目录可能是上次迁移未完成留下的残留，也可能是手动创建的数据。\n覆盖将删除该目录后重新迁移，是否继续？`
+          : `目标路径已存在同名目录：\n${targetConflict.existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
+        const overwrite = await confirm(promptMsg, {
+          title: '目标目录已存在',
+          kind: 'warning',
+          okLabel: '覆盖并迁移',
+          cancelLabel: '取消',
+        });
+        if (!overwrite) {
+          setMigrationStep('error');
+          setMigrationMessage('用户取消了迁移（目标路径已存在）');
+          return;
+        }
+
+        // 用户明确确认后才允许后端清理目标残留，保护已有数据不被静默覆盖。
+        result = await invoke<MigrationResult>('migrate_large_folder', {
+          sourcePath: folder.path,
+          targetDir,
+          forceOverwrite: true,
+          userConfirmedWarning,
+        });
+      }
 
       if (result.success) {
         setMigrationStep('success');
@@ -542,7 +581,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
         await fetchFolders();
       } else {
         setMigrationStep('error');
-        setMigrationMessage(result.message);
+        setMigrationMessage(formatMigrationFailureMessage(result.message));
       }
     } catch (error) {
       const errStr = String(error);
@@ -714,16 +753,12 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
         }
 
         // 处理 TARGET_EXISTS 特殊返回值（不能直接 Toast 路径字符串给用户）
-        if (!result.success && (
-          result.message.startsWith('TARGET_EXISTS_RETRY:') ||
-          result.message.startsWith('TARGET_EXISTS:')
-        )) {
+        const targetConflict = parseTargetExistsConflict(result.message);
+        if (!result.success && targetConflict) {
           if (batchCancelledRef.current) { failCount++; failedFolders.push(folder.display_name); continue; }
-          const isRetry = result.message.startsWith('TARGET_EXISTS_RETRY:');
-          const existingPath = result.message.replace(/^TARGET_EXISTS(?:_RETRY)?:/, '');
-          const promptMsg = isRetry
-            ? `${folder.display_name} 上次迁移未完成，目标位置存在残留目录：\n${existingPath}\n\n覆盖将清理残留并重新迁移。`
-            : `${folder.display_name} 的目标路径已存在：\n${existingPath}\n\n是否覆盖？`;
+          const promptMsg = targetConflict.isRetry
+            ? `${folder.display_name} 的目标位置已存在同名目录：\n${targetConflict.existingPath}\n\n该目录可能是上次迁移未完成留下的残留，也可能是手动创建的数据。\n覆盖将删除该目录后重新迁移，是否继续？`
+            : `${folder.display_name} 的目标路径已存在：\n${targetConflict.existingPath}\n\n是否覆盖？`;
           const overwrite = await confirm(promptMsg, {
             title: '目标目录已存在',
             kind: 'warning',
@@ -741,7 +776,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
             if (retryResult.success) {
               successCount++;
             } else {
-              showToast(`${folder.display_name}: ${retryResult.message}`, 'error');
+              showToast(`${folder.display_name}: ${formatMigrationFailureMessage(retryResult.message)}`, 'error');
               failCount++;
               failedFolders.push(folder.display_name);
             }
@@ -756,7 +791,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
           successCount++;
         } else {
           // 后端错误消息（文件占用、空间不足等），直接显示
-          showToast(`${folder.display_name}: ${result.message}`, 'error');
+          showToast(`${folder.display_name}: ${formatMigrationFailureMessage(result.message)}`, 'error');
           failCount++;
           failedFolders.push(folder.display_name);
         }
@@ -1054,7 +1089,8 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
         }
       />
 
-      <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
+      {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
+      <Toast message={toast.message} type={toast.type} visible={toast.visible} duration={toast.duration} onClose={hideToast} />
     </div>
   );
 }

@@ -596,7 +596,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           </div>
         </>
       )}
-      <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
+      {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
+      <Toast message={toast.message} type={toast.type} visible={toast.visible} duration={toast.duration} onClose={hideToast} />
     </div>
   );
 }

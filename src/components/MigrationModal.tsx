@@ -233,11 +233,11 @@ export default function MigrationModal({
             </div>
           )}
 
-          {/* 错误详情 */}
+          {/* 错误详情：长 Windows 路径必须允许断行，避免失败提示撑出横向滚动条。 */}
           {isError && message && (
             <div className="text-center mb-1">
               <p
-                className="text-xs leading-relaxed"
+                className="text-xs leading-relaxed whitespace-pre-line break-all"
                 style={{ color: 'var(--text-secondary)' }}
               >
                 {message}

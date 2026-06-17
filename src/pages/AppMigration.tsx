@@ -13,6 +13,7 @@ import CleanupModal from '../components/CleanupModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
 import Toast, { useToast } from '../components/Toast';
 import { logger } from '../utils/logger';
+import { formatMigrationFailureMessage, parseTargetExistsConflict } from '../utils/migrationMessages';
 import { TabNavigationContext } from '../App';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
@@ -1116,15 +1117,12 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         userConfirmedWarning,
       });
 
-      // 目标路径已有残留目录 → 询问用户是否覆盖
-      if (!result.success && (result.message.startsWith('TARGET_EXISTS_RETRY:') || result.message.startsWith('TARGET_EXISTS:'))) {
-        const isRetry = result.message.startsWith('TARGET_EXISTS_RETRY:');
-        const existingPath = isRetry
-          ? result.message.replace('TARGET_EXISTS_RETRY:', '')
-          : result.message.replace('TARGET_EXISTS:', '');
-        const promptMsg = isRetry
-          ? `上次迁移未完全完成，目标位置存在残留目录：\n${existingPath}\n\n覆盖将清理残留并重新迁移。`
-          : `目标路径已存在残留目录：\n${existingPath}\n\n可能是上次恢复或迁移失败留下的。\n覆盖将删除该目录后重新迁移，是否继续？`;
+      const targetConflict = parseTargetExistsConflict(result.message);
+      // 目标路径已有残留目录 → 询问用户是否覆盖，避免内部状态码进入弹窗。
+      if (!result.success && targetConflict) {
+        const promptMsg = targetConflict.isRetry
+          ? `目标位置已存在同名目录：\n${targetConflict.existingPath}\n\n该目录可能是上次迁移未完成留下的残留，也可能是手动创建的数据。\n覆盖将删除该目录后重新迁移，是否继续？`
+          : `目标路径已存在同名目录：\n${targetConflict.existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
         const overwrite = await confirm(
           promptMsg,
           { title: '目标目录已存在', kind: 'warning', okLabel: '覆盖并迁移', cancelLabel: '取消' }
@@ -1194,7 +1192,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         await handleRefresh();
       } else {
         setMigrationStep('error');
-        setMigrationMessage(result.message);
+        setMigrationMessage(formatMigrationFailureMessage(result.message));
       }
     } catch (error) {
       if (unlisten) unlisten();
@@ -1426,16 +1424,12 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         }
 
         // 目标路径已有残留目录 → 弹出确认框，用户确认后以 force_overwrite 重试
-        if (!result.success && (
-          result.message.startsWith('TARGET_EXISTS_RETRY:') ||
-          result.message.startsWith('TARGET_EXISTS:')
-        )) {
+        const targetConflict = parseTargetExistsConflict(result.message);
+        if (!result.success && targetConflict) {
           if (batchCancelledRef.current) { failCount++; failedApps.push(app.display_name); continue; }
-          const isRetry = result.message.startsWith('TARGET_EXISTS_RETRY:');
-          const existingPath = result.message.replace(/^TARGET_EXISTS(?:_RETRY)?:/, '');
-          const promptMsg = isRetry
-            ? `${app.display_name} 上次迁移未完全完成，目标位置存在残留目录：\n${existingPath}\n\n覆盖将清理残留并重新迁移。`
-            : `${app.display_name} 的目标路径已存在：\n${existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
+          const promptMsg = targetConflict.isRetry
+            ? `${app.display_name} 的目标位置已存在同名目录：\n${targetConflict.existingPath}\n\n该目录可能是上次迁移未完成留下的残留，也可能是手动创建的数据。\n覆盖将删除该目录后重新迁移，是否继续？`
+            : `${app.display_name} 的目标路径已存在：\n${targetConflict.existingPath}\n\n覆盖将删除该目录后重新迁移，是否继续？`;
           const overwrite = await confirm(promptMsg, {
             title: '目标目录已存在',
             kind: 'warning',
@@ -1470,7 +1464,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
           successCount++;
         } else {
           // 后端返回的错误（文件占用、空间不足、完整性校验失败等）
-          showToast(`${app.display_name}: ${result.message}`, 'error');
+          showToast(`${app.display_name}: ${formatMigrationFailureMessage(result.message)}`, 'error');
           failCount++;
           failedApps.push(app.display_name);
         }
@@ -1717,11 +1711,12 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         />
       )}
 
-      {/* Toast 通知 */}
+      {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
       <Toast
         message={toast.message}
         type={toast.type}
         visible={toast.visible}
+        duration={toast.duration}
         onClose={hideToast}
       />
     </div>
