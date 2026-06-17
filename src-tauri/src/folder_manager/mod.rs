@@ -65,6 +65,61 @@ pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
             icon_id: "npm_global".to_string(),
             process_names: vec![], path: None,
         },
+        AppDataTemplate {
+            id: "npm_cache".to_string(), display_name: "npm 缓存".to_string(),
+            icon_id: "npm_cache".to_string(),
+            process_names: vec!["node.exe".to_string()], path: Some(r"%LOCALAPPDATA%\npm-cache".to_string()),
+        },
+        AppDataTemplate {
+            id: "yarn_cache".to_string(), display_name: "Yarn 缓存".to_string(),
+            icon_id: "yarn_cache".to_string(),
+            process_names: vec!["node.exe".to_string(), "yarn.exe".to_string()], path: Some(r"%LOCALAPPDATA%\Yarn\Cache".to_string()),
+        },
+        AppDataTemplate {
+            id: "gradle_cache".to_string(), display_name: "Gradle 缓存".to_string(),
+            icon_id: "gradle_cache".to_string(),
+            process_names: vec!["java.exe".to_string(), "gradle.exe".to_string(), "gradlew.exe".to_string()], path: Some(r"%USERPROFILE%\.gradle".to_string()),
+        },
+        AppDataTemplate {
+            id: "maven_repository".to_string(), display_name: "Maven 本地仓库".to_string(),
+            icon_id: "maven_repository".to_string(),
+            process_names: vec!["java.exe".to_string(), "mvn.exe".to_string()], path: Some(r"%USERPROFILE%\.m2\repository".to_string()),
+        },
+        AppDataTemplate {
+            id: "cargo_home".to_string(), display_name: "Cargo 包缓存".to_string(),
+            icon_id: "cargo_home".to_string(),
+            process_names: vec!["cargo.exe".to_string(), "rustc.exe".to_string(), "rust-analyzer.exe".to_string()], path: Some(r"%USERPROFILE%\.cargo".to_string()),
+        },
+        AppDataTemplate {
+            id: "rustup_home".to_string(), display_name: "Rustup 工具链".to_string(),
+            icon_id: "rustup_home".to_string(),
+            process_names: vec!["rustup.exe".to_string(), "rustc.exe".to_string(), "rust-analyzer.exe".to_string()], path: Some(r"%USERPROFILE%\.rustup".to_string()),
+        },
+        AppDataTemplate {
+            id: "pip_cache".to_string(), display_name: "pip 缓存".to_string(),
+            icon_id: "pip_cache".to_string(),
+            process_names: vec!["python.exe".to_string(), "pip.exe".to_string()], path: Some(r"%LOCALAPPDATA%\pip\Cache".to_string()),
+        },
+        AppDataTemplate {
+            id: "uv_cache".to_string(), display_name: "uv 缓存".to_string(),
+            icon_id: "uv_cache".to_string(),
+            process_names: vec!["uv.exe".to_string(), "python.exe".to_string()], path: Some(r"%LOCALAPPDATA%\uv\cache".to_string()),
+        },
+        AppDataTemplate {
+            id: "nuget_packages".to_string(), display_name: "NuGet 包缓存".to_string(),
+            icon_id: "nuget_packages".to_string(),
+            process_names: vec!["dotnet.exe".to_string(), "nuget.exe".to_string(), "devenv.exe".to_string()], path: Some(r"%USERPROFILE%\.nuget\packages".to_string()),
+        },
+        AppDataTemplate {
+            id: "claude_code".to_string(), display_name: "Claude Code 数据".to_string(),
+            icon_id: "claude_code".to_string(),
+            process_names: vec!["node.exe".to_string(), "claude.exe".to_string()], path: Some(r"%USERPROFILE%\.claude".to_string()),
+        },
+        AppDataTemplate {
+            id: "codex_data".to_string(), display_name: "Codex 数据".to_string(),
+            icon_id: "codex_data".to_string(),
+            process_names: vec!["node.exe".to_string(), "codex.exe".to_string()], path: Some(r"%USERPROFILE%\.codex".to_string()),
+        },
     ]
 }
 
@@ -83,10 +138,53 @@ pub fn load_app_data_templates() -> Vec<AppDataTemplate> {
         let _ = std::fs::write(&path, &json);
         return defaults;
     }
-    std::fs::read_to_string(&path)
+    let templates = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<AppDataTemplate>>(&s).ok())
-        .unwrap_or_else(default_app_data_templates)
+        .unwrap_or_else(default_app_data_templates);
+
+    merge_missing_default_templates(templates)
+}
+
+/// 旧版本已经生成过 app_data_templates.json 时，需要把新增内置模板补进去。
+/// 只按 id 合并缺失项，保留用户已经编辑过的名称、路径和进程配置。
+fn merge_missing_default_templates(mut templates: Vec<AppDataTemplate>) -> Vec<AppDataTemplate> {
+    // pnpm Store 依赖硬链接机制，迁移后容易破坏包存储语义；旧版已写入配置的条目需要主动清理。
+    let mut changed = remove_deprecated_app_data_templates(&mut templates);
+
+    let existing_ids: std::collections::HashSet<String> = templates
+        .iter()
+        .map(|template| template.id.to_lowercase())
+        .collect();
+
+    for default_template in default_app_data_templates() {
+        if existing_ids.contains(&default_template.id.to_lowercase()) {
+            continue;
+        }
+        templates.push(default_template);
+        changed = true;
+    }
+
+    if changed {
+        let path = utils::app_data_templates_path(&ensure_data_dir());
+        if let Ok(json) = serde_json::to_string_pretty(&templates) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    templates
+}
+
+fn remove_deprecated_app_data_templates(templates: &mut Vec<AppDataTemplate>) -> bool {
+    let before_len = templates.len();
+    templates.retain(|template| !deprecated_app_data_template_ids()
+        .iter()
+        .any(|deprecated_id| template.id.eq_ignore_ascii_case(deprecated_id)));
+    templates.len() != before_len
+}
+
+fn deprecated_app_data_template_ids() -> &'static [&'static str] {
+    &["pnpm_store"]
 }
 
 /// 保存应用数据模板
@@ -159,6 +257,10 @@ pub fn get_large_folders() -> Result<Vec<LargeFolder>, String> {
             let expanded = utils::expand_env_vars(custom_path);
             let path = PathBuf::from(&expanded);
             let exists = path.exists() && path.is_dir();
+            // 仅隐藏“内置默认路径且未检测到”的开发目录，用户手动改过的路径仍展示为未检测到，便于排查配置。
+            if !exists && is_missing_default_builtin_path(template) {
+                continue;
+            }
             let is_junc = if exists { utils::is_junction(&path) } else { false };
             folders.push(LargeFolder {
                 id: template.id.clone(),
@@ -220,6 +322,16 @@ pub fn get_large_folders() -> Result<Vec<LargeFolder>, String> {
     });
 
     Ok(folders)
+}
+
+fn is_missing_default_builtin_path(template: &AppDataTemplate) -> bool {
+    default_app_data_templates()
+        .iter()
+        .find(|default_template| default_template.id.eq_ignore_ascii_case(&template.id))
+        .and_then(|default_template| default_template.path.as_ref())
+        .zip(template.path.as_ref())
+        .map(|(default_path, current_path)| default_path.eq_ignore_ascii_case(current_path))
+        .unwrap_or(false)
 }
 
 /// 启动文件夹大小异步扫描（Tauri 命令）

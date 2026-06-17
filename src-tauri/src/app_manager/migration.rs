@@ -972,13 +972,14 @@ pub fn migrate_app(
 
         if target_path.exists() {
             if !force_overwrite {
-                // 判断是否为失败迁移残留：source 是普通目录且 target 也存在
-                // 区别于 JUNCTION_LOOP 场景（source 仍是 Junction 指向 target）
-                let looks_like_failed_migration = source_path.is_dir()
+                // 这里返回内部控制协议，不直接作为用户提示展示：
+                // source 是普通目录且 target 也存在时，既可能是失败残留，也可能是用户手动创建的同名目录。
+                // 前端会用 TARGET_EXISTS_RETRY 弹出中文覆盖确认，确认后才允许 force_overwrite 清理目标。
+                let can_retry_with_user_confirmation = source_path.is_dir()
                     && !crate::utils::is_junction(source_path)
                     && target_path.is_dir();
 
-                let msg = if looks_like_failed_migration {
+                let msg = if can_retry_with_user_confirmation {
                     format!("TARGET_EXISTS_RETRY:{}", target_path_str)
                 } else {
                     format!("TARGET_EXISTS:{}", target_path_str)

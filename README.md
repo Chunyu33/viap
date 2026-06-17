@@ -109,7 +109,8 @@ viap/
 │   │   ├── useTheme.ts            # 主题切换
 │   │   └── useUpdater.ts          # 自动更新检测（check/download/进度跟踪）
 │   ├── utils/                    # 工具函数
-│   │   └── logger.ts            # 统一日志工具
+│   │   ├── logger.ts            # 统一日志工具
+│   │   └── migrationMessages.ts # 迁移错误/内部状态码中文化
 │   ├── styles/                   # 样式系统
 │   │   ├── variables.css        # CSS 变量定义
 │   │   └── components.css       # 通用组件样式
@@ -202,6 +203,10 @@ npm run tauri build
    - 迁移后的应用通过符号链接访问
    - 请勿删除目标位置的文件
    - 如需卸载应用，建议先恢复到原位置
+   - 如果目标位置已存在同名目录，Viap 会弹出中文确认提示；只有用户确认后才会覆盖并重试迁移
+   - 错误类 Toast 会默认停留更久，鼠标悬停时暂停自动关闭，长错误和路径会自动换行，便于截图反馈问题
+   - 数据迁移会自动识别常见开发者缓存/包目录，如 Gradle、Maven、npm/Yarn、Cargo/Rustup、pip/uv、NuGet、Claude Code 和 Codex；未检测到的内置目录不会占用列表
+   - 设置页“关于”区域提供更新日志入口，可直接查看 GitHub 上的 CHANGELOG
 
 ### 技术限制
 

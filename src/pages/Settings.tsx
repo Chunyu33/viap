@@ -787,6 +787,21 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
               </div>
             </a>
+            {/* 更新日志 */}
+            <a href="https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer"
+              className="setting-item no-underline"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <BookOpen className="w-4 h-4" style={{ color: 'var(--text-tertiary)' }} />
+                </div>
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>更新日志</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>CHANGELOG.md</span>
+                <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+            </a>
             {/* B站/抖音同名 */}
             <div className="setting-item"
               style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
@@ -892,7 +907,8 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         copiedLabel={copiedLabel}
         onCopy={handleCopy}
       />
-      <Toast message={toast.message} type={toast.type} visible={toast.visible} onClose={hideToast} />
+      {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
+      <Toast message={toast.message} type={toast.type} visible={toast.visible} duration={toast.duration} onClose={hideToast} />
     </div>
   );
 }

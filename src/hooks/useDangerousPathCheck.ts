@@ -430,7 +430,7 @@ export function useDangerousPathCheck(): {
       if (matchPath(normalized, rule.pattern)) {
         const tip = BLOCKED_CATEGORY_TIPS[rule.category]
           ?? '该目录包含系统级组件，不支持迁移。';
-        return `🚫 无法迁移：${rule.label} 属于「${rule.category}」，不支持通过 Junction 迁移。\n\n${tip}`;
+        return `🚫 无法迁移：${rule.label} 属于「${rule.category}」，不支持迁移。\n\n${tip}`;
       }
     }
     return null;
