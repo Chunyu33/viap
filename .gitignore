@@ -18,6 +18,7 @@ dist-ssr
 .idea
 .DS_Store
 /.claude
+/.codex
 CLAUDE.*
 AGENTS.*
 /docs
