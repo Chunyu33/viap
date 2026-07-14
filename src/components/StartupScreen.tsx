@@ -1,4 +1,4 @@
-import { HardDrive, ShieldCheck } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 
 /**
  * 启动页只负责展示启动状态，不阻塞后台数据预热，避免机械硬盘扫描时出现空白窗口。
@@ -14,16 +14,12 @@ export default function StartupScreen() {
       <div className="startup-glow" aria-hidden="true" />
       <div className="relative flex flex-col items-center">
         <div className="startup-logo-wrap flex items-center justify-center">
-          <div
-            className="flex h-16 w-16 items-center justify-center rounded-2xl"
-            style={{
-              background: 'var(--color-primary)',
-              color: '#fff',
-              boxShadow: '0 12px 30px color-mix(in srgb, var(--color-primary) 28%, transparent)',
-            }}
-          >
-            <HardDrive className="h-8 w-8" strokeWidth={1.8} />
-          </div>
+          <img
+            src="/icon.svg"
+            alt="Viap"
+            className="h-16 w-16 rounded-2xl"
+            style={{ boxShadow: '0 12px 30px color-mix(in srgb, var(--color-primary) 28%, transparent)' }}
+          />
         </div>
         <div className="mt-5 text-xl font-semibold tracking-wide">Viap</div>
         <div className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>

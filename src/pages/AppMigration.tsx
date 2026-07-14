@@ -63,6 +63,11 @@ interface ScanPerformanceEvent {
   total_count: number;
 }
 
+interface ScanNoticeEvent {
+  code: string;
+  message: string;
+}
+
 interface DebugMetric {
   /** 前端调试面板展示的阶段名 */
   phase: string;
@@ -473,6 +478,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       ]);
     });
 
+    const noticeUnlisten = await listen<ScanNoticeEvent>('scan-notice', (event) => {
+      // 后端只在启动阶段延后深度扫描时发送提示，保留较长时间方便用户读完并执行手动刷新。
+      if (event.payload.message.trim()) {
+        showToast(event.payload.message, 'info', 12000);
+      }
+    });
+
     const unlisten = await listen<ScanProgressEvent>('scan-progress', (event) => {
       const { phase, apps: newApps, icon_updates, total_count, is_final } = event.payload;
 
@@ -554,6 +566,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     scanUnlistenRef.current = () => {
       unlisten();
       performanceUnlisten();
+      noticeUnlisten();
     };
 
     try {

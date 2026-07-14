@@ -92,6 +92,13 @@ pub struct ScanPerformanceEvent {
     pub total_count: usize,
 }
 
+/// 启动扫描提示，前端用它向用户解释为何需要手动刷新。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanNoticeEvent {
+    pub code: String,
+    pub message: String,
+}
+
 // ============================================================================
 // AppScanner 结构体
 // ============================================================================
@@ -304,6 +311,17 @@ impl AppScanner {
         // ── Tier 3：文件系统扫描 ──────────────────────────────────────
         // 跳过条件：应用数已达上限 OR 系统冷启动（开机 < 60s，磁盘尚未预热）
         let skip_tier3 = all_apps.len() >= EARLY_EXIT_APP_COUNT || system_uptime_secs() < 60;
+        if use_snapshot && system_uptime_secs() < 60 {
+            let _ = app_handle.emit("scan-notice", ScanNoticeEvent {
+                code: "STARTUP_FILESYSTEM_SCAN_DEFERRED".to_string(),
+                message: "系统刚启动或磁盘尚未预热，为避免机械硬盘持续寻道，启动阶段暂不进行深度文件系统扫描。当前首页先显示已识别的应用；如需完整识别非系统盘应用，请点击首页刷新按钮手动刷新。".to_string(),
+            });
+        } else if use_snapshot && !skip_tier3 {
+            let _ = app_handle.emit("scan-notice", ScanNoticeEvent {
+                code: "NON_SYSTEM_DRIVES_SCAN_DEFERRED".to_string(),
+                message: "为减少机械硬盘启动时的随机寻道，启动阶段暂不递归扫描非系统盘根目录。当前首页先显示注册表、快捷方式和常见软件目录；如需完整识别非系统盘应用，请点击首页刷新按钮手动刷新。".to_string(),
+            });
+        }
         if !skip_tier3 {
             // 首次启动只扫描高优先级软件目录，完整的非系统盘根目录扫描交给手动刷新。
             let t3_apps = self.scan_filesystem_constrained(&existing_paths, !use_snapshot);
