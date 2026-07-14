@@ -16,6 +16,7 @@ use serde::Serialize;
 use tauri::Emitter;
 
 use crate::models::{InstalledApp, ProcessLockResult};
+use crate::app_manager::disk_scan_policy::DiskScanPolicy;
 use rayon::prelude::*;
 use sysinfo::System;
 
@@ -186,7 +187,10 @@ impl AppScanner {
 
         // Tier 3：受限文件系统扫描
         let t3_start = Instant::now();
-        let fs_apps = self.scan_filesystem_constrained(&existing_paths, true);
+        let fs_apps = self.scan_filesystem_constrained(
+            &existing_paths,
+            &DiskScanPolicy::for_scan(false),
+        );
         let t3_ms = t3_start.elapsed().as_millis();
         orbit_log!("INFO", "scanner", "Tier3 文件系统扫描完成: {} 个应用, {}ms", fs_apps.len(), t3_ms);
         apps.extend(fs_apps);
@@ -309,22 +313,21 @@ impl AppScanner {
         all_apps.extend(t2_apps);
 
         // ── Tier 3：文件系统扫描 ──────────────────────────────────────
-        // 跳过条件：应用数已达上限 OR 系统冷启动（开机 < 60s，磁盘尚未预热）
-        let skip_tier3 = all_apps.len() >= EARLY_EXIT_APP_COUNT || system_uptime_secs() < 60;
-        if use_snapshot && system_uptime_secs() < 60 {
-            let _ = app_handle.emit("scan-notice", ScanNoticeEvent {
-                code: "STARTUP_FILESYSTEM_SCAN_DEFERRED".to_string(),
-                message: "系统刚启动或磁盘尚未预热，为避免机械硬盘持续寻道，启动阶段暂不进行深度文件系统扫描。当前首页先显示已识别的应用；如需完整识别非系统盘应用，请点击首页刷新按钮手动刷新。".to_string(),
-            });
-        } else if use_snapshot && !skip_tier3 {
+        // 仅在应用数量已足够时跳过 Tier3，磁盘介质差异由 DiskScanPolicy 单独处理。
+        let disk_scan_policy = DiskScanPolicy::for_scan(use_snapshot);
+        let skip_tier3 = all_apps.len() >= EARLY_EXIT_APP_COUNT;
+        if !skip_tier3 && disk_scan_policy.has_deferred_mounts() {
+            let deferred_mounts = disk_scan_policy.deferred_mount_labels().join("、");
             let _ = app_handle.emit("scan-notice", ScanNoticeEvent {
                 code: "NON_SYSTEM_DRIVES_SCAN_DEFERRED".to_string(),
-                message: "为减少机械硬盘启动时的随机寻道，启动阶段暂不递归扫描非系统盘根目录。当前首页先显示注册表、快捷方式和常见软件目录；如需完整识别非系统盘应用，请点击首页刷新按钮手动刷新。".to_string(),
+                message: format!(
+                    "机械硬盘冷启动跳过：已暂时跳过 {} 的深度扫描。当前首页先显示注册表、快捷方式和常见软件目录；如需完整识别这些盘中的应用，请点击首页刷新按钮手动刷新。",
+                    deferred_mounts
+                ),
             });
         }
         if !skip_tier3 {
-            // 首次启动只扫描高优先级软件目录，完整的非系统盘根目录扫描交给手动刷新。
-            let t3_apps = self.scan_filesystem_constrained(&existing_paths, !use_snapshot);
+            let t3_apps = self.scan_filesystem_constrained(&existing_paths, &disk_scan_policy);
             orbit_log!("INFO", "scanner", "Tier3 完成: {} 个新应用", t3_apps.len());
 
             let _ = app_handle.emit("scan-progress", ScanProgressEvent {
@@ -343,7 +346,7 @@ impl AppScanner {
 
             all_apps.extend(t3_apps);
         } else {
-            orbit_log!("INFO", "scanner", "跳过 Tier3（应用数 {} >= {} 或开机 {}s < 60s）", all_apps.len(), EARLY_EXIT_APP_COUNT, system_uptime_secs());
+            orbit_log!("INFO", "scanner", "跳过 Tier3（应用数 {} >= {}）", all_apps.len(), EARLY_EXIT_APP_COUNT);
             let _ = app_handle.emit("scan-progress", ScanProgressEvent {
                 phase: "tier3".to_string(),
                 apps: vec![],
@@ -817,9 +820,10 @@ impl AppScanner {
     fn scan_filesystem_constrained(
         &self,
         existing_paths: &HashSet<String>,
-        include_other_drives: bool,
+        disk_scan_policy: &DiskScanPolicy,
     ) -> Vec<InstalledApp> {
-        let (pf_roots, lad_roots, other_roots, hp_roots) = collect_filesystem_roots();
+        let (pf_roots, lad_roots, other_roots, hp_roots) =
+            collect_filesystem_roots(disk_scan_policy);
         let mut apps: Vec<InstalledApp> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
@@ -857,20 +861,15 @@ impl AppScanner {
             .collect();
 
         // 非系统盘根目录：深度 2（严格分级，依赖注册表 + LNK 覆盖 99% 场景）
-        let other_results: Vec<InstalledApp> = if include_other_drives {
-            other_roots
-                .par_iter()
-                .flat_map(|root| {
-                    let mut out = Vec::new();
-                    let mut s = HashSet::new();
-                    scan_directory_constrained(root, 0, 2, existing_paths, &mut s, &mut out, None);
-                    out
-                })
-                .collect()
-        } else {
-            // 启动阶段跳过磁盘根目录递归，仅保留常见软件目录，避免机械盘产生大量随机寻道。
-            Vec::new()
-        };
+        let other_results: Vec<InstalledApp> = other_roots
+            .par_iter()
+            .flat_map(|root| {
+                let mut out = Vec::new();
+                let mut s = HashSet::new();
+                scan_directory_constrained(root, 0, 2, existing_paths, &mut s, &mut out, None);
+                out
+            })
+            .collect();
 
         for app in pf_results
             .into_iter()
@@ -922,7 +921,7 @@ impl AppScanner {
     fn scan_filesystem_constrained(
         &self,
         _existing: &HashSet<String>,
-        _include_other_drives: bool,
+        _disk_scan_policy: &DiskScanPolicy,
     ) -> Vec<InstalledApp> {
         Vec::new()
     }
@@ -939,8 +938,7 @@ lazy_static::lazy_static! {
 // 工具函数
 // ============================================================================
 
-/// 系统开机时长（秒）
-/// 冷启动（< 60s）时磁盘尚未预热，Tier3 文件系统扫描跳过，避免阻塞
+/// 系统开机时长（秒），供大小扫描线程决定批次和间隔。
 #[cfg(windows)]
 fn system_uptime_secs() -> u64 {
     sysinfo::System::uptime()
@@ -1881,7 +1879,9 @@ fn parse_lnk_target(lnk_path: &Path) -> Option<String> {
 /// 收集文件系统扫描根目录
 /// 返回 (program_files, local_app_data, other_drives, high_priority_app_dirs)
 #[cfg(windows)]
-fn collect_filesystem_roots() -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+fn collect_filesystem_roots(
+    disk_scan_policy: &DiskScanPolicy,
+) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
     let mut pf_roots: Vec<PathBuf> = Vec::new();
     if let Some(pf) = std::env::var_os("ProgramFiles") {
         pf_roots.push(PathBuf::from(pf));
@@ -1919,16 +1919,30 @@ fn collect_filesystem_roots() -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>, Vec<
             continue;
         }
         let mount_path = mount.to_path_buf();
-        other_roots.push(mount_path.clone());
+        if !disk_scan_policy.should_defer_path(&mount_path) {
+            other_roots.push(mount_path.clone());
+        }
 
-        // 将用户常见的软件存放目录列为高优先级扫描根
+        // 将用户常见的软件存放目录列为高优先级扫描根。
         for dir_name in APP_DIR_NAMES {
             let candidate = mount_path.join(dir_name);
-            if candidate.exists() && candidate.is_dir() {
+            if !disk_scan_policy.should_defer_path(&candidate)
+                && candidate.exists()
+                && candidate.is_dir()
+            {
                 high_priority_roots.push(candidate);
             }
         }
     }
+
+    let pf_roots = pf_roots
+        .into_iter()
+        .filter(|root| !disk_scan_policy.should_defer_path(root))
+        .collect();
+    let lad_roots = lad_roots
+        .into_iter()
+        .filter(|root| !disk_scan_policy.should_defer_path(root))
+        .collect();
 
     (pf_roots, lad_roots, other_roots, high_priority_roots)
 }

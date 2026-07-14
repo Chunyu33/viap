@@ -4,6 +4,7 @@
 #[macro_use]
 mod log_macros;
 pub mod cache;
+pub mod disk_scan_policy;
 pub mod scanner;
 pub mod snapshot;
 pub mod migration;
