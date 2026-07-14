@@ -4,7 +4,10 @@
 
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { useState, useCallback, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { useState, useCallback, useEffect, useRef } from 'react';
+
+export const PORTABLE_UPDATE_URL = 'https://github.com/Chunyu33/viap/releases/latest';
 
 export type UpdateStatus =
   | 'idle'
@@ -26,12 +29,26 @@ export function useUpdater() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isPortable, setIsPortable] = useState<boolean | null>(null);
   // 保存 Update 对象引用，避免 downloadAndInstall 闭包过期
   const updateRef = useRef<Update | null>(null);
   // 取消标志：用户 dismiss 后阻止后台下载完成后的 relaunch
   const cancelRef = useRef(false);
 
+  useEffect(() => {
+    // 发行模式由 Rust feature 决定，前端不依赖文件名判断，避免便携版误触发在线更新。
+    invoke<boolean>('is_portable_build')
+      .then(setIsPortable)
+      .catch(() => setIsPortable(false));
+  }, []);
+
   const checkForUpdate = useCallback(async (): Promise<Update | null> => {
+    if (isPortable !== false) {
+      setStatus('idle');
+      setError(null);
+      return null;
+    }
+
     cancelRef.current = false; // 新一次检测/下载流程开始，重置取消标志
     setStatus('checking');
     setError(null);
@@ -56,9 +73,11 @@ export function useUpdater() {
       setStatus('error');
       return null;
     }
-  }, []);
+  }, [isPortable]);
 
   const downloadAndInstall = useCallback(async (update?: Update) => {
+    if (isPortable !== false) return;
+
     const target = update ?? updateRef.current;
     if (!target) return;
 
@@ -101,7 +120,7 @@ export function useUpdater() {
       setError(msg);
       setStatus('error');
     }
-  }, []);
+  }, [isPortable]);
 
   const dismiss = useCallback(() => {
     cancelRef.current = true; // 通知后台下载回调终止，阻止 relaunch
@@ -116,6 +135,7 @@ export function useUpdater() {
     updateInfo,
     downloadProgress,
     error,
+    isPortable,
     updateRef,
     checkForUpdate,
     downloadAndInstall,

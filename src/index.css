@@ -123,6 +123,57 @@ input[type="range"].theme-range::-webkit-slider-thumb {
   to { transform: rotate(360deg); }
 }
 
+/* 启动页使用轻量动画，保证低配设备也能在后台预热时保持稳定反馈。 */
+@keyframes startupLogoIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes startupGlow {
+  0%, 100% { transform: scale(0.9); opacity: 0.35; }
+  50% { transform: scale(1.08); opacity: 0.7; }
+}
+
+@keyframes startupProgress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.startup-screen {
+  animation: fadeIn 180ms ease-out;
+}
+
+.startup-glow {
+  position: absolute;
+  width: 260px;
+  height: 260px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  filter: blur(18px);
+  animation: startupGlow 2.6s ease-in-out infinite;
+}
+
+.startup-logo-wrap {
+  animation: startupLogoIn 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.startup-progress {
+  width: 132px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-color);
+}
+
+.startup-progress span {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary);
+  animation: startupProgress 1.15s ease-in-out infinite;
+}
+
 @keyframes modalIn {
   from { opacity: 0; transform: scale(0.96); }
   to { opacity: 1; transform: scale(1); }

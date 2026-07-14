@@ -8,7 +8,7 @@
 // 4. 用户选择存储在 localStorage 中，刷新页面后保持选择
 // 5. 通过修改 document.documentElement 的 data-theme 属性实现主题切换
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useLayoutEffect, useCallback } from 'react';
 
 // 主题类型定义
 export type ThemeMode = 'light' | 'dark' | 'system';
@@ -72,8 +72,8 @@ export function useTheme() {
   }, []);
 
   // 初始化和监听系统主题变化
-  useEffect(() => {
-    // 初始应用主题
+  useLayoutEffect(() => {
+    // 在浏览器绘制启动页前应用主题，避免深色模式先闪过浅色背景。
     const initialResolved = mode === 'system' ? getSystemTheme() : mode;
     setResolvedTheme(initialResolved);
     applyTheme(initialResolved);

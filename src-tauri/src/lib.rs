@@ -63,6 +63,12 @@ fn frontend_ready(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 返回当前构建是否为便携版，前端据此关闭自动更新并展示手动下载入口。
+#[tauri::command]
+fn is_portable_build() -> bool {
+    cfg!(feature = "portable")
+}
+
 // ============================================================================
 // Tauri 命令 — 应用管理（委托给 app_manager 子模块）
 // ============================================================================
@@ -253,10 +259,15 @@ fn execute_cleanup(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
+
+    // 便携版不注册 updater 插件，避免误触发安装器更新或写入安装目录外的更新状态。
+    #[cfg(not(feature = "portable"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -287,6 +298,7 @@ pub fn run() {
             // 系统接口
             system::disk_usage::get_disk_usage,
             frontend_ready,
+            is_portable_build,
             get_viap_install_path,
             // 存储层 — 数据目录
             storage::data_dir::get_data_dir_info,

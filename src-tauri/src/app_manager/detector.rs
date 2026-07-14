@@ -240,7 +240,7 @@ fn detect_feishu_path() -> Option<PathBuf> {
 #[cfg(windows)]
 fn default_special_path(app_name: &str) -> Option<PathBuf> {
     match app_name {
-        "wechat" => dirs::document_dir().map(|d| d.join("WeChat Files")),
+        "wechat" => default_wechat_path(),
         "qq" | "tim" => dirs::document_dir().map(|d| d.join("Tencent Files")),
         "wxwork" => dirs::document_dir().map(|d| d.join("WXWork")),
         "dingtalk" => dirs::data_dir().map(|d| d.join("DingTalk")),
@@ -263,6 +263,19 @@ fn default_special_path(app_name: &str) -> Option<PathBuf> {
         },
         _ => dirs::home_dir(),
     }
+}
+
+#[cfg(windows)]
+fn default_wechat_path() -> Option<PathBuf> {
+    let documents = dirs::document_dir()?;
+    let candidates = ["xwechat_files", "WeChat Files"];
+
+    // 新版微信使用 xwechat_files，旧目录作为兼容回退，避免升级后丢失原有检测结果。
+    candidates
+        .iter()
+        .map(|name| documents.join(name))
+        .find(|path| path.exists() && path.is_dir())
+        .or_else(|| Some(documents.join(candidates[0])))
 }
 
 #[cfg(windows)]
