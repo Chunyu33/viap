@@ -12,6 +12,7 @@ import AppMigration from './pages/AppMigration';
 import LargeFolders from './pages/LargeFolders';
 import MigrationHistory from './pages/MigrationHistory';
 import Settings from './pages/Settings';
+import StartupScreen from './components/StartupScreen';
 import { DiskUsage, TabType } from './types';
 import { useTheme, ThemeMode, ResolvedTheme } from './hooks/useTheme';
 import './App.css';
@@ -71,6 +72,7 @@ function App() {
   const [disks, setDisks] = useState<DiskUsage[]>([]);
   const [diskLoading, setDiskLoading] = useState(true);
   const [diskRefreshing, setDiskRefreshing] = useState(false);
+  const [startupVisible, setStartupVisible] = useState(true);
 
   // 初始化主题系统
   const themeState = useTheme();
@@ -96,6 +98,12 @@ function App() {
 
   useEffect(() => {
     fetchDiskUsage();
+  }, []);
+
+  useEffect(() => {
+    // 固定短暂展示启动页，让机械硬盘读取快照和注册表时也能先看到稳定的主题界面。
+    const timer = window.setTimeout(() => setStartupVisible(false), 2400);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -190,6 +198,7 @@ function App() {
           )}
         </main>
       </div>
+      {startupVisible && <StartupScreen />}
       </TabNavigationContext.Provider>
     </ThemeContext.Provider>
   );

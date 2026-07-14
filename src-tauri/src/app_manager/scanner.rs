@@ -27,7 +27,7 @@ use sysinfo::System;
 const REGISTRY_CACHE_TTL_SECS: u64 = 30;
 /// 熵值阈值：Shannon 熵 >= 此值视为随机文件名
 const ENTROPY_THRESHOLD: f64 = 3.5;
-/// 注册表应用数达到此阈值后跳过 Tier 3 文件系统扫描（Tier 2 LNK 始终执行）
+/// 手动全量扫描的应用数阈值，达到后跳过低收益的文件系统扫描
 const EARLY_EXIT_APP_COUNT: usize = 1000;
 /// 评分阈值
 const SCORE_THRESHOLD: f32 = 0.35;
@@ -179,7 +179,7 @@ impl AppScanner {
 
         // Tier 3：受限文件系统扫描
         let t3_start = Instant::now();
-        let fs_apps = self.scan_filesystem_constrained(&existing_paths);
+        let fs_apps = self.scan_filesystem_constrained(&existing_paths, true);
         let t3_ms = t3_start.elapsed().as_millis();
         orbit_log!("INFO", "scanner", "Tier3 文件系统扫描完成: {} 个应用, {}ms", fs_apps.len(), t3_ms);
         apps.extend(fs_apps);
@@ -305,7 +305,8 @@ impl AppScanner {
         // 跳过条件：应用数已达上限 OR 系统冷启动（开机 < 60s，磁盘尚未预热）
         let skip_tier3 = all_apps.len() >= EARLY_EXIT_APP_COUNT || system_uptime_secs() < 60;
         if !skip_tier3 {
-            let t3_apps = self.scan_filesystem_constrained(&existing_paths);
+            // 首次启动只扫描高优先级软件目录，完整的非系统盘根目录扫描交给手动刷新。
+            let t3_apps = self.scan_filesystem_constrained(&existing_paths, !use_snapshot);
             orbit_log!("INFO", "scanner", "Tier3 完成: {} 个新应用", t3_apps.len());
 
             let _ = app_handle.emit("scan-progress", ScanProgressEvent {
@@ -795,7 +796,11 @@ impl AppScanner {
 
     /// Tier 3：受限文件系统扫描
     #[cfg(windows)]
-    fn scan_filesystem_constrained(&self, existing_paths: &HashSet<String>) -> Vec<InstalledApp> {
+    fn scan_filesystem_constrained(
+        &self,
+        existing_paths: &HashSet<String>,
+        include_other_drives: bool,
+    ) -> Vec<InstalledApp> {
         let (pf_roots, lad_roots, other_roots, hp_roots) = collect_filesystem_roots();
         let mut apps: Vec<InstalledApp> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -834,15 +839,20 @@ impl AppScanner {
             .collect();
 
         // 非系统盘根目录：深度 2（严格分级，依赖注册表 + LNK 覆盖 99% 场景）
-        let other_results: Vec<InstalledApp> = other_roots
-            .par_iter()
-            .flat_map(|root| {
-                let mut out = Vec::new();
-                let mut s = HashSet::new();
-                scan_directory_constrained(root, 0, 2, existing_paths, &mut s, &mut out, None);
-                out
-            })
-            .collect();
+        let other_results: Vec<InstalledApp> = if include_other_drives {
+            other_roots
+                .par_iter()
+                .flat_map(|root| {
+                    let mut out = Vec::new();
+                    let mut s = HashSet::new();
+                    scan_directory_constrained(root, 0, 2, existing_paths, &mut s, &mut out, None);
+                    out
+                })
+                .collect()
+        } else {
+            // 启动阶段跳过磁盘根目录递归，仅保留常见软件目录，避免机械盘产生大量随机寻道。
+            Vec::new()
+        };
 
         for app in pf_results
             .into_iter()
@@ -891,7 +901,11 @@ impl AppScanner {
         Vec::new()
     }
     #[cfg(not(windows))]
-    fn scan_filesystem_constrained(&self, _existing: &HashSet<String>) -> Vec<InstalledApp> {
+    fn scan_filesystem_constrained(
+        &self,
+        _existing: &HashSet<String>,
+        _include_other_drives: bool,
+    ) -> Vec<InstalledApp> {
         Vec::new()
     }
     #[cfg(not(windows))]
