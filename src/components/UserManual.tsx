@@ -131,6 +131,24 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
         </DocP>
 
         <div className="rounded p-3 mb-3 text-[11px] leading-relaxed"
+          style={{ background: 'var(--color-warning-light)', border: '1px solid var(--color-warning)' }}>
+          <strong style={{ color: 'var(--color-warning)' }}>不要直接迁移整个 AppData：</strong>
+          <DocP>
+            不建议把 <code style={{ color: 'var(--color-warning)' }}>%APPDATA%</code>、
+            <code style={{ color: 'var(--color-warning)' }}>%LOCALAPPDATA%</code>，或其中的
+            <code style={{ color: 'var(--color-warning)' }}>Local</code>、
+            <code style={{ color: 'var(--color-warning)' }}>Roaming</code> 等公共目录整体迁移。
+            AppData 由多个软件和 Windows 组件共享，目录中同时存在配置、缓存、登录凭据、锁文件、运行时状态和临时文件，
+            整体建立链接会把不相关的软件一起绑定到新位置，增加启动失败和数据损坏的范围。
+          </DocP>
+          <DocP>
+            建议按照“软件颗粒度”迁移明确的数据目录，例如单独迁移微信、浏览器缓存或开发工具缓存，并先退出相关软件。
+            带许可证校验、系统服务、内核驱动、反作弊组件或强路径校验的软件，可能把路径写入服务、注册表、授权文件或驱动配置，
+            也可能在更新/自修复时删除目录链接；这类软件即使目录复制成功，也不适合使用软链接或 Junction 重定向。
+          </DocP>
+        </div>
+
+        <div className="rounded p-3 mb-3 text-[11px] leading-relaxed"
           style={{ background: 'var(--color-danger-light)', border: '1px solid var(--color-danger)' }}>
           <strong style={{ color: 'var(--color-danger)' }}>绝对不可迁移（已自动拦截）：</strong>
           <ul className="list-disc pl-4 mt-1 space-y-1" style={{ color: 'var(--text-secondary)' }}>

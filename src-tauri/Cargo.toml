@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.1.4"
+version = "1.1.5"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 # 避免开发时 generate_context! 强制校验 frontendDist，导致热更新窗口无法加载 devUrl。
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+portable = ["custom-protocol"]
 
 [dependencies]
 tauri = { version = "2", features = [] }

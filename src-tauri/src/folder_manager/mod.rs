@@ -20,6 +20,7 @@ use crate::storage::data_dir::ensure_data_dir;
 /// 默认内置模板列表（与旧版硬编码一致，确保向后兼容）
 pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
     vec![
+        // 微信路径由 detector 动态识别，兼容新版 Documents\xwechat_files 和旧版 WeChat Files。
         AppDataTemplate {
             id: "wechat".to_string(), display_name: "微信".to_string(),
             icon_id: "wechat".to_string(),

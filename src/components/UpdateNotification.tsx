@@ -5,21 +5,47 @@
 
 import { useEffect } from 'react';
 import { useUpdater } from '../hooks/useUpdater';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { PORTABLE_UPDATE_URL } from '../hooks/useUpdater';
 import { ArrowDownToLine, Loader2, X } from 'lucide-react';
 
 export default function UpdateNotification() {
   const {
     status, updateInfo, downloadProgress,
-    checkForUpdate, downloadAndInstall, dismiss,
+    isPortable, checkForUpdate, downloadAndInstall, dismiss,
   } = useUpdater();
 
   // 启动后延迟检测更新，避免影响首屏性能
   useEffect(() => {
+    if (isPortable !== false) return;
     const timer = setTimeout(() => {
       checkForUpdate();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [checkForUpdate]);
+  }, [checkForUpdate, isPortable]);
+
+  if (isPortable) {
+    return (
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, padding: '8px 16px', background: 'var(--color-primary-light)',
+          borderBottom: '1px solid var(--color-primary)', width: '100%',
+        }}
+      >
+        <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
+          便携版不自动更新，请从 GitHub Releases 手动下载最新版本。
+        </span>
+        <button
+          type="button"
+          className="btn btn-primary h-7 text-[11px]"
+          onClick={() => { openUrl(PORTABLE_UPDATE_URL).catch(() => undefined); }}
+        >
+          打开下载页
+        </button>
+      </div>
+    );
+  }
 
   // error 也静默忽略：自动检测失败不打扰用户
   if (['idle', 'checking', 'up-to-date', 'error'].includes(status)) {

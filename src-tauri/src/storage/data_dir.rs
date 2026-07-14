@@ -1,8 +1,8 @@
 // 数据目录管理模块
 //
 // 架构说明：
-// - 指针文件 %APPDATA%/viap.json 记录实际数据目录路径（仅几十字节）
-// - 默认数据目录 %APPDATA%/viap/（与旧版兼容）
+// - 安装版指针文件位于 %APPDATA%/viap.json，便携版位于程序同级 viap.json
+// - 安装版默认数据目录为 %APPDATA%/viap/，便携版为程序同级 data/
 // - 用户可在设置中修改数据目录，数据文件自动迁移
 // - 启动时检测数据目录是否存在，缺失则自动重建
 
@@ -10,11 +10,44 @@ use std::path::{Path, PathBuf};
 
 use crate::models::{DataDirConfig, CustomFolderEntry};
 
+#[cfg(feature = "portable")]
+fn portable_root_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(feature = "portable")]
+fn config_file_path() -> PathBuf {
+    // 便携版配置跟随程序目录，复制整个文件夹到新位置后仍能保留用户设置。
+    portable_root_dir().join("viap.json")
+}
+
+#[cfg(not(feature = "portable"))]
+fn config_file_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("viap.json")
+}
+
+#[cfg(feature = "portable")]
+fn default_data_dir() -> PathBuf {
+    // 便携版默认不写入 %APPDATA%，避免留下安装版痕迹并支持直接复制迁移。
+    portable_root_dir().join("data")
+}
+
+#[cfg(not(feature = "portable"))]
+fn default_data_dir() -> PathBuf {
+    // 安装版默认路径与旧版保持兼容，避免升级后丢失已有数据。
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(appdata).join("viap")
+}
+
 /// 获取指针文件路径
-/// 指针文件始终位于 %APPDATA%/viap.json
+/// 获取记录实际数据目录的配置文件路径。
 pub fn get_config_path() -> PathBuf {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    config_dir.join("viap.json")
+    config_file_path()
 }
 
 /// 获取实际数据目录（读取指针文件 → 返回配置路径，或默认值）
@@ -30,9 +63,7 @@ pub fn get_data_dir() -> PathBuf {
             }
         }
     }
-    // 默认路径（与旧版兼容）
-    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(appdata).join("viap")
+    default_data_dir()
 }
 
 /// 确保数据目录存在，缺失则自动重建

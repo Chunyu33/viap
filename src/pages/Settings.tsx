@@ -4,8 +4,9 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, confirm } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
-import { useUpdater } from '../hooks/useUpdater';
+import { PORTABLE_UPDATE_URL, useUpdater } from '../hooks/useUpdater';
 import AppIconSvg from '../assets/icon.svg';
 import {
   FolderCog, ChevronRight, Copy, Check,
@@ -260,7 +261,10 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
 
   const { toast, showToast, hideToast } = useToast();
   const themeState = useThemeContext();
-  const { status: updateStatus, updateInfo, downloadProgress, checkForUpdate, downloadAndInstall } = useUpdater();
+  const {
+    status: updateStatus, updateInfo, downloadProgress,
+    isPortable, checkForUpdate, downloadAndInstall,
+  } = useUpdater();
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -704,7 +708,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="setting-label">
-                  {updateStatus === 'idle' && '检查更新'}
+                  {isPortable === true ? '便携版更新' : isPortable === null ? '准备更新服务...' : updateStatus === 'idle' && '检查更新'}
                   {updateStatus === 'checking' && '检测中...'}
                   {updateStatus === 'up-to-date' && '已是最新版本'}
                   {updateStatus === 'available' && updateInfo && `发现新版本 v${updateInfo.version}`}
@@ -713,12 +717,24 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   {updateStatus === 'error' && '更新失败'}
                 </p>
                 <p className="setting-desc">
-                  当前版本：v{appVersion}
-                  {updateStatus === 'available' && updateInfo?.notes && ` — ${updateInfo.notes}`}
+                  {isPortable === true
+                    ? '便携版不自动更新，请手动下载最新版本'
+                    : isPortable === null
+                      ? '正在确认当前发行模式'
+                    : <>当前版本：v{appVersion}{updateStatus === 'available' && updateInfo?.notes && ` — ${updateInfo.notes}`}</>}
                 </p>
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
-                {updateStatus === 'idle' || updateStatus === 'error' || updateStatus === 'up-to-date' ? (
+                {isPortable === true ? (
+                  <button
+                    onClick={() => { openUrl(PORTABLE_UPDATE_URL).catch(() => undefined); }}
+                    className="btn btn-primary h-7 text-[11px]"
+                  >
+                    打开下载页
+                  </button>
+                ) : isPortable === null ? (
+                  <button disabled className="btn h-7 text-[11px]">准备中...</button>
+                ) : updateStatus === 'idle' || updateStatus === 'error' || updateStatus === 'up-to-date' ? (
                   <button onClick={() => checkForUpdate()}
                     className="btn h-7 text-[11px]">
                     <RefreshCw className="w-3 h-3" />
