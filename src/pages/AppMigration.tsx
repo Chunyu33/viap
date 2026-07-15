@@ -798,6 +798,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
           app_id: app.display_name,
           registry_path: app.registry_path,
           install_location: app.install_location,
+          display_icon: app.display_icon,
           use_recycle_bin: forceRmUseRecycleBin,
           selected_paths: forceRmPreviewItems.filter(item => item.selected).map(item => item.path),
         },
@@ -830,7 +831,11 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     try {
       // 第一步：预览安装目录内容
       const items = await invoke<LeftoverItem[]>('preview_force_remove', {
-        input: { app_id: app.display_name, install_location: app.install_location },
+        input: {
+          app_id: app.display_name,
+          install_location: app.install_location,
+          display_icon: app.display_icon,
+        },
       });
       if (items.length === 0) {
         // 目录为空，直接尝试删除
@@ -839,6 +844,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
             app_id: app.display_name,
             registry_path: app.registry_path,
             install_location: app.install_location,
+            display_icon: app.display_icon,
             use_recycle_bin: useRecycleBin,
             selected_paths: null,
           },
@@ -885,6 +891,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
           app_id: app.display_name,
           registry_path: app.registry_path,
           install_location: app.install_location,
+          display_icon: app.display_icon,
           use_recycle_bin: useRecycleBin,
         },
       });
@@ -919,7 +926,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       setUninstallingKey(currentUninstallKey);
 
       const result = await invoke<UninstallResult>('uninstall_application', {
-        input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: useRecycleBin },
+        input: {
+          app_id: app.display_name,
+          registry_path: app.registry_path,
+          install_location: app.install_location,
+          display_icon: app.display_icon,
+          use_recycle_bin: useRecycleBin,
+        },
       });
 
       if (result.success) {

@@ -34,6 +34,8 @@ pub struct UninstallInput {
     /// 前端传入的安装路径（scanner 可能从 DisplayIcon 推导得出，
     /// 此时注册表中的 InstallLocation 实际为空，强删需要这个字段才能定位目录）
     pub install_location: Option<String>,
+    /// 扫描器识别到的实际可执行文件，用于校验“通用目录名 + 应用 exe”的便携应用。
+    pub display_icon: Option<String>,
     /// 是否使用回收站（null/None 默认 true，即移入回收站而非彻底删除）
     pub use_recycle_bin: Option<bool>,
     /// 强制删除预览中用户选中的安装目录直接子项；None 表示删除整个安装目录。
@@ -567,7 +569,12 @@ fn execute_force_remove(
         let install_path = Path::new(loc);
         if install_path.exists() {
             // 安全检查：验证目标目录确实是当前应用的目录，而非误识别的上级/无关目录
-            validate_deletion_target(install_path, app_id)?;
+            validate_deletion_target(
+                install_path,
+                app_id,
+                input.display_icon.as_deref(),
+                input.registry_path.as_deref(),
+            )?;
 
             let delete_targets = resolve_force_delete_targets(install_path, input.selected_paths.as_ref())?;
             for path in delete_targets {
@@ -619,7 +626,12 @@ fn execute_force_remove(
 /// 删除目标安全校验：确保不会误删无关目录
 /// 多层防护：黑名单 → 路径深度 → 目录名匹配
 #[cfg(windows)]
-fn validate_deletion_target(target: &Path, app_id: &str) -> Result<(), String> {
+fn validate_deletion_target(
+    target: &Path,
+    app_id: &str,
+    display_icon: Option<&str>,
+    registry_path: Option<&str>,
+) -> Result<(), String> {
     // 第 0 层：必须存在
     if !target.exists() {
         return Err(format!("目标路径不存在: {}", target.display()));
@@ -644,8 +656,8 @@ fn validate_deletion_target(target: &Path, app_id: &str) -> Result<(), String> {
         ));
     }
 
-    // 第 3 层：目录名与应用名匹配检测
-    // 目录名必须包含应用名的关键部分，或应用名包含目录名
+    // 第 3 层：目录名与应用名匹配检测。
+    // 目录名匹配是最强的低成本证据，保持原有优先路径。
     if !app_id.is_empty() {
         let dir_name = target
             .file_name()
@@ -665,6 +677,15 @@ fn validate_deletion_target(target: &Path, app_id: &str) -> Result<(), String> {
             return Ok(());
         }
 
+        // 便携应用常放在 SystemTools、PortableApps 等通用目录中，
+        // 此时使用实际 exe、DisplayIcon 或注册表安装路径作为第二类证据。
+        if directory_contains_matching_executable(target, &app_lower)
+            || display_icon_points_to_target(display_icon, target)
+            || registry_path_points_to_target(registry_path, target)
+        {
+            return Ok(());
+        }
+
         // 都不匹配 → 拒绝
         return Err(format!(
             "安全校验未通过：目录名 '{}' 与应用名 '{}' 无匹配关系，拒绝删除以防误删无关应用。",
@@ -673,6 +694,75 @@ fn validate_deletion_target(target: &Path, app_id: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn directory_contains_matching_executable(target: &Path, normalized_app_name: &str) -> bool {
+    if normalized_app_name.is_empty() {
+        return false;
+    }
+
+    let app_tokens: Vec<&str> = normalized_app_name
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| token.chars().count() >= 3)
+        .collect();
+
+    WalkDir::new(target)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let extension = path.extension()?.to_string_lossy().to_lowercase();
+            if extension != "exe" {
+                return None;
+            }
+            Some(path.file_stem()?.to_string_lossy().to_lowercase())
+        })
+        .any(|file_stem| {
+            file_stem == normalized_app_name
+                || file_stem.contains(normalized_app_name)
+                || normalized_app_name.contains(&file_stem)
+                || app_tokens.iter().any(|token| file_stem.contains(token))
+        })
+}
+
+#[cfg(windows)]
+fn display_icon_points_to_target(display_icon: Option<&str>, target: &Path) -> bool {
+    let Some(display_icon) = display_icon.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+
+    let expanded_icon = expand_windows_environment_variables(display_icon);
+    derive_install_location_from_icon(&expanded_icon)
+        .map(|icon_dir| {
+            normalize_windows_path(&icon_dir).trim_end_matches('\\').to_string()
+                == normalize_windows_path(&target.to_string_lossy())
+                    .trim_end_matches('\\')
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn registry_path_points_to_target(registry_path: Option<&str>, target: &Path) -> bool {
+    let Some(registry_path) = registry_path.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    let Some((hkey, sub_path)) = parse_registry_path(registry_path) else {
+        return false;
+    };
+    let Ok(key) = RegKey::predef(hkey).open_subkey_with_flags(sub_path, KEY_READ) else {
+        return false;
+    };
+
+    read_install_location_with_fallback(&key)
+        .map(|location| {
+            normalize_windows_path(&location).trim_end_matches('\\').to_string()
+                == normalize_windows_path(&target.to_string_lossy())
+                    .trim_end_matches('\\')
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -2387,5 +2477,19 @@ mod tests {
         let system_root = std::env::var("SystemRoot").expect("Windows 应提供 SystemRoot 环境变量");
         let expanded = expand_windows_environment_variables(r"%SystemRoot%\System32");
         assert_eq!(expanded, format!(r"{}\System32", system_root));
+    }
+
+    #[test]
+    fn accepts_portable_app_inside_generic_directory() {
+        let test_root = std::env::temp_dir().join(format!(
+            "viap-uninstaller-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&test_root).expect("创建卸载器测试目录失败");
+        std::fs::write(test_root.join("geek.exe"), b"test").expect("创建测试 exe 失败");
+
+        // 目录名是 SystemTools，但实际 exe 明确属于 geek，应该允许继续安全校验。
+        assert!(directory_contains_matching_executable(&test_root, "geek"));
+        let _ = std::fs::remove_dir_all(test_root);
     }
 }
