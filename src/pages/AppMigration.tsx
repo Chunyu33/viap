@@ -261,6 +261,8 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   const [forceRmPreviewOpen, setForceRmPreviewOpen] = useState(false);
   const [forceRmPreviewApp, setForceRmPreviewApp] = useState<InstalledApp | null>(null);
   const [forceRmPreviewItems, setForceRmPreviewItems] = useState<LeftoverItem[]>([]);
+  // 强制删除确认阶段保留用户选择的删除方式，避免预览后丢失设置。
+  const [forceRmUseRecycleBin, setForceRmUseRecycleBin] = useState(true);
   const [forceRmLoading, setForceRmLoading] = useState(false);
 
   // Toast 通知
@@ -792,7 +794,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       setForceRmLoading(true);
       setUninstallingKey(currentUninstallKey);
       const result = await invoke<UninstallResult>('force_remove_application', {
-        input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: true },
+        input: {
+          app_id: app.display_name,
+          registry_path: app.registry_path,
+          install_location: app.install_location,
+          use_recycle_bin: forceRmUseRecycleBin,
+          selected_paths: forceRmPreviewItems.filter(item => item.selected).map(item => item.path),
+        },
       });
       if (result.success) {
         setForceRmPreviewOpen(false);
@@ -818,7 +826,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   }
 
   /** 强制删除入口：先预览文件列表 → 用户确认 → 执行删除 */
-  async function forceRemoveApp(app: InstalledApp, _useRecycleBin: boolean) {
+  async function forceRemoveApp(app: InstalledApp, useRecycleBin: boolean) {
     try {
       // 第一步：预览安装目录内容
       const items = await invoke<LeftoverItem[]>('preview_force_remove', {
@@ -827,7 +835,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       if (items.length === 0) {
         // 目录为空，直接尝试删除
         const result = await invoke<UninstallResult>('force_remove_application', {
-          input: { app_id: app.display_name, registry_path: app.registry_path, install_location: app.install_location, use_recycle_bin: true },
+          input: {
+            app_id: app.display_name,
+            registry_path: app.registry_path,
+            install_location: app.install_location,
+            use_recycle_bin: useRecycleBin,
+            selected_paths: null,
+          },
         });
         if (result.success) {
           showToast(`${app.display_name} 已删除（目录为空）`, 'success');
@@ -838,6 +852,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         return;
       }
       // 第二步：打开预览弹窗等待用户确认
+      setForceRmUseRecycleBin(useRecycleBin);
       setForceRmPreviewApp(app);
       setForceRmPreviewItems(items);
       setForceRmPreviewOpen(true);

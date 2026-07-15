@@ -218,7 +218,7 @@ fn force_remove_application(input: uninstaller::UninstallInput) -> Result<uninst
     let install_location = input.install_location.clone();
     let result = uninstaller::force_remove_application(input)?;
     // 强删成功后从缓存中移除，避免显示已不存在的应用
-    if result.success {
+    if result.success && result.application_removed {
         if let Some(ref loc) = install_location {
             app_manager::cache::on_app_uninstalled(loc);
         }

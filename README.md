@@ -351,16 +351,18 @@ Viap 的强力卸载对标 Geek Uninstaller 等专业工具，提供完整的卸
 3. 三级回退执行策略：直接 exe → cmd /C → start /wait
 4. 自动检测权限不足 → PowerShell Start-Process -Verb RunAs 提权重试
 5. 静默参数追加（/S /silent /verysilent /qn /quiet）
-6. 轮询注册表 + 文件系统确认卸载完成（含 Inno Setup fork 延迟适配）
+6. 支持 `%ProgramFiles%` 等注册表环境变量和 MSI 已卸载/需重启成功码
+7. 以安装目录实际可执行文件为主要完成依据，兼容卸载器延迟删除注册表键
 
 **强制删除（Force Remove）：**
 - 当应用卸载程序损坏/缺失时，自动提供强制删除选项
+- 安装目录支持按预览结果勾选项目，删除方式遵循“回收站/永久删除”设置
 - 直接删除安装目录（三级回退：直接删 → 清除只读 → takeown + icacls）
-- 清理注册表 Uninstall 键
+- 使用应用名称、安装路径和注册表值校验后清理 Uninstall 键，覆盖 HKCU 32 位视图
 
 **残留扫描（三路并行）：**
 1. 文件系统扫描：AppData / LocalAppData / ProgramData / 安装路径，深度 5
-2. Uninstall 注册表扫描：HKLM + HKCU × 3 路径
+2. Uninstall 注册表扫描：HKLM + HKCU × 4 路径（含 HKCU 32 位视图）
 3. 发布商路径扫描：Software\\<Publisher> × 4 路径（HKLM/HKCU × 普通/WOW6432Node）
 4. 文件关联扫描：Software\\Classes\\Applications\\<appname> × 2 路径
 5. 扫描时机修正：卸载完成后才触发，适配便携/绿色软件的安装检测
