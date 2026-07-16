@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v1.1.5'
+        description: 'Release tag, for example v1.1.6'
         required: false
-        default: 'v1.1.5'
+        default: 'v1.1.6'
 
 permissions:
   contents: write
@@ -64,7 +64,7 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.5 更新内容
+            ## v1.1.6 更新内容
 
             ### 小修复与体验优化
             - 启动时展示约 2.4 秒的主题化动画启动页，顺便加载应用列表
@@ -72,11 +72,46 @@ jobs:
             - 用户手册补充 AppData 按软件颗粒度迁移和许可证/服务/驱动风险说明
             - 微信数据目录兼容新版 `xwechat_files`
             - 新增 WebView2 离线运行环境安装包和便携版 ZIP；便携版关闭自动更新
+            - 设置页新增基于 Minisign 公钥和 GitHub Releases 签名的文件完整性校验
+            - 修复便携应用目录名与应用名不一致时强制删除被错误拦截的问题
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
           prerelease: false
           args: ${{ matrix.args }}
+
+      # 完整性校验针对当前运行 exe，因此需要额外签名并上传原始 exe，而不只是安装包。
+      - name: Sign standard integrity assets
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          chcp 65001
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $tag = '${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}'
+          $exe = "viap_${tag}_x64.exe"
+          $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
+          $builtInstaller = Get-ChildItem -Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if (-not (Test-Path $builtExe)) { throw '未找到标准版原始 exe' }
+          if (-not $builtInstaller) { throw '未找到标准版安装包' }
+          Copy-Item $builtExe $exe -Force
+          foreach ($file in @($exe, $builtInstaller.FullName)) {
+            npm run tauri -- signer sign $file
+          }
+
+      - name: Upload standard integrity assets
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          files: |
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64.exe.sig
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
 
   # 额外发行包不参与 updater latest.json，避免便携版或离线安装包被当成自动更新目标。
   release-extras:
@@ -84,6 +119,8 @@ jobs:
     runs-on: windows-latest
     env:
       RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -116,6 +153,9 @@ jobs:
           $installer = Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*.exe' | Select-Object -First 1
           if (-not $installer) { throw '未找到 WebView2 离线安装包' }
           Copy-Item $installer.FullName "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe"
+          $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
+          if (-not (Test-Path $builtExe)) { throw '未找到 WebView2 离线版原始 exe' }
+          Copy-Item $builtExe "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe"
 
       - name: Build portable package
         shell: pwsh
@@ -128,6 +168,7 @@ jobs:
           $portableDir = Join-Path $pwd 'portable-package'
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
           Copy-Item 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe' (Join-Path $portableDir 'viap.exe')
+          Copy-Item 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe' "viap_${env:RELEASE_TAG}_x64-portable.exe"
           @'
           Viap 便携版
 
@@ -138,6 +179,24 @@ jobs:
           '@ | Set-Content -Encoding UTF8 (Join-Path $portableDir '便携版说明.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath "viap_${env:RELEASE_TAG}_x64-portable.zip" -Force
 
+      - name: Sign extra integrity assets
+        shell: pwsh
+        run: |
+          chcp 65001
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $files = @(
+            "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe",
+            "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe",
+            "viap_${env:RELEASE_TAG}_x64-portable.exe",
+            "viap_${env:RELEASE_TAG}_x64-portable.zip"
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "未找到待签名文件: $file" }
+            npm run tauri -- signer sign $file
+          }
+
       - name: Upload extra release assets
         uses: softprops/action-gh-release@v2
         env:
@@ -146,4 +205,10 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           files: |
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe.sig
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe.sig
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe.sig
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip.sig

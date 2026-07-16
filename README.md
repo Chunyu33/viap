@@ -47,7 +47,7 @@ Windows 用户经常面临以下困扰：
 ├─────────────────────────────────────────────────────────────┤
 │  Backend (Rust)                                             │
 │  ┌──────────────────────────────────────────┐               │
-│  │  lib.rs — 模块枢纽（35 个 Tauri 命令）     │               │
+│  │  lib.rs — 模块枢纽（36 个 Tauri 命令）     │               │
 │  ├──────────────────────────────────────────┤               │
 │  │  system/                                 │               │
 │  │  • disk_usage.rs    磁盘容量扫描          │               │
@@ -126,6 +126,8 @@ viap/
 │   │   ├── system/               # 系统接口层
 │   │   │   ├── disk_usage.rs     # 磁盘容量/使用率扫描
 │   │   │   └── icon.rs           # 图标提取（内存缓存 + SHA1 磁盘缓存，跨重启命中）
+│   │   ├── integrity/             # 发行文件完整性校验
+│   │   │   └── mod.rs             # GitHub Releases Minisign 签名解析与流式校验
 │   │   ├── storage/              # 存储层
 │   │   │   ├── data_dir.rs       # 数据目录配置管理
 │   │   │   ├── history.rs        # 迁移记录持久化（JSON）
@@ -208,6 +210,7 @@ npm run tauri build
    - 错误类 Toast 会默认停留更久，鼠标悬停时暂停自动关闭，长错误和路径会自动换行，便于截图反馈问题
    - 数据迁移会自动识别常见开发者缓存/包目录，如 Gradle、Maven、npm/Yarn、Cargo/Rustup、pip/uv、NuGet、Claude Code 和 Codex；未检测到的内置目录不会占用列表
    - 设置页“关于”区域提供更新日志入口，可直接查看 GitHub 上的 CHANGELOG
+   - 设置页“更新”区域可校验当前 exe；只有官方签名与内容完全一致才提示安全，网络失败或签名异常会给出独立提示
 
 ### 技术限制
 
@@ -246,6 +249,10 @@ node scripts/generate-ico.js
 - **普通安装版**：支持启动后自动检查和安装更新。
 - **WebView2 离线安装版**：安装包内置 WebView2 运行环境，适合系统无法联网安装运行环境的设备。
 - **便携版 ZIP**：解压后直接运行，配置和默认数据保存在程序目录；便携版不会自动检查更新，请从 GitHub Releases 手动下载新版本。
+
+### 文件完整性校验
+
+设置页「更新 → 校验文件完整性」会读取当前运行 exe，并从当前版本的 GitHub Release 获取官方 Minisign 签名进行流式校验。标准安装版、WebView2 离线版和便携版分别提供原始 exe 及安装包/ZIP 的 `.sig` 文件。校验通过表示内容与官方构建完全一致；签名不匹配才会提示程序可能被篡改，网络连接失败、签名缺失或签名解析异常不会被误报为篡改。
 
 ### 启动体验
 
@@ -351,16 +358,19 @@ Viap 的强力卸载对标 Geek Uninstaller 等专业工具，提供完整的卸
 3. 三级回退执行策略：直接 exe → cmd /C → start /wait
 4. 自动检测权限不足 → PowerShell Start-Process -Verb RunAs 提权重试
 5. 静默参数追加（/S /silent /verysilent /qn /quiet）
-6. 轮询注册表 + 文件系统确认卸载完成（含 Inno Setup fork 延迟适配）
+6. 支持 `%ProgramFiles%` 等注册表环境变量和 MSI 已卸载/需重启成功码
+7. 以安装目录实际可执行文件为主要完成依据，兼容卸载器延迟删除注册表键
 
 **强制删除（Force Remove）：**
 - 当应用卸载程序损坏/缺失时，自动提供强制删除选项
+- 安装目录支持按预览结果勾选项目，删除方式遵循“回收站/永久删除”设置
+- 便携应用目录名与应用名不一致时，使用实际 exe、图标路径或注册表安装路径进行二次确认
 - 直接删除安装目录（三级回退：直接删 → 清除只读 → takeown + icacls）
-- 清理注册表 Uninstall 键
+- 使用应用名称、安装路径和注册表值校验后清理 Uninstall 键，覆盖 HKCU 32 位视图
 
 **残留扫描（三路并行）：**
 1. 文件系统扫描：AppData / LocalAppData / ProgramData / 安装路径，深度 5
-2. Uninstall 注册表扫描：HKLM + HKCU × 3 路径
+2. Uninstall 注册表扫描：HKLM + HKCU × 4 路径（含 HKCU 32 位视图）
 3. 发布商路径扫描：Software\\<Publisher> × 4 路径（HKLM/HKCU × 普通/WOW6432Node）
 4. 文件关联扫描：Software\\Classes\\Applications\\<appname> × 2 路径
 5. 扫描时机修正：卸载完成后才触发，适配便携/绿色软件的安装检测

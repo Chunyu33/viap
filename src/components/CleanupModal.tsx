@@ -2,7 +2,7 @@
 // 极简风格：半透明背景 + 高对比风险操作按钮
 
 import { useMemo } from 'react';
-import { AlertTriangle, LoaderCircle, ScanSearch, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, LoaderCircle, ScanSearch, Trash2, X } from 'lucide-react';
 import { LeftoverItem } from '../types';
 
 interface CleanupModalProps {
@@ -100,20 +100,36 @@ export default function CleanupModal({
               {items.map((item) => (
                 <label
                   key={item.path}
-                  className="flex items-center rounded-lg border transition-all cursor-pointer"
+                  className={`flex items-center rounded-lg border transition-all ${loading ? 'cursor-default' : 'cursor-pointer'}`}
                   style={{
                     padding: '8px 12px',
                     borderColor: item.selected ? 'var(--color-primary)' : 'var(--border-color)',
                     background: item.selected ? 'var(--color-primary-light)' : 'var(--bg-row)',
                   }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={item.selected}
-                    onChange={() => onToggleItem(item.path)}
-                    disabled={loading}
-                    className="flex-shrink-0"
-                  />
+                  <div className="relative flex-shrink-0 w-4 h-4">
+                    {/* 保留原生 checkbox 的键盘/辅助功能，只替换视觉层以跟随首页主题色。 */}
+                    <input
+                      type="checkbox"
+                      checked={item.selected}
+                      onChange={() => onToggleItem(item.path)}
+                      disabled={loading}
+                      aria-label={`${item.selected ? '取消选择' : '选择'} ${item.path}`}
+                      className="peer absolute inset-0 z-10 m-0 h-4 w-4 cursor-pointer opacity-0 disabled:cursor-default"
+                    />
+                    <span
+                      aria-hidden="true"
+                      className={`absolute inset-0 flex items-center justify-center rounded-sm border transition-colors ${
+                        item.selected ? '' : 'opacity-60 peer-hover:opacity-100'
+                      }`}
+                      style={{
+                        background: item.selected ? 'var(--color-primary)' : 'transparent',
+                        borderColor: item.selected ? 'var(--color-primary)' : 'var(--border-color-strong)',
+                      }}
+                    >
+                      {item.selected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                    </span>
+                  </div>
                   <div className="min-w-0 flex-1 ml-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="badge badge-primary" style={{ fontSize: '10px' }}>{item.item_type}</span>

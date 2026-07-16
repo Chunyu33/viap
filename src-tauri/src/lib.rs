@@ -14,6 +14,7 @@ mod utils;
 mod system;
 mod storage;
 mod folder_manager;
+mod integrity;
 
 use std::sync::atomic::Ordering;
 
@@ -67,6 +68,12 @@ fn frontend_ready(app_handle: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn is_portable_build() -> bool {
     cfg!(feature = "portable")
+}
+
+/// 校验当前运行 exe，返回结构化状态让前端区分网络、签名和篡改结果。
+#[tauri::command]
+async fn verify_file_integrity(app_handle: tauri::AppHandle) -> integrity::IntegrityCheckResult {
+    integrity::verify_file_integrity(app_handle).await
 }
 
 // ============================================================================
@@ -218,7 +225,7 @@ fn force_remove_application(input: uninstaller::UninstallInput) -> Result<uninst
     let install_location = input.install_location.clone();
     let result = uninstaller::force_remove_application(input)?;
     // 强删成功后从缓存中移除，避免显示已不存在的应用
-    if result.success {
+    if result.success && result.application_removed {
         if let Some(ref loc) = install_location {
             app_manager::cache::on_app_uninstalled(loc);
         }
@@ -300,6 +307,7 @@ pub fn run() {
             frontend_ready,
             is_portable_build,
             get_viap_install_path,
+            verify_file_integrity,
             // 存储层 — 数据目录
             storage::data_dir::get_data_dir_info,
             storage::data_dir::set_data_dir,

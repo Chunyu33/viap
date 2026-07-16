@@ -47,6 +47,8 @@ export interface LeftoverItem {
 export interface UninstallResult {
   // 是否成功执行卸载流程
   success: boolean;
+  // 安装目录是否已完全移除；部分选择删除时仍可能为 false
+  application_removed: boolean;
   // 返回消息
   message: string;
   // 实际执行的卸载命令
