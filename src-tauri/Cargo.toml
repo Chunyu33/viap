@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.1.5"
+version = "1.1.6"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
@@ -57,6 +57,10 @@ rayon = "1.10"
 sha1 = "0.10"
 # Windows NTFS Junction 创建（无需管理员权限，同盘优先）
 junction = "1.0"
+# Minisign 签名解析与流式校验，用于验证发行版 exe 完整性
+minisign-verify = "0.2.5"
+# 仅启用 rustls，避免完整性校验引入系统 TLS 依赖
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
 
 # Windows API 绑定，用于提取应用图标
 [target.'cfg(windows)'.dependencies]

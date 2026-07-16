@@ -14,6 +14,7 @@ import {
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
   Video, Users, MessageSquare, Activity,
+  ShieldCheck,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -43,6 +44,12 @@ interface CleanupResult {
   cleaned_count: number;
   cleaned_size: number;
   errors: string[];
+}
+
+interface IntegrityCheckResult {
+  status: 'verified' | 'tampered' | 'network_error' | 'signature_not_found' | 'signature_invalid' | 'local_file_error' | 'configuration_error';
+  message: string;
+  asset_name: string | null;
 }
 
 function formatSize(bytes: number): string {
@@ -248,6 +255,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+  const [integrityChecking, setIntegrityChecking] = useState(false);
   const currentYear = new Date().getFullYear();
 
   /** 一键复制到剪贴板，成功后短暂显示已复制状态 */
@@ -280,6 +288,21 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   async function loadDataDir() {
     try { const info = await invoke<DataDirConfig>('get_data_dir_info'); setDataDir(info.data_dir); }
     catch { /* ignore */ }
+  }
+
+  async function handleVerifyFileIntegrity() {
+    if (integrityChecking) return;
+    setIntegrityChecking(true);
+    try {
+      const checkResult = await invoke<IntegrityCheckResult>('verify_file_integrity');
+      const toastType = checkResult.status === 'verified' ? 'success' : 'error';
+      // 网络和签名异常需要给用户足够时间阅读，避免误以为程序已完成安全判断。
+      showToast(checkResult.message, toastType, 10000);
+    } catch (error) {
+      showToast(`完整性校验服务调用失败，请稍后重试：${error}`, 'error', 10000);
+    } finally {
+      setIntegrityChecking(false);
+    }
   }
 
   async function handleChangeDataDir() {
@@ -747,6 +770,30 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   </button>
                 ) : null}
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 安全：完整性校验属于独立的安全操作，避免与版本更新混在同一张卡片中。 */}
+        <section>
+          <SectionHeader label="安全" />
+          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+            <div className="flex items-center gap-3" style={{ padding: '10px 14px' }}>
+              <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-primary-light)' }}>
+                <ShieldCheck className={`w-4 h-4 ${integrityChecking ? 'animate-pulse' : ''}`} style={{ color: 'var(--color-primary)' }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="setting-label">校验文件完整性（Beta）</p>
+                <p className="setting-desc">通过 GitHub Releases 签名验证当前程序是否被篡改</p>
+              </div>
+              <button
+                onClick={handleVerifyFileIntegrity}
+                disabled={integrityChecking}
+                className="btn h-7 text-[11px] flex-shrink-0"
+              >
+                {integrityChecking ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                {integrityChecking ? '校验中...' : '开始校验'}
+              </button>
             </div>
           </div>
         </section>
