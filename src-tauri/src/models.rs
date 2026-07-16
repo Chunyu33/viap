@@ -120,6 +120,13 @@ pub struct LargeFolderSizeEvent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DataDirConfig {
     pub data_dir: String,
+    /// 便携版默认 data 目录标记，用于程序目录整体移动后的路径修复。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub portable_default: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 自定义文件夹持久化条目

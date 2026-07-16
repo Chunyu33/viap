@@ -170,6 +170,8 @@ export interface LargeFolderSizeEvent {
  */
 export interface DataDirConfig {
   data_dir: string;
+  // 便携版默认 data 目录标记，前端仅用于兼容扩展字段，不参与路径计算。
+  portable_default?: boolean;
 }
 
 /**

@@ -25,6 +25,7 @@ import {
   MigrationResult, MigrationStep, TabType,
 } from '../types';
 import { TabNavigationContext } from '../App';
+import { readLocalUserSettings } from '../utils/userSettings';
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return '--';
@@ -67,16 +68,10 @@ function getFolderIcon(iconId: string) {
 
 /** 从 localStorage 读取默认数据迁移目录，仅非 C 盘路径有效 */
 function loadDataDefaultTarget(): string | null {
-  try {
-    const saved = JSON.parse(localStorage.getItem('viap_settings') || '{}');
-    const path = saved.defaultDataTargetPath;
-    if (path && typeof path === 'string' && path.length > 0) {
-      // C 盘路径视为无效，需由用户重新选择
-      if (path.startsWith('C:') || path.startsWith('c:')) return null;
-      return path;
-    }
-  } catch { /* 设置读取失败时忽略 */ }
-  return null;
+  const path = readLocalUserSettings().defaultDataTargetPath;
+  // C 盘路径视为无效，需由用户重新选择。
+  if (!path || path.startsWith('C:') || path.startsWith('c:')) return null;
+  return path;
 }
 
 /**

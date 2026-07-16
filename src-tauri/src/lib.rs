@@ -309,8 +309,11 @@ pub fn run() {
             get_viap_install_path,
             verify_file_integrity,
             // 存储层 — 数据目录
+            storage::data_dir::initialize_storage,
             storage::data_dir::get_data_dir_info,
             storage::data_dir::set_data_dir,
+            storage::user_settings::get_user_settings,
+            storage::user_settings::save_user_settings,
             // 文件夹管理
             folder_manager::get_large_folders,
             folder_manager::start_folder_size_scan,

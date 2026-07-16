@@ -6,3 +6,4 @@ pub mod history;
 pub mod migrated_app_metadata;
 pub mod operation_log;
 pub mod size_cache;
+pub mod user_settings;
