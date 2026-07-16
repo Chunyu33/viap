@@ -4,9 +4,8 @@
 // 自动检测失败时静默忽略，不展示错误提示
 
 import { useEffect, useState } from 'react';
-import { useUpdater } from '../hooks/useUpdater';
+import { PORTABLE_CLOUD_UPDATE_URL, PORTABLE_UPDATE_URL, useUpdater } from '../hooks/useUpdater';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { PORTABLE_UPDATE_URL } from '../hooks/useUpdater';
 import { ArrowDownToLine, Loader2, X } from 'lucide-react';
 
 export default function UpdateNotification() {
@@ -44,7 +43,7 @@ export default function UpdateNotification() {
         }}
       >
         <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
-          便携版不提供自动更新，请从 GitHub Releases 或作者提供的网盘手动下载最新版本。
+          发现新版本。便携版不提供自动更新，请从 GitHub Releases 或作者提供的网盘手动下载最新版本。
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <button
@@ -52,7 +51,14 @@ export default function UpdateNotification() {
             className="btn btn-primary h-7 text-[11px]"
             onClick={() => { openUrl(PORTABLE_UPDATE_URL).catch(() => undefined); }}
           >
-            打开下载页
+            GitHub 下载
+          </button>
+          <button
+            type="button"
+            className="btn h-7 text-[11px]"
+            onClick={() => { openUrl(PORTABLE_CLOUD_UPDATE_URL).catch(() => undefined); }}
+          >
+            网盘下载
           </button>
           <button
             type="button"

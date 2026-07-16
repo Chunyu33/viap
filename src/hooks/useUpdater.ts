@@ -8,6 +8,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useState, useCallback, useEffect, useRef } from 'react';
 
 export const PORTABLE_UPDATE_URL = 'https://github.com/Chunyu33/viap/releases/latest';
+// 便携版不接入自动更新，额外提供固定网盘入口作为手动下载渠道。
+export const PORTABLE_CLOUD_UPDATE_URL = 'https://pan.quark.cn/s/4761ee4ba698';
 
 export type UpdateStatus =
   | 'idle'
