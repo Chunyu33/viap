@@ -3,7 +3,7 @@
 // 下载时显示进度条，安装中提示重启；
 // 自动检测失败时静默忽略，不展示错误提示
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useUpdater } from '../hooks/useUpdater';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { PORTABLE_UPDATE_URL } from '../hooks/useUpdater';
@@ -14,6 +14,12 @@ export default function UpdateNotification() {
     status, updateInfo, downloadProgress,
     isPortable, checkForUpdate, downloadAndInstall, dismiss,
   } = useUpdater();
+  const [portableNoticeVisible, setPortableNoticeVisible] = useState(true);
+
+  // 发行模式确认后重置提示状态，避免切换开发/生产环境时沿用旧的隐藏状态。
+  useEffect(() => {
+    if (isPortable !== true) setPortableNoticeVisible(true);
+  }, [isPortable]);
 
   // 启动后延迟检测更新，避免影响首屏性能
   useEffect(() => {
@@ -23,6 +29,10 @@ export default function UpdateNotification() {
     }, 3000);
     return () => clearTimeout(timer);
   }, [checkForUpdate, isPortable]);
+
+  if (isPortable && !portableNoticeVisible) {
+    return null;
+  }
 
   if (isPortable) {
     return (
@@ -34,15 +44,26 @@ export default function UpdateNotification() {
         }}
       >
         <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
-          便携版不自动更新，请从 GitHub Releases 手动下载最新版本。
+          便携版不提供自动更新，请从 GitHub Releases 或作者提供的网盘手动下载最新版本。
         </span>
-        <button
-          type="button"
-          className="btn btn-primary h-7 text-[11px]"
-          onClick={() => { openUrl(PORTABLE_UPDATE_URL).catch(() => undefined); }}
-        >
-          打开下载页
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            className="btn btn-primary h-7 text-[11px]"
+            onClick={() => { openUrl(PORTABLE_UPDATE_URL).catch(() => undefined); }}
+          >
+            打开下载页
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            title="关闭更新提示"
+            aria-label="关闭更新提示"
+            onClick={() => setPortableNoticeVisible(false)}
+          >
+            <X style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
       </div>
     );
   }
@@ -84,6 +105,14 @@ export default function UpdateNotification() {
             <button onClick={dismiss} className="btn h-7 text-[11px]">稍后再说</button>
             <button onClick={() => downloadAndInstall()} className="btn btn-primary h-7 text-[11px]">
               立即更新
+            </button>
+            <button
+              onClick={dismiss}
+              className="btn btn-ghost btn-icon"
+              title="关闭更新提示"
+              aria-label="关闭更新提示"
+            >
+              <X style={{ width: 14, height: 14 }} />
             </button>
           </div>
         </div>
