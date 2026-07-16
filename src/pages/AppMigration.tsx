@@ -18,6 +18,7 @@ import { TabNavigationContext } from '../App';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import { useViapStore } from '../store';
+import { readLocalUserSettings } from '../utils/userSettings';
 import {
   CleanupResult,
   InstalledApp,
@@ -87,8 +88,6 @@ interface FetchInstalledAppsOptions {
   forceRefresh?: boolean;
 }
 
-const SETTINGS_KEY = 'viap_settings';
-
 const SCAN_PHASE_LABELS: Record<string, string> = {
   snapshot: 'snapshot',
   tier1: 'tier1',
@@ -101,13 +100,8 @@ const SCAN_PHASE_LABELS: Record<string, string> = {
 };
 
 function loadShowScanDebug(): boolean {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    // 调试浮层默认关闭，避免普通用户被开发指标干扰。
-    return saved.showScanDebug === true;
-  } catch {
-    return false;
-  }
+  // 调试浮层默认关闭，设置统一从用户设置缓存读取。
+  return readLocalUserSettings().showScanDebug;
 }
 
 /** 使用注册表路径优先做身份键，避免扫描刷新时同一应用图标被误覆盖 */
@@ -149,16 +143,10 @@ const storeApi = useViapStore;
 
 /** 从 localStorage 读取默认应用迁移目录，仅非 C 盘路径有效 */
 function loadAppDefaultTarget(): string | null {
-  try {
-    const saved = JSON.parse(localStorage.getItem('viap_settings') || '{}');
-    const path = saved.defaultAppTargetPath;
-    if (path && typeof path === 'string' && path.length > 0) {
-      // C 盘路径视为无效，需由用户重新选择
-      if (path.startsWith('C:') || path.startsWith('c:')) return null;
-      return path;
-    }
-  } catch { /* 设置读取失败时忽略 */ }
-  return null;
+  const path = readLocalUserSettings().defaultAppTargetPath;
+  // C 盘路径视为无效，需由用户重新选择。
+  if (!path || path.startsWith('C:') || path.startsWith('c:')) return null;
+  return path;
 }
 
 /**
@@ -876,11 +864,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     }
 
     // 读取用户设置的删除方式（默认移入回收站）
-    let useRecycleBin = true;
-    try {
-      const saved = JSON.parse(localStorage.getItem('viap_settings') || '{}');
-      useRecycleBin = saved.useRecycleBin !== false;
-    } catch { /* use default */ }
+    const useRecycleBin = readLocalUserSettings().useRecycleBin;
 
     // 先预览卸载命令
     let previewCommands: string[] = [];

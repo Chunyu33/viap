@@ -9,13 +9,11 @@
 // 5. 通过修改 document.documentElement 的 data-theme 属性实现主题切换
 
 import { useState, useLayoutEffect, useCallback } from 'react';
+import { readLocalUserSettings, persistUserSettings, type UserThemeMode } from '../utils/userSettings';
 
 // 主题类型定义
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type ThemeMode = UserThemeMode;
 export type ResolvedTheme = 'light' | 'dark';
-
-// localStorage 存储键名
-const THEME_STORAGE_KEY = 'viap-theme';
 
 // 获取系统主题偏好
 function getSystemTheme(): ResolvedTheme {
@@ -26,11 +24,7 @@ function getSystemTheme(): ResolvedTheme {
 // 从 localStorage 读取用户主题选择
 function getStoredTheme(): ThemeMode {
   if (typeof window === 'undefined') return 'system';
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  if (stored === 'light' || stored === 'dark' || stored === 'system') {
-    return stored;
-  }
-  return 'system'; // 默认跟随系统
+  return readLocalUserSettings().theme;
 }
 
 // 应用主题到 DOM
@@ -63,7 +57,8 @@ export function useTheme() {
   // 切换主题模式
   const setTheme = useCallback((newMode: ThemeMode) => {
     setMode(newMode);
-    localStorage.setItem(THEME_STORAGE_KEY, newMode);
+    // 主题与其他用户设置写入同一个 Rust 文件，便携版复制目录后可以完整保留。
+    persistUserSettings({ ...readLocalUserSettings(), theme: newMode }).catch(() => undefined);
     
     // 计算实际主题
     const resolved = newMode === 'system' ? getSystemTheme() : newMode;
@@ -83,7 +78,7 @@ export function useTheme() {
     
     const handleSystemChange = (e: MediaQueryListEvent) => {
       // 仅当用户选择"跟随系统"时响应系统变化
-      const currentMode = localStorage.getItem(THEME_STORAGE_KEY) || 'system';
+      const currentMode = readLocalUserSettings().theme;
       if (currentMode === 'system') {
         const newTheme = e.matches ? 'dark' : 'light';
         setResolvedTheme(newTheme);

@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.1.6"
+version = "1.1.7"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"

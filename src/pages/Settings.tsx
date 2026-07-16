@@ -26,11 +26,15 @@ import Modal from '../components/Modal';
 import type { DataDirConfig, GhostLinkPreview } from '../types';
 import {
   applyFontSize,
-  DEFAULT_FONT_SIZE_PX,
   MAX_FONT_SIZE_PX,
   MIN_FONT_SIZE_PX,
   normalizeFontSizePx,
 } from '../utils/fontSize';
+import {
+  DEFAULT_USER_SETTINGS,
+  persistUserSettings,
+  readLocalUserSettings,
+} from '../utils/userSettings';
 
 interface MigrationStats {
   total_space_saved: number;
@@ -66,39 +70,16 @@ const APP_INFO = {
   email: '1378813463@qq.com',
 };
 
-const SETTINGS_KEY = 'viap_settings';
-// 默认目标路径初始为空，由用户手动配置；仅允许选择 C 盘以外的目录
-const DEFAULT_SETTINGS = {
-  defaultAppTargetPath: '',
-  defaultDataTargetPath: '',
-  useRecycleBin: true,
-  showScanDebug: false,
-  fontSizePx: DEFAULT_FONT_SIZE_PX,
-};
-
-/** 迁移旧版设置：将 defaultTargetPath 升迁为 defaultAppTargetPath */
-function migrateOldSettings(raw: Record<string, unknown>): Record<string, unknown> {
-  if (typeof raw.defaultTargetPath === 'string' && raw.defaultTargetPath) {
-    return { ...raw, defaultAppTargetPath: raw.defaultTargetPath, defaultTargetPath: undefined };
-  }
-  return raw;
-}
+// 默认目标路径初始为空，由用户手动配置；仅允许选择 C 盘以外的目录。
+const DEFAULT_SETTINGS = DEFAULT_USER_SETTINGS;
 
 function loadSettings() {
-  try {
-    const saved = localStorage.getItem(SETTINGS_KEY);
-    if (saved) {
-      const raw = JSON.parse(saved);
-      const migrated = migrateOldSettings(raw);
-      const merged = { ...DEFAULT_SETTINGS, ...migrated };
-      return { ...merged, fontSizePx: normalizeFontSizePx(merged.fontSizePx) };
-    }
-  } catch { /* ignore */ }
-  return DEFAULT_SETTINGS;
+  return readLocalUserSettings();
 }
 
 function saveSettings(s: typeof DEFAULT_SETTINGS) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+  // localStorage 由工具函数同步为兼容缓存，Rust 文件作为便携版可携带的主配置。
+  persistUserSettings(s).catch(() => undefined);
 }
 
 const FONT_SIZE_PRESETS = [
@@ -280,6 +261,17 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     loadDataDir();
     getVersion().then(setAppVersion).catch(() => setAppVersion('1.0.0'));
   }, []);
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem('viap_storage_imported') === '1') {
+        showToast('已从安装版导入用户数据，原安装版数据未被删除', 'info', 8000);
+        sessionStorage.removeItem('viap_storage_imported');
+      }
+    } catch {
+      // 会话存储不可用时跳过提示，数据初始化仍已完成。
+    }
+  }, [showToast]);
 
   async function loadStats() {
     try { setStats(await invoke<MigrationStats>('get_migration_stats')); }
@@ -573,6 +565,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="setting-label">数据存储目录</p>
+                  <p className="setting-desc">{isPortable === true ? '便携版数据目录，随程序目录携带' : '安装版数据目录'}</p>
                   {dataDir && <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={dataDir}>{dataDir}</p>}
                 </div>
               </div>
