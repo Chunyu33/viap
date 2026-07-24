@@ -1,465 +1,100 @@
 # Viap
 
-<p align="center">
-  <img src="src-tauri/icons/icon.png" width="128" height="128" alt="Viap Logo">
-</p>
+[简体中文](README.zh-CN.md)
 
 <p align="center">
-  <strong>专业的 Windows 应用存储重定向工具</strong>
+  <img src="src-tauri/icons/icon.png" width="128" height="128" alt="Viap logo">
 </p>
 
-<p align="center">
-  将 C 盘应用无损迁移到其他磁盘，释放系统空间，保持应用正常运行
-</p>
+<p align="center"><strong>Windows application and data migration tool</strong></p>
+<p align="center">Move applications and selected data to another drive while keeping their original paths available.</p>
 
----
+Viap is a Windows desktop application built with Tauri, React, TypeScript, and Rust. It uses NTFS directory junctions or symbolic links to redirect storage without changing application paths.
 
-## 🎯 解决的问题
+## Features
 
-Windows 用户经常面临以下困扰：
+- Migrate installed applications to another local drive and restore them later.
+- Migrate system folders, selected application data folders, and custom folders.
+- Check running processes and file locks before migration or restore.
+- Verify copied data before switching the original path to a junction or link.
+- Keep migration history with restore, link health checks, import, and export.
+- Uninstall applications and scan or clean related leftovers.
+- Show disk usage, application snapshots, lazy-loaded icons, and background scan progress.
+- Detect HDD cold-start cases and let users manually load slow application-data directories.
+- Support light and dark themes, font-size settings, portable mode, and WebView2 offline installers.
+- Verify the running executable against the official GitHub Release signature.
 
-1. **C 盘空间不足** - 大量应用默认安装在 C 盘，导致系统盘空间紧张
-2. **手动迁移风险高** - 直接移动应用文件夹会导致应用无法运行
-3. **重装系统数据丢失** - 应用数据存放在 C 盘，重装系统后需要重新配置
+## Safety Notes
 
-**Viap 的解决方案：**
+Viap is designed to keep a usable data copy until the migration switch has been verified. However, no file operation is completely safe against hardware failure or unexpected power loss. Back up important data before migrating.
 
-- 使用 Windows 符号链接（Symbolic Link）技术，将应用无损迁移到其他磁盘
-- 迁移后应用正常运行，无需修改任何配置
-- 支持一键恢复，随时将应用迁回原位置
+- Run Viap with administrator privileges when Windows requires permission to create links or access protected folders.
+- Close the application being migrated. Viap performs process and lock checks, but some software may use services, drivers, or memory-mapped files.
+- Do not migrate the entire `AppData`, `Local`, or `Roaming` directory. Select data folders for one application at a time.
+- Software with license binding, system services, kernel drivers, self-repair, or hard-coded paths may not work correctly after redirection.
+- Do not manually delete the target directory while a migration record is active. Restore the application first when possible.
+- Microsoft Store, UWP, MSIX, system components, browser installations, and GPU drivers should be handled by Windows or their vendor tools instead.
+- Use local NTFS drives. Network drives and unsupported file systems are not migration targets.
 
-## 🏗️ 技术架构
+## Portable and Installer Builds
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Viap                            │
-├─────────────────────────────────────────────────────────────┤
-│  Frontend (React + TypeScript + Tailwind CSS)               │
-│  ┌─────────────┬─────────────┬─────────────┐               │
-│  │ AppMigration│ MigHistory  │  Settings   │  ← 页面       │
-│  ├─────────────┴─────────────┴─────────────┤               │
-│  │  AppList │ DiskUsageBar │ Toast │ Modal │  ← 组件       │
-│  ├──────────────────────────────────────────┤               │
-│  │  CSS Variables │ Component Styles        │  ← 样式系统   │
-│  └──────────────────────────────────────────┘               │
-├─────────────────────────────────────────────────────────────┤
-│  Tauri IPC Bridge (@tauri-apps/api)                         │
-├─────────────────────────────────────────────────────────────┤
-│  Backend (Rust)                                             │
-│  ┌──────────────────────────────────────────┐               │
-│  │  lib.rs — 模块枢纽（36 个 Tauri 命令）     │               │
-│  ├──────────────────────────────────────────┤               │
-│  │  system/                                 │               │
-│  │  • disk_usage.rs    磁盘容量扫描          │               │
-│  │  • icon.rs          EXE/DLL 图标提取      │               │
-│  ├──────────────────────────────────────────┤               │
-│  │  storage/                                │               │
-│  │  • data_dir.rs      数据目录配置管理       │               │
-│  │  • history.rs       迁移记录持久化         │               │
-│  ├──────────────────────────────────────────┤               │
-│  │  folder_manager/                         │               │
-│  │  • mod.rs           大文件夹发现与迁移     │               │
-│  ├──────────────────────────────────────────┤               │
-│  │  app_manager/                            │               │
-│  │  • cache.rs         内存级应用缓存         │               │
-│  │  • scanner.rs       三级扫描引擎           │               │
-│  │  • snapshot.rs      应用快照与图标 URL     │               │
-│  │  • migration.rs     应用迁移引擎           │               │
-│  │  • uninstaller.rs   卸载与残留清理         │               │
-│  │  • detector.rs      特殊目录检测          │               │
-│  │  • log_macros.rs    统一日志宏            │               │
-│  ├──────────────────────────────────────────┤               │
-│  │  models.rs   共享数据结构                 │               │
-│  │  utils.rs    文件系统工具函数              │               │
-│  └──────────────────────────────────────────┘               │
-├─────────────────────────────────────────────────────────────┤
-│  Windows OS                                                 │
-│  • NTFS Symbolic Links (符号链接)                           │
-│  • Registry (注册表)                                        │
-│  • File System (文件系统)                                   │
-└─────────────────────────────────────────────────────────────┘
-```
+- **Standard installer**: installed application with update support.
+- **WebView2 offline installer**: includes the WebView2 runtime for systems that cannot download it during installation.
+- **Portable ZIP**: extract and run without installation. User data is stored beside the application in `data`; portable builds do not check for updates automatically. Download new versions manually from [GitHub Releases](https://github.com/Chunyu33/viap/releases) or [Quark Drive](https://pan.quark.cn/s/4761ee4ba698).
 
-## 📁 项目结构
+On first launch, the portable build can copy missing data from an existing Viap installation. Existing installation data is not deleted.
 
-```
-viap/
-├── src/                          # 前端源码
-│   ├── components/               # React 组件
-│   │   ├── AppList.tsx          # 应用列表（含批量选择 + 流式扫描进度提示）
-│   │   ├── CleanupModal.tsx     # 残留清理弹窗
-│   │   ├── DiskUsageBar.tsx     # 磁盘使用率
-│   │   ├── FilterSelect.tsx     # 下拉筛选组件
-│   │   ├── MigrationModal.tsx   # 迁移进度弹窗
-│   │   ├── ProjectPromoModal.tsx # 项目推介弹窗
-│   │   ├── TargetPickerDialog.tsx # 迁移目录选择弹窗
-│   │   ├── TitleBar.tsx         # 标题栏（集成 Tab 导航 + 磁盘状态）
-│   │   ├── Toast.tsx            # 通知组件
-│   │   ├── UpdateNotification.tsx # 自动更新横幅
-│   │   └── WarningConfirmDialog.tsx # 高风险路径确认弹窗
-│   ├── pages/                    # 页面
-│   │   ├── AppMigration.tsx     # 应用迁移页（还原/卸载/批量）
-│   │   ├── LargeFolders.tsx     # 数据迁移页
-│   │   ├── MigrationHistory.tsx # 迁移历史页（搜索/筛选/分页/详情面板）
-│   │   └── Settings.tsx         # 设置页（幽灵清理/导入导出）
-│   ├── store/                    # 全局状态
-│   │   └── appStore.ts            # 应用列表模块级单例缓存
-│   ├── hooks/                    # 自定义 Hook
-│   │   ├── useDangerousPathCheck.ts # 危险路径检测（迁移前拦截）
-│   │   ├── useTheme.ts            # 主题切换
-│   │   └── useUpdater.ts          # 自动更新检测（check/download/进度跟踪）
-│   ├── utils/                    # 工具函数
-│   │   ├── logger.ts            # 统一日志工具
-│   │   └── migrationMessages.ts # 迁移错误/内部状态码中文化
-│   ├── styles/                   # 样式系统
-│   │   ├── variables.css        # CSS 变量定义
-│   │   └── components.css       # 通用组件样式
-│   ├── App.tsx                   # 主应用
-│   ├── index.css                 # 全局样式
-│   └── types.ts                  # TypeScript 类型定义
-├── src-tauri/                    # Rust 后端
-│   ├── src/
-│   │   ├── main.rs               # 程序入口
-│   │   ├── lib.rs                # 模块枢纽（Tauri 命令注册）
-│   │   ├── models.rs             # 共享数据结构
-│   │   ├── utils.rs              # 文件系统工具函数
-│   │   ├── system/               # 系统接口层
-│   │   │   ├── disk_usage.rs     # 磁盘容量/使用率扫描
-│   │   │   └── icon.rs           # 图标提取（内存缓存 + SHA1 磁盘缓存，跨重启命中）
-│   │   ├── integrity/             # 发行文件完整性校验
-│   │   │   └── mod.rs             # GitHub Releases Minisign 签名解析与流式校验
-│   │   ├── storage/              # 存储层
-│   │   │   ├── data_dir.rs       # 数据目录配置管理
-│   │   │   ├── history.rs        # 迁移记录持久化（JSON）
-│   │   │   ├── user_settings.rs  # 主题、字号和迁移偏好持久化
-│   │   │   └── size_cache.rs     # 目录大小 SWR 缓存（启动秒发缓存，后台重算更新）
-│   │   ├── folder_manager/       # 文件夹管理层
-│   │   │   └── mod.rs            # 大文件夹发现、迁移与恢复
-│   │   └── app_manager/          # 应用管理层
-│   │       ├── mod.rs
-│   │       ├── cache.rs          # 内存级应用缓存（AppCache 全局单例，含图标复用保护）
-│   │       ├── disk_scan_policy.rs # 启动阶段 HDD/SSD 扫描策略
-│   │       ├── snapshot.rs       # 应用列表持久化快照 + viap-icon 图标 URL
-│   │       ├── scanner.rs        # 流式扫描引擎（注册表 → LNK → FS 三级，分批推送）
-│   │       ├── migration.rs      # 迁移引擎（复制校验 → 原子改名备份 → Junction → 校验链接 → 清理备份）
-│   │       ├── uninstaller.rs    # 卸载/残留扫描/强制删除
-│   │       ├── detector.rs       # 特殊目录动态检测
-│   │       └── log_macros.rs     # 统一日志宏
-│   ├── capabilities/
-│   │   └── default.json         # Tauri 权限配置
-│   ├── icons/                    # 应用图标
-│   ├── Cargo.toml               # Rust 依赖
-│   └── tauri.conf.json          # Tauri 配置
-├── scripts/                      # 工具脚本
-│   ├── generate-icons.js        # PNG 图标生成
-│   └── generate-ico.js          # ICO 文件生成
-└── package.json                  # Node.js 依赖
-```
+## Data and Settings
 
-## 🚀 快速开始
+- Installed builds normally use `%APPDATA%\viap`.
+- Portable builds normally use the application directory's `data` folder.
+- The Settings page can change Viap's data directory and copies managed data before switching to the new location.
+- Themes, font size, default migration paths, recycle-bin preference, and scan settings are persisted with the user data.
 
-### 环境要求
+## Integrity Verification
 
-- **Node.js** >= 18.0
-- **Rust** >= 1.70
-- **Windows 10/11** (仅支持 Windows)
+Open Settings and choose **Verify file integrity**. Viap downloads the signature for the current release from GitHub and verifies the running executable with the official public key.
 
-### 安装依赖
+- A success message is shown only when the signature and file content match exactly.
+- A signature mismatch indicates that the file may have been modified.
+- Network failures, missing signatures, and malformed signatures are reported separately and are not treated as tampering.
+
+## Development
+
+### Requirements
+
+- Windows 10 or later
+- Node.js 18 or later
+- Rust and the Tauri prerequisites
+
+### Install and Run
 
 ```bash
-# 安装前端依赖
 npm install
-
-# Rust 依赖会在构建时自动安装
-```
-
-### 开发模式
-
-```bash
 npm run tauri dev
 ```
 
-### 构建发布版
+### Build and Verify
 
 ```bash
-npm run tauri build
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
+git diff --check
 ```
 
-## ⚠️ 注意事项
+### Generate Icons
 
-### 使用前必读
-
-1. **管理员权限**
-   - 创建符号链接需要管理员权限
-   - 请以管理员身份运行应用
-
-2. **迁移前检查**
-   - 确保目标磁盘有足够空间
-   - 关闭正在运行的目标应用
-   - 建议先备份重要数据
-
-3. **不建议迁移的应用**
-   - **BLOCKED（绝对拦截）**：系统核心组件、浏览器安装目录、GPU 驱动 — 迁移必然导致系统级损坏
-   - **WARNING（需确认）**：开发工具（VS/JetBrains/VSCode）、虚拟化软件（VMware/VirtualBox）、数据库（MySQL/PostgreSQL 等）、安全软件 — 需完全停止相关服务并确认免责声明后方可继续
-   - 详见用户手册中的完整危险路径分级规则表
-
-4. **迁移后注意**
-   - 迁移后的应用通过符号链接访问
-   - 请勿删除目标位置的文件
-   - 如需卸载应用，建议先恢复到原位置
-   - 如果目标位置已存在同名目录，Viap 会弹出中文确认提示；只有用户确认后才会覆盖并重试迁移
-   - 错误类 Toast 会默认停留更久，鼠标悬停时暂停自动关闭，长错误和路径会自动换行，便于截图反馈问题
-   - 数据迁移会自动识别常见开发者缓存/包目录，如 Gradle、Maven、npm/Yarn、Cargo/Rustup、pip/uv、NuGet、Claude Code 和 Codex；未检测到的内置目录不会占用列表
-   - 设置页“关于”区域提供更新日志入口，可直接查看 GitHub 上的 CHANGELOG
-   - 设置页“更新”区域可校验当前 exe；只有官方签名与内容完全一致才提示安全，网络失败或签名异常会给出独立提示
-
-### 技术限制
-
-- 仅支持 NTFS 文件系统
-- 目标磁盘必须是本地磁盘（不支持网络驱动器）
-- 部分应用可能因硬编码路径而无法正常工作
-
-## 🛠️ 图标生成
-
-项目提供了图标生成脚本：
+The icon source is `src-tauri/icons/icon.svg`. The scripts generate the PNG sizes used by the application, including `48x48.png`, and add 32, 48, 128, and 256 pixel layers to `icon.ico`.
 
 ```bash
-# 1. 生成各尺寸 PNG 图标（包含 48x48.png）
 node scripts/generate-icons.js
-
-# 2. 生成 Windows ICO 文件
 node scripts/generate-ico.js
 ```
 
-源 SVG 文件位于 `src-tauri/icons/icon.svg`，Windows ICO 同时包含 32、48、128 和 256 像素图层。
+## License
 
-## ✨ 功能特性
+MIT License. See [LICENSE](LICENSE).
 
-### 自动更新
+## Contributing
 
-应用启动后自动检查新版本，发现更新后一键下载安装：
-
-- **自动检测**：启动 3 秒后静默检查，有新版本时通知栏提示
-- **手动检查**：设置页点击「检测更新」按钮，结果即时反馈
-- **下载进度**：横幅实时显示百分比进度条，可随时取消下载
-- **安全取消**：取消下载后立即中止后台流程，不会意外重启应用
-- 自动检查失败不影响正常使用，无弹窗打扰
-
-发行包说明：
-
-- **普通安装版**：支持启动后自动检查和安装更新。
-- **WebView2 离线安装版**：安装包内置 WebView2 运行环境，适合系统无法联网安装运行环境的设备。
-- **便携版 ZIP**：解压后直接运行，配置和默认数据保存在程序目录；便携版不会自动检查更新，请从 GitHub Releases 或[夸克网盘](https://pan.quark.cn/s/4761ee4ba698)手动下载新版本。
-
-便携版首次启动会检查旧安装版的 `%APPDATA%\viap.json` 和数据目录，并将缺失的用户数据复制到便携版 `data` 目录；旧安装版数据不会被删除。主题、字体、默认迁移目录、回收站设置和扫描调试设置也会随 `ui_settings.json` 一起携带。
-
-### 文件完整性校验
-
-设置页「更新 → 校验文件完整性」会读取当前运行 exe，并从当前版本的 GitHub Release 获取官方 Minisign 签名进行流式校验。标准安装版、WebView2 离线版和便携版分别提供原始 exe 及安装包/ZIP 的 `.sig` 文件。校验通过表示内容与官方构建完全一致；签名不匹配才会提示程序可能被篡改，网络连接失败、签名缺失或签名解析异常不会被误报为篡改。
-
-### 启动体验
-
-- **首帧后显示窗口**：Tauri 主窗口默认隐藏，前端首帧挂载后再显示，避免 WebView 初始化期间暴露白屏
-- **主题启动页**：启动时展示约 2.4 秒的主题化动画启动页，使用正式 Logo 并跟随浅色/深色主题；应用快照、磁盘信息和迁移记录在启动页显示期间并行预热
-- **页面按需挂载**：启动时仅挂载应用管理页，数据迁移、迁移记录和设置页在首次访问时再初始化，降低低配设备首屏压力
-- **背景兜底**：根节点提前应用主题背景色，减少窗口显示前后的纯白闪烁
-
-### 数据目录与配置
-
-- **安装版**：默认使用 `%APPDATA%\viap`，配置指针位于 `%APPDATA%\viap.json`。
-- **便携版**：默认使用程序目录下的 `data`，配置指针位于程序目录下的 `viap.json`；默认路径使用相对 `data` 保存，整体移动便携文件夹后仍能正常定位。
-- 设置页更改数据目录时会递归复制全部 Viap 数据文件和缓存，临时 `.tmp` 文件不会被复制，复制完成后才切换配置指针。
-
-### 外观设置
-
-- **字体大小**：设置页「外观 → 字体大小」支持 12-16px 自定义调整，并提供标准、适中、较大快捷档位
-- **全局生效**：应用管理、数据迁移、迁移记录和设置页会统一跟随字号设置，列表行高也会随字号轻微调整，避免高分辨率屏幕文字过小
-
-### 流式应用扫描
-
-应用列表采用流式加载架构，告别"等待全部扫描完成才能看到结果"：
-
-- **三级扫描引擎**：Tier 1 注册表（~85% 命中，<200ms）→ Tier 2 LNK 快捷方式（~10%）→ Tier 3 文件系统扫描（~5%）
-- **应用快照秒开**：扫描完成后写入 `{data_dir}/cache/app_snapshot.json`，下次进入应用管理页先推送 `snapshot` 阶段，立即显示上次列表，再由后台扫描校验刷新
-- **流式推送**：每个扫描阶段完成后立即通过 `scan-progress` 事件推送到前端，Tier 1 完成即可显示首批应用
-- **图标懒加载**：应用项只携带 `http://viap-icon.localhost/<hex>` URL，前端 `<img>` 按需请求真实 PNG；后端协议处理器命中图标磁盘缓存或即时提取，避免 Base64 批量 IPC
-- **大小后台计算 + 持久化缓存**：SWR 策略，启动时秒发缓存值，后台异步重算；冷启动/机械硬盘场景大幅提速
-- **`appStore` 模块级单例**：应用列表缓存在模块作用域内，Tab 切换零 IPC 恢复，不重新扫描
-- **搜索/筛选保持**：搜索关键词和筛选条件跨 Tab 保持，用户无感知
-- **列头排序**：点击「名称」或「大小」列头，按拼音/体积升序降序排列，纯本地排序，刷新后重置
-- **扫描耗时开关**：设置页「其他设置 → 显示扫描耗时」可控制应用管理页左侧定位调试浮层，通过 `scan-performance` 事件展示 snapshot、registry、shortcuts、filesystem、icons 和 sizes 阶段耗时；折叠后仅保留小图标，手动刷新也会重新生成本次耗时，便于用户反馈时截图定位慢阶段
-- **快照校验提示**：冷启动命中持久化快照时，页面先显示快照列表，再用小提示反馈后台全量校验状态；当扫描结果与快照不一致时会提示列表已更新
-- **机械硬盘优化**：启动冷阶段识别磁盘介质，仅延后已知机械硬盘的非系统盘深度扫描；SSD 和无法识别类型的磁盘正常扫描。首页会提示被延后的盘符并明确要求点击刷新按钮，手动刷新时仍执行完整文件系统扫描
-- **AppData 迁移建议**：不建议整体迁移 AppData、Local 或 Roaming，应该按软件颗粒度选择数据目录；带许可证校验、系统服务或驱动的软件不适合使用目录链接
-- **微信数据目录**：兼容新版微信 `Documents\xwechat_files`，同时保留旧版 `Documents\WeChat Files` 回退检测
-
-### 应用图标提取
-
-Viap 使用 Windows Win32 API 提取应用的真实图标：
-
-- **ExtractIconExW** - 从 EXE/DLL 文件中提取图标
-- **GetIconInfo / GetDIBits** - 将图标转换为位图数据
-- **两级缓存** - 内存缓存（进程内命中）+ 磁盘缓存（跨重启命中），自动失效
-- **自定义协议** - `viap-icon` 协议直接返回 PNG 字节，前端优先使用 `icon_url`，仅兼容旧数据时回退 `icon_base64`
-
-### 微软商店应用
-
-微软商店应用（Microsoft Store / UWP / MSIX）通常位于 `C:\Program Files\WindowsApps`，由 Windows 包部署、权限、签名和更新机制统一管理。Viap 不建议也不作为可迁移应用处理此类目录；部分商店应用会在 Windows 设置中提供「移动」按钮，也可通过存储设置调整新应用默认保存位置，应优先使用 Windows 提供的迁移方式。
-
-### 多磁盘显示
-
-首页顶部显示所有本地磁盘的使用情况：
-
-- 支持横向滚动，适配多分区用户
-- 系统盘（C:）优先显示并高亮
-- 根据使用率显示不同颜色（绿色 < 70% < 黄色 < 90% < 红色）
-
-### 批量迁移
-
-支持多选应用一键批量迁移：
-
-- 每行 hover 显示复选框，顶部「全选未迁移」快捷操作
-- 选中后显示浮动「批量迁移 (N)」按钮
-- 选择统一目标目录后按序自动执行，单应用迁移失败不影响后续
-- 完成后汇总通知（成功/失败数量）
-
-### 还原 Loading 反馈
-
-点击已迁移应用的「还原」按钮时：
-- 按钮立即切换为 loading 态（spinner + "还原中"）
-- 还原完成/失败后自动恢复，配合 Toast 通知结果
-
-### 数据迁移
-
-应用数据目录采用懒加载：进入页面时只读取路径和存在性，不递归统计体积；点击“加载应用数据”后才在后台逐项扫描，避免机械硬盘阻塞首屏。
-
-支持迁移系统文件夹、应用数据和自定义文件夹：
-
-**系统文件夹：**
-- 桌面 (Desktop)、文档 (Documents)、下载 (Downloads)、图片 (Pictures)、视频 (Videos)
-
-**应用数据（动态检测路径，含注册表/配置文件回退）：**
-- 微信 / 企业微信 / QQ / 钉钉 / 飞书（含 6 个候选路径）
-- Chrome 缓存 / Edge 缓存 / VS Code 扩展 / npm 全局包
-
-**迁移特性（与应用管理页一致）：**
-- **进度弹窗** — 复用 `MigrationModal`，扫描阶段持续显示已扫描文件数/体积，复制阶段显示已复制体积和百分比
-- **扫描计划复用** — 迁移前扫描一次生成复制计划，同时用于空间检查和复制执行，避免空间统计与复制列表各扫一遍磁盘
-- **恢复进度可见** — 应用管理、数据迁移、迁移记录的恢复/还原按钮会显示后端推送的百分比
-- **安全取消** — 迁移进行中可取消，后端自动回滚已复制文件；关闭弹窗需二次确认
-- **批量迁移** — 支持全选/多选文件夹，一键批量迁移到统一目标目录，按序执行，失败不影响后续
-- **异步非阻塞** — `migrate_large_folder` 改为主线程 async + spawn_blocking，返回 `MigrationResult`，行为与 `migrate_app` 一致
-- **进程占用检查** — 迁移前检测关联进程，非系统文件夹被占用时提示关闭，系统文件夹允许强制继续
-- **系统文件夹风险提示** — 风险确认弹窗（`RiskConfirmModal`）仅在系统文件夹迁移前显示，非系统文件夹直接启动
-
-**安全特性：**
-- 系统文件夹迁移前显示风险警告
-- 自动检测进程占用，提示关闭相关应用
-- 支持一键恢复到原位置
-- 迁移进度实时可见，可随时安全取消
-- 大小始终推送事件（即使为 0），避免前端永久显示 "--"
-
-### 强力卸载与数字残留扫描
-
-Viap 的强力卸载对标 Geek Uninstaller 等专业工具，提供完整的卸载 → 残留扫描 → 安全清理链路：
-
-**卸载命令执行：**
-1. 预览卸载命令（`preview_uninstall`），在确认对话框中展示
-2. 四层命令解析回退：registry_path → DisplayName 匹配 → InstallLocation 匹配 → 文件系统扫描（含 "unin"/"uninstall"/"卸载"）
-3. 三级回退执行策略：直接 exe → cmd /C → start /wait
-4. 自动检测权限不足 → PowerShell Start-Process -Verb RunAs 提权重试
-5. 静默参数追加（/S /silent /verysilent /qn /quiet）
-6. 支持 `%ProgramFiles%` 等注册表环境变量和 MSI 已卸载/需重启成功码
-7. 以安装目录实际可执行文件为主要完成依据，兼容卸载器延迟删除注册表键
-
-**强制删除（Force Remove）：**
-- 当应用卸载程序损坏/缺失时，自动提供强制删除选项
-- 安装目录支持按预览结果勾选项目，删除方式遵循“回收站/永久删除”设置
-- 便携应用目录名与应用名不一致时，使用实际 exe、图标路径或注册表安装路径进行二次确认
-- 直接删除安装目录（三级回退：直接删 → 清除只读 → takeown + icacls）
-- 使用应用名称、安装路径和注册表值校验后清理 Uninstall 键，覆盖 HKCU 32 位视图
-
-**残留扫描（三路并行）：**
-1. 文件系统扫描：AppData / LocalAppData / ProgramData / 安装路径，深度 5
-2. Uninstall 注册表扫描：HKLM + HKCU × 4 路径（含 HKCU 32 位视图）
-3. 发布商路径扫描：Software\\<Publisher> × 4 路径（HKLM/HKCU × 普通/WOW6432Node）
-4. 文件关联扫描：Software\\Classes\\Applications\\<appname> × 2 路径
-5. 扫描时机修正：卸载完成后才触发，适配便携/绿色软件的安装检测
-
-**残留清理弹窗：**
-- 紧凑设计（640px 宽），可滚动列表，所有项目默认选中
-- 类型标签 + 路径 + 大小在一行内展示
-- AlertTriangle 警告图标提示不可恢复
-
-**安全清理：**
-- 系统目录黑名单（Windows、System32 等）
-- 注册表安全校验（拒绝 Microsoft/Windows、要求 ≥3 级路径）
-- 批量选中 + 一键清理，按体积降序排列
-
-### 设置持久化
-
-用户设置保存在 localStorage 中：
-
-- **默认应用迁移目录** — `defaultAppTargetPath`：应用管理页迁移时优先使用此路径
-- **默认数据迁移目录** — `defaultDataTargetPath`：数据管理页迁移时优先使用此路径
-- 两个默认路径均会校验是否为 C 盘（C 盘路径视为无效，强制引导重新选择）
-- 删除文件移入回收站（可关闭，关闭后直接彻底删除）
-- 数据存储目录自定义（支持迁移到自定义路径，自动复制历史数据）
-- 旧版 `defaultTargetPath` 配置自动升迁为 `defaultAppTargetPath`
-
-### 迁移目录选择流程
-
-迁移操作时统一遵循以下约定，确保用户始终明确目标位置：
-
-1. 如已设置非 C 盘默认目标 → 弹出确认框：**使用默认位置** 或 **自定义目录**
-2. 如未设置或为 C 盘路径 → 弹出引导框：**前往设置**（跳转设置页）或 **自定义目录**
-3. 选择「自定义目录」后调用系统文件夹选择器
-4. 应用管理和数据管理使用独立的默认路径配置
-
-### 迁移历史与数据管理
-
-迁移历史记录保存在 `%APPDATA%/viap/migration_history.json`：
-
-- **原子写入**：先写入临时文件 (`.json.tmp`)，再重命名覆盖目标文件，防止断电/崩溃导致数据损坏
-- **自动备份**：每次保存前自动备份上一版本到 `.json.bak`
-- **搜索/筛选/排序**：支持按名称搜索、按类型（应用/文件夹）筛选、按时间/名称/大小排序
-- **分页显示**：每页 20 条记录，底部页码控件
-- **链接健康检查**：并发检查（最多 5 路）+ localStorage 缓存（TTL 5 分钟），区分"可修复（数据完整，橙色）"和"严重损坏（数据丢失，红色）"两种异常状态
-- **记录详情面板**：点击行展开完整路径、精确时间、记录 ID、链接状态等详细信息
-- **还原前空间检查**：通过 sysinfo 检查目标盘可用空间（需 ≥ 1.1× 文件大小），空间不足时拒绝操作，保证 Junction 不被提前删除
-- **恢复前进程占用检测**：必须在删除 Junction 前检测进程占用，提前拒绝恢复操作，防止 move_dir 中途失败导致数据分裂
-- **迁移/恢复回滚保护**：迁移复制阶段遇到遍历、元数据、写入或校验错误会中止并清理目标副本；切换阶段先将源目录原子改名为同父目录下的临时备份，再创建并确认目录链接，确认成功后才清理备份；uTools 等程序占用目录时改名会直接失败，源目录不会被部分删除；恢复阶段先复制回原路径并校验，成功后再清理目标副本，失败时保留完整数据并尝试恢复目录链接
-- **卸载后历史保护**：后端恢复前会检查原路径和目标目录；应用被外部卸载且目标只剩空目录/已不存在时，不创建空的原安装目录，而是提示无可恢复数据并同步清理历史状态；目标仍有文件时禁止自动清理
-- **签名校验兼容**：完整性校验兼容 Tauri signer 上传的外层 Base64 `.sig` 文件，并继续校验内层 Minisign 签名和发行公钥
-- **普通目录保护**：区分"上次恢复未完成（target 存在，可修复）"和"数据已恢复（target 不存在）"两种场景，给出具体修复步骤
-- **恢复并发保护**：同时恢复多个项目时自动排队，防止互相干扰
-- **大文件夹恢复统一入口**：通过 `restore_app` 按 record_type 自动分发，确保 history 记录状态正确更新
-- **迁移覆盖保护**：目标目录有残留时弹窗确认后自动清理；检测到原路径仍是链接时拒绝覆盖，防止误删数据
-- **幽灵链接清理**：两步操作 — 先扫描预览（只读）→ 确认后执行清除；可检测三种异常：目标数据丢失、链接断裂、原路径消失
-- **历史导出/导入**：支持导出到指定目录备份，从备份文件导入合并（按 ID 去重）
-- **版本字段**：支持未来格式升级的平滑迁移
-
-## 📝 开发说明
-
-### CSS 变量系统
-
-项目使用模块化 CSS 变量系统，定义在 `src/styles/variables.css`：
-
-- **颜色变量**: `--color-primary`, `--color-success`, `--color-warning`, `--color-danger`
-- **间距变量**: `--spacing-1` 到 `--spacing-16`（基于 4px）
-- **圆角变量**: `--radius-sm`, `--radius-md`, `--radius-lg`, `--radius-xl`
-- **阴影变量**: `--shadow-sm`, `--shadow-md`, `--shadow-lg`
-
-### 添加新命令
-
-1. 在对应功能模块中实现核心逻辑（如 `app_manager/`、`storage/`、`folder_manager/`）
-2. 在 `src-tauri/src/lib.rs` 中注册命令路由（直接引用模块路径或创建委托函数）
-3. 前端通过 `invoke('command_name', { args })` 调用
-
-## 📄 许可证
-
-MIT License
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
+Issues and pull requests are welcome. When reporting a migration or scan problem, include the application name, source and target drive types, and the visible error message. Do not include private paths or personal data.
