@@ -490,6 +490,16 @@ pub async fn restore_large_folder(
         if !target_path.exists() {
             return Err(format!("目标路径不存在: {}", target_path.to_string_lossy()));
         }
+        if crate::storage::history::is_empty_directory(&target_path)? {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目标目录为空，没有可恢复的数据：{}\n\n未创建原目录，请先确认该文件夹是否已被卸载或手动清理。",
+                    target_path.display()
+                ),
+                new_path: None,
+            });
+        }
 
         // 获取全局恢复锁，防止与 restore_app 或其他恢复任务并发
         let _guard = match utils::try_acquire_restore_lock() {
@@ -580,6 +590,16 @@ pub fn restore_large_folder_by_history(
             return Ok(MigrationResult {
                 success: false,
                 message: format!("目标路径不存在: {}，可能已被手动删除", record.target_path),
+                new_path: None,
+            });
+        }
+        if crate::storage::history::is_empty_directory(&target_path)? {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目标目录为空，没有可恢复的数据：{}\n\n未创建原目录，请先确认该文件夹是否已被卸载或手动清理。",
+                    target_path.display()
+                ),
                 new_path: None,
             });
         }
