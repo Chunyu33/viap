@@ -110,6 +110,8 @@ pub struct LargeFolder {
 pub struct LargeFolderSizeEvent {
     pub folder_id: String,
     pub size: u64,
+    /// 用于区分刷新前后的异步扫描，避免旧任务污染新任务状态。
+    pub scan_id: Option<String>,
 }
 
 // ============================================================================

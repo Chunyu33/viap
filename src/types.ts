@@ -162,6 +162,8 @@ export interface LargeFolder {
 export interface LargeFolderSizeEvent {
   folder_id: string;
   size: number;
+  // 用于忽略已经过期的应用数据扫描完成事件。
+  scan_id?: string | null;
 }
 
 /**

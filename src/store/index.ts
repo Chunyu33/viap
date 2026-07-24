@@ -29,6 +29,8 @@ export interface ViapStore {
   // ═══ 大文件夹缓存（避免切 Tab 后重新 fetch） ═══
   largeFolders: LargeFolder[];
   largeFoldersLoaded: boolean;
+  // 应用数据大小由用户主动触发，避免 HDD 进入页面时递归扫描。
+  largeFoldersAppDataLoaded: boolean;
 
   // ═══ 迁移记录缓存 ═══
   historyRecords: MigrationRecord[];
@@ -53,6 +55,7 @@ export interface ViapStore {
   setAppMigrationRecords: (records: MigrationRecord[]) => void;
 
   setLargeFolders: (folders: LargeFolder[]) => void;
+  setLargeFoldersAppDataLoaded: (loaded: boolean) => void;
   setHistoryRecords: (records: MigrationRecord[]) => void;
 }
 
@@ -77,6 +80,7 @@ export const useViapStore = create<ViapStore>((set) => ({
 
   largeFolders: [],
   largeFoldersLoaded: false,
+  largeFoldersAppDataLoaded: false,
 
   historyRecords: [],
   historyRecordsLoaded: false,
@@ -110,5 +114,6 @@ export const useViapStore = create<ViapStore>((set) => ({
 
   // ── 大文件夹 / 历史记录缓存 actions ──
   setLargeFolders: (folders) => set({ largeFolders: folders, largeFoldersLoaded: true }),
+  setLargeFoldersAppDataLoaded: (loaded) => set({ largeFoldersAppDataLoaded: loaded }),
   setHistoryRecords: (records) => set({ historyRecords: records, historyRecordsLoaded: true }),
 }));

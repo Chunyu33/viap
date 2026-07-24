@@ -224,14 +224,14 @@ npm run tauri build
 项目提供了图标生成脚本：
 
 ```bash
-# 1. 生成各尺寸 PNG 图标
+# 1. 生成各尺寸 PNG 图标（包含 48x48.png）
 node scripts/generate-icons.js
 
 # 2. 生成 Windows ICO 文件
 node scripts/generate-ico.js
 ```
 
-源 SVG 文件位于 `src-tauri/icons/icon.svg`
+源 SVG 文件位于 `src-tauri/icons/icon.svg`，Windows ICO 同时包含 32、48、128 和 256 像素图层。
 
 ## ✨ 功能特性
 
@@ -330,6 +330,8 @@ Viap 使用 Windows Win32 API 提取应用的真实图标：
 - 还原完成/失败后自动恢复，配合 Toast 通知结果
 
 ### 数据迁移
+
+应用数据目录采用懒加载：进入页面时只读取路径和存在性，不递归统计体积；点击“加载应用数据”后才在后台逐项扫描，避免机械硬盘阻塞首屏。
 
 支持迁移系统文件夹、应用数据和自定义文件夹：
 

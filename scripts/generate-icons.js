@@ -21,6 +21,8 @@ const svgPath = path.join(iconsDir, 'icon.svg');
 // Tauri 需要的图标尺寸
 const sizes = [
   { name: '32x32.png', size: 32 },
+  // Windows Explorer 和快捷方式在部分缩放场景会优先请求 48px 图标。
+  { name: '48x48.png', size: 48 },
   { name: '128x128.png', size: 128 },
   { name: '128x128@2x.png', size: 256 },
   { name: 'icon.png', size: 512 },

@@ -304,6 +304,10 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
   const [folders, setFolders] = useState<LargeFolder[]>(() => storeApi.getState().largeFolders);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [appDataScanning, setAppDataScanning] = useState(false);
+  const appDataScanIdsRef = useRef<Set<string>>(new Set());
+  const appDataCompletedIdsRef = useRef<Set<string>>(new Set());
+  const appDataScanTokenRef = useRef<string | null>(null);
   const [restoringFolderId, setRestoringFolderId] = useState<string | null>(null);
   const [restoreProgressMap, setRestoreProgressMap] = useState<Record<string, number>>({});
 
@@ -380,20 +384,51 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
     [folders],
   );
   const migratedCount = useMemo(() => folders.filter(f => f.is_junction).length, [folders]);
+  const appDataLoaded = storeApi((state) => state.largeFoldersAppDataLoaded);
 
   const fetchFolders = useCallback(async () => {
     try {
       setLoading(true);
+      // 刷新会替换目录快照，旧扫描事件不能再影响新列表的完成状态。
+      setAppDataScanning(false);
+      appDataScanIdsRef.current = new Set();
+      appDataCompletedIdsRef.current = new Set();
+      appDataScanTokenRef.current = null;
       const result = await invoke<LargeFolder[]>('get_large_folders');
       setFolders(result);
       storeApi.setState({ largeFolders: result, largeFoldersLoaded: true });
+      storeApi.getState().setLargeFoldersAppDataLoaded(false);
       // 在前端监听器就绪后启动大小扫描，避免竞态导致事件丢失
-      await invoke('start_folder_size_scan', { folders: result });
+      await invoke('start_folder_size_scan', { folders: result, scanId: null });
     } catch (error) {
       console.error('获取大文件夹列表失败:', error);
       showToast('获取文件夹列表失败', 'error');
     } finally { setLoading(false); }
   }, [showToast]);
+
+  async function handleLoadAppData() {
+    // 只提交当前快照中的真实目录，避免把已消失目录交给后台递归扫描。
+    const candidates = folders.filter(folder => folder.folder_type === 'AppData' && folder.exists);
+    const scanIds = new Set(candidates.map(folder => folder.id));
+    const scanToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    appDataScanIdsRef.current = scanIds;
+    appDataCompletedIdsRef.current = new Set();
+    appDataScanTokenRef.current = scanToken;
+
+    if (scanIds.size === 0) {
+      storeApi.getState().setLargeFoldersAppDataLoaded(true);
+      showToast('没有检测到可扫描的应用数据目录', 'info');
+      return;
+    }
+
+    setAppDataScanning(true);
+    try {
+      await invoke('start_app_data_size_scan', { folders: candidates, scanId: scanToken });
+    } catch (error) {
+      setAppDataScanning(false);
+      showToast(`加载应用数据失败：${error}`, 'error');
+    }
+  }
 
   // size update events
   useEffect(() => {
@@ -401,8 +436,17 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
     (async () => {
       try {
         unlisten = await listen<LargeFolderSizeEvent>('large-folder-size', (event) => {
-          const { folder_id, size } = event.payload;
+          const { folder_id, size, scan_id } = event.payload;
+          // 应用数据扫描可能跨越一次刷新，旧批次的结果不能覆盖新目录快照。
+          if (scan_id != null && scan_id !== appDataScanTokenRef.current) return;
           setFolders(prev => prev.map(f => f.id === folder_id ? { ...f, size } : f));
+          if (scan_id === appDataScanTokenRef.current && appDataScanIdsRef.current.has(folder_id)) {
+            appDataCompletedIdsRef.current.add(folder_id);
+            if (appDataCompletedIdsRef.current.size >= appDataScanIdsRef.current.size) {
+              setAppDataScanning(false);
+              storeApi.getState().setLargeFoldersAppDataLoaded(true);
+            }
+          }
         });
       } catch { /* ignore */ }
     })();
@@ -994,8 +1038,29 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
 
               {appDataFolders.length > 0 && (
                 <section>
-                  <div className="px-2 mb-1.5">
+                  <div className="flex items-center justify-between px-2 mb-1.5">
                     <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>应用数据</span>
+                    <div className="flex items-center gap-2">
+                      {!appDataLoaded && !appDataScanning && (
+                        <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                          默认不扫描，避免机械硬盘冷启动卡顿
+                        </span>
+                      )}
+                      {appDataScanning && (
+                        <span className="text-[10px]" style={{ color: 'var(--color-primary)' }}>
+                          正在后台加载应用数据...
+                        </span>
+                      )}
+                      <button
+                        onClick={handleLoadAppData}
+                        disabled={appDataScanning}
+                        className="btn h-6 text-[11px]"
+                        title="扫描应用数据目录大小，机械硬盘可能需要较长时间"
+                      >
+                        {appDataScanning && <Loader2 className="w-3 h-3 animate-spin" />}
+                        {appDataLoaded ? '重新加载' : '加载应用数据'}
+                      </button>
+                    </div>
                   </div>
                   {appDataFolders.map(f => (
                     <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
