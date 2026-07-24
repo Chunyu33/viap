@@ -110,6 +110,8 @@ pub struct LargeFolder {
 pub struct LargeFolderSizeEvent {
     pub folder_id: String,
     pub size: u64,
+    /// 用于区分刷新前后的异步扫描，避免旧任务污染新任务状态。
+    pub scan_id: Option<String>,
 }
 
 // ============================================================================
@@ -232,6 +234,9 @@ pub struct LinkStatusResult {
     pub healthy: bool,
     pub target_exists: bool,
     pub is_junction: bool,
+    /// 目标目录存在但为空，且原路径已不存在时表示没有可恢复数据。
+    pub target_empty: bool,
+    pub original_exists: bool,
     pub error: Option<String>,
 }
 

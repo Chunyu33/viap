@@ -317,6 +317,7 @@ pub fn run() {
             // 文件夹管理
             folder_manager::get_large_folders,
             folder_manager::start_folder_size_scan,
+            folder_manager::start_app_data_size_scan,
             folder_manager::migrate_large_folder,
             folder_manager::add_custom_folder,
             folder_manager::remove_custom_folder,

@@ -1,13 +1,12 @@
 // 特殊目录检测与迁移模块
 // 负责动态检测聊天类应用数据目录，并提供安全迁移入口
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use crate::models::MigrationResult;
-use crate::utils;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -17,7 +16,7 @@ use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
 /// 特殊文件夹状态
-/// 前端用于展示检测结果和可迁移体积
+/// 前端用于展示检测结果和目录路径；大小由 folder_manager 懒加载计算。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpecialFolder {
     pub name: String,
@@ -78,22 +77,21 @@ pub fn get_special_folders_status() -> Result<Vec<SpecialFolder>, String> {
     }
 }
 
-/// 获取单个特殊目录的状态（动态检测路径 + 大小）
+/// 获取单个特殊目录的状态（只做路径检测，不递归读取目录）。
 #[cfg(windows)]
 fn folder_status(app_name: &str) -> SpecialFolder {
     let detected = detect_chat_app_data(app_name);
     let fallback = default_special_path(app_name);
 
-    let (current_path, is_detected, size_mb) = match detected {
+    let (current_path, is_detected) = match detected {
         Some(path) => {
-            let size_mb = calc_size_mb(&path);
-            (path.to_string_lossy().to_string(), true, size_mb)
+            (path.to_string_lossy().to_string(), true)
         }
         None => {
             let current_path = fallback
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
-            (current_path, false, 0.0)
+            (current_path, false)
         }
     };
 
@@ -101,7 +99,8 @@ fn folder_status(app_name: &str) -> SpecialFolder {
         name: app_name.to_string(),
         current_path,
         is_detected,
-        size_mb,
+        // 首屏只返回路径元数据，避免 HDD 上递归遍历应用数据目录。
+        size_mb: 0.0,
     }
 }
 
@@ -137,12 +136,6 @@ pub fn migrate_special_folder(
 #[cfg(windows)]
 fn normalize_app_name(app_name: &str) -> String {
     app_name.trim().to_lowercase()
-}
-
-#[cfg(windows)]
-fn calc_size_mb(path: &Path) -> f64 {
-    let bytes = utils::get_dir_size_safe(path);
-    ((bytes as f64) / 1024.0 / 1024.0 * 100.0).round() / 100.0
 }
 
 #[cfg(windows)]

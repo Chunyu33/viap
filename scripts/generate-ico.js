@@ -18,6 +18,7 @@ async function generateIco() {
   // 使用多个尺寸的PNG生成ICO
   const pngFiles = [
     path.join(iconsDir, '32x32.png'),
+    path.join(iconsDir, '48x48.png'),
     path.join(iconsDir, '128x128.png'),
     path.join(iconsDir, '128x128@2x.png'),
   ];

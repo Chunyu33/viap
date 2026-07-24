@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v1.1.7'
+        description: 'Release tag, for example v1.1.8'
         required: false
-        default: 'v1.1.7'
+        default: 'v1.1.8'
 
 permissions:
   contents: write
@@ -64,12 +64,18 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.7 更新内容
+            ## v1.1.8 更新内容
 
-            ### 数据兼容修复
-            - 新增统一用户设置文件，主题、字号、默认迁移目录、回收站和扫描调试设置可随便携版目录携带
-            - 便携版首次启动自动兼容已有安装版数据，复制缺失文件到本地 `data` 目录，不删除原安装版数据
-            - 更改数据目录时改为递归迁移完整 Viap 数据和缓存，避免丢失应用模板、卸载日志、迁移元数据和应用快照
+            ### 迁移安全修复
+
+            - 数据迁移页应用数据目录改为用户主动加载后后台逐项统计，避免机械硬盘冷启动长时间卡顿
+
+            - 修复 uTools 等目录存在占用文件时，递归删除源目录可能出现部分删除的问题
+            - 完整性校验兼容 Tauri signer 生成的 Base64 封装签名文件，修复签名解析失败
+
+            ### 图标优化
+
+            - Windows 应用图标新增 `48x48.png` 资源，并将 48px 图层加入 `icon.ico`，修复部分系统缩放场景缺少 48px 图标的问题
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)

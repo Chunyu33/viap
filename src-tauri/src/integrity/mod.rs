@@ -52,6 +52,25 @@ enum LocalVerificationError {
     Signature(String),
 }
 
+/// 解析 GitHub 上的签名文件。
+///
+/// Tauri signer 上传的 `.sig` 是“外层 Base64 + 内层 Minisign 文本”，而不是
+/// `minisign_verify` 直接要求的四行文本；同时保留直接解析路径，兼容标准格式。
+fn decode_signature_content(content: &str) -> Result<Signature, String> {
+    let trimmed = content.trim();
+    if let Ok(signature) = Signature::decode(trimmed) {
+        return Ok(signature);
+    }
+
+    let decoded = STANDARD
+        .decode(trimmed)
+        .map_err(|error| format!("签名外层 Base64 解码失败: {error}"))?;
+    let minisign_text = String::from_utf8(decoded)
+        .map_err(|error| format!("签名内层文本编码无效: {error}"))?;
+    Signature::decode(&minisign_text)
+        .map_err(|error| format!("Minisign 签名内容解析失败: {error}"))
+}
+
 fn result(
     status: IntegrityStatus,
     message: impl Into<String>,
@@ -126,18 +145,12 @@ fn verify_local_file(
 ) -> Result<Option<String>, LocalVerificationError> {
     let decoded_signatures: Vec<(String, Signature)> = signatures
         .iter()
-        .filter_map(|signature| {
-            Signature::decode(&signature.content)
-                .ok()
+        .map(|signature| {
+            decode_signature_content(&signature.content)
                 .map(|decoded| (signature.asset_name.clone(), decoded))
+                .map_err(LocalVerificationError::Signature)
         })
-        .collect();
-
-    if decoded_signatures.len() != signatures.len() {
-        return Err(LocalVerificationError::Signature(
-            "GitHub 签名文件格式无效".to_string(),
-        ));
-    }
+        .collect::<Result<_, _>>()?;
 
     // 所有 verifier 借用同一组签名，下面只需把本地 exe 读取一遍即可完成多候选校验。
     let mut verifiers = Vec::with_capacity(decoded_signatures.len());
@@ -248,18 +261,6 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
         );
     }
 
-    let valid_signature_count = signatures
-        .iter()
-        .filter(|signature| Signature::decode(&signature.content).is_ok())
-        .count();
-    if valid_signature_count != signatures.len() {
-        return result(
-            IntegrityStatus::SignatureInvalid,
-            "GitHub 签名文件解析失败，无法完成完整性校验",
-            None,
-        );
-    }
-
     // exe 读取可能持续数秒，放入阻塞线程池避免机械盘校验阻塞 Tauri 异步运行时。
     let verification = match tauri::async_runtime::spawn_blocking(move || {
         verify_local_file(&executable_path, &public_key, &signatures)
@@ -293,5 +294,22 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
         Err(LocalVerificationError::Signature(error)) => {
             result(IntegrityStatus::SignatureInvalid, error, None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_signature_content;
+
+    #[test]
+    fn decodes_tauri_outer_base64_signature() {
+        // 该样本对应 Tauri signer 生成的格式，防止把外层 Base64 当成 Minisign 文本。
+        let encoded = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSS0dmRVJKUEtkWWZ1YWlRN09TSnFIV2pUZmp5WG5qNVRXbGtJeGZaQUpjL2ZFL3pSVUczNFBsd1orUWVQSTM4RTgrRzRSY1VTd29nRmNoaXZwOFFDUFdZZTdHUUh4MFFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MTg3Mzg5CWZpbGU6dmlhcF92MS4xLjdfeDY0LmV4ZQp6RkhYUXczZlRJd1dGRTFDU3lrWDBqaFhtRFNHUVpnemtLMmIvN0lpd1pSak0yd0w5ZDFHbWY1Q2VqNmtZczRUeitmOTArejJtWVVmMFFSRFpjMEVEUT09Cg==";
+        assert!(decode_signature_content(encoded).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_signature_content() {
+        assert!(decode_signature_content("not-a-signature").is_err());
     }
 }

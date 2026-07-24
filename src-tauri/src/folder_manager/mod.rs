@@ -213,7 +213,8 @@ pub fn save_app_data_templates(templates: Vec<AppDataTemplate>) -> Result<(), St
 /// ## 应用数据文件夹
 /// 从 `app_data_templates.json` 加载模板，内置类型通过 detector 模块动态检测路径
 ///
-/// 注意：返回时 size 均为 0，前端需随后调用 start_folder_size_scan 触发异步大小计算。
+/// 注意：返回时 size 均为 0；系统/自定义目录由 start_folder_size_scan 异步计算，
+/// 应用数据目录由用户主动调用 start_app_data_size_scan 后计算。
 /// 将扫描与计算分离是为了消除竞态：前端注册 large-folder-size 监听器后才启动后台线程，
 /// 避免线程在监听器就绪前 emit 事件导致事件丢失。
 #[tauri::command]
@@ -345,30 +346,69 @@ fn is_missing_default_builtin_path(template: &AppDataTemplate) -> bool {
 pub fn start_folder_size_scan(
     folders: Vec<LargeFolder>,
     app_handle: AppHandle,
+    scan_id: Option<String>,
 ) -> Result<(), String> {
-    compute_folder_sizes_async(app_handle, folders);
+    let background_folders = folders
+        .into_iter()
+        .filter(|folder| folder.folder_type != LargeFolderType::AppData)
+        .collect();
+    compute_folder_sizes_async(app_handle, background_folders, scan_id);
+    Ok(())
+}
+
+/// 用户主动触发应用数据大小扫描。
+///
+/// 应用数据目录通常位于 HDD，默认不随页面进入自动递归；单独命令让前端明确表达
+/// 用户意图，并通过同一个大小事件逐项推送结果。
+#[tauri::command]
+pub fn start_app_data_size_scan(
+    folders: Vec<LargeFolder>,
+    app_handle: AppHandle,
+    scan_id: Option<String>,
+) -> Result<(), String> {
+    let app_data_folders: Vec<LargeFolder> = folders
+        .into_iter()
+        .filter(|folder| folder.folder_type == LargeFolderType::AppData)
+        .collect();
+    compute_folder_sizes_async(app_handle, app_data_folders, scan_id);
     Ok(())
 }
 
 /// 后台异步计算各文件夹大小并通过事件推送
 /// 始终推送事件（即使大小为 0），避免前端因缺少事件而永久显示 "--"
 /// Junction 文件夹计算其目标目录的实际大小
-fn compute_folder_sizes_async(app_handle: AppHandle, folders: Vec<LargeFolder>) {
+fn compute_folder_sizes_async(
+    app_handle: AppHandle,
+    folders: Vec<LargeFolder>,
+    scan_id: Option<String>,
+) {
     std::thread::spawn(move || {
         for folder in &folders {
-            if !folder.exists { continue; }
-            // Junction 文件夹计算目标目录大小，非 Junction 计算自身大小
+            // 即使目录在扫描期间消失，也要发送终态事件，避免前端一直等待该目录。
+            if !folder.exists {
+                let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
+                    folder_id: folder.id.clone(), size: 0, scan_id: scan_id.clone(),
+                });
+                continue;
+            }
+            // Junction 文件夹计算目标目录大小，非 Junction 计算自身大小。
             let path = if folder.is_junction {
                 match &folder.junction_target {
                     Some(target) => PathBuf::from(target),
-                    None => continue,
+                    None => {
+                        // 链接目标缺失时返回 0，让前端结束本轮扫描并保留迁移异常提示入口。
+                        let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
+                            folder_id: folder.id.clone(), size: 0, scan_id: scan_id.clone(),
+                        });
+                        continue;
+                    }
                 }
             } else {
                 PathBuf::from(&folder.path)
             };
             let size = utils::get_folder_size(&path);
             let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
-                folder_id: folder.id.clone(), size,
+                folder_id: folder.id.clone(), size, scan_id: scan_id.clone(),
             });
         }
     });
@@ -490,6 +530,16 @@ pub async fn restore_large_folder(
         if !target_path.exists() {
             return Err(format!("目标路径不存在: {}", target_path.to_string_lossy()));
         }
+        if crate::storage::history::is_empty_directory(&target_path)? {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目标目录为空，没有可恢复的数据：{}\n\n未创建原目录，请先确认该文件夹是否已被卸载或手动清理。",
+                    target_path.display()
+                ),
+                new_path: None,
+            });
+        }
 
         // 获取全局恢复锁，防止与 restore_app 或其他恢复任务并发
         let _guard = match utils::try_acquire_restore_lock() {
@@ -580,6 +630,16 @@ pub fn restore_large_folder_by_history(
             return Ok(MigrationResult {
                 success: false,
                 message: format!("目标路径不存在: {}，可能已被手动删除", record.target_path),
+                new_path: None,
+            });
+        }
+        if crate::storage::history::is_empty_directory(&target_path)? {
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目标目录为空，没有可恢复的数据：{}\n\n未创建原目录，请先确认该文件夹是否已被卸载或手动清理。",
+                    target_path.display()
+                ),
                 new_path: None,
             });
         }

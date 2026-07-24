@@ -15,9 +15,10 @@ import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
 import { useViapStore } from '../store';
 
+// no_data: 原路径已消失且目标为空/不存在，通常表示应用已被外部卸载。
 // broken_fixable: Junction 损坏但 target 仍存在（通常是用户手动绕过 Viap 操作导致）
 // broken_lost: target 已不存在，数据已丢失，只能清理
-type LinkStatus = 'checking' | 'healthy' | 'broken_fixable' | 'broken_lost' | 'unknown';
+type LinkStatus = 'checking' | 'healthy' | 'broken_fixable' | 'broken_lost' | 'no_data' | 'unknown';
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return '--';
@@ -113,7 +114,7 @@ function HistoryRow({
 
   const rowStyle: React.CSSProperties = {
     borderBottom: '1px solid var(--border-color)',
-    background: linkStatus === 'broken_lost' ? 'var(--color-danger-light)'
+    background: linkStatus === 'broken_lost' || linkStatus === 'no_data' ? 'var(--color-danger-light)'
       : linkStatus === 'broken_fixable' ? 'var(--color-warning-light)'
       : 'transparent',
   } as React.CSSProperties;
@@ -125,10 +126,10 @@ function HistoryRow({
         style={{ height: 'var(--row-height)', padding: '0 8px' }}
         onClick={() => setExpanded(!expanded)}
         onMouseEnter={(e) => {
-          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost') (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)';
+          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost' && linkStatus !== 'no_data') (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)';
         }}
         onMouseLeave={(e) => {
-          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost') (e.currentTarget as HTMLElement).style.background = 'var(--rowStyle-background, transparent)';
+          if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost' && linkStatus !== 'no_data') (e.currentTarget as HTMLElement).style.background = 'var(--rowStyle-background, transparent)';
         }}
       >
         {/* icon */}
@@ -161,10 +162,10 @@ function HistoryRow({
         </div>
 
         {/* status */}
-        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '用户手动删除或改动，建议清理' : linkStatus === 'broken_lost' ? '数据已丢失，只能清理' : ''}>
+        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '用户手动删除或改动，建议清理' : linkStatus === 'broken_lost' ? '数据已丢失，只能清理' : linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : ''}>
           {linkStatus === 'checking' && <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-tertiary)' }} />}
           {linkStatus === 'healthy' && <CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--color-success)' }} />}
-          {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost') && <span title="用户手动绕过 Viap 操作导致，建议清理"><AlertTriangle className="w-3.5 h-3.5" style={{ color: linkStatus === 'broken_lost' ? 'var(--color-danger)' : 'var(--color-warning)' }} /></span>}
+          {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost' || linkStatus === 'no_data') && <span title={linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : '用户手动绕过 Viap 操作导致，建议清理'}><AlertTriangle className="w-3.5 h-3.5" style={{ color: linkStatus === 'broken_lost' || linkStatus === 'no_data' ? 'var(--color-danger)' : 'var(--color-warning)' }} /></span>}
         </div>
 
         {/* size */}
@@ -173,16 +174,16 @@ function HistoryRow({
         </span>
 
         {/* action: 损坏状态 → 清理, 正常 → 恢复 */}
-        {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost') ? (
+        {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost' || linkStatus === 'no_data') ? (
           <button
             onClick={e => { e.stopPropagation(); onCleanup?.(record.id); }}
             disabled={isRestoring}
             className="btn btn-sm h-6 text-[11px] flex-shrink-0"
             style={{ color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
-            title="清理残留记录（数据已丢失，无法恢复）"
+            title={linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据，清理记录' : '清理残留记录（数据已丢失，无法恢复）'}
           >
             {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-            清理
+            {linkStatus === 'no_data' ? '清理记录' : '清理'}
           </button>
         ) : (
           <button
@@ -330,11 +331,18 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
 
       runWithConcurrency(needCheck, 5, async (record) => {
         try {
-          const result = await invoke<{ healthy: boolean; target_exists: boolean }>('check_link_status', { recordId: record.id });
+          const result = await invoke<{
+            healthy: boolean;
+            target_exists: boolean;
+            target_empty: boolean;
+            original_exists: boolean;
+          }>('check_link_status', { recordId: record.id });
           let status: LinkStatus;
           if (result.healthy) {
             status = 'healthy';
-          } else if (result.target_exists) {
+          } else if (!result.original_exists && (!result.target_exists || result.target_empty)) {
+            status = 'no_data';
+          } else if (result.target_exists && !result.target_empty) {
             status = 'broken_fixable'; // target 存在，junction 损坏，可修复
           } else {
             status = 'broken_lost';    // target 不存在，数据丢失
@@ -398,7 +406,12 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
         setCachedStatus(historyId, 'unknown' as LinkStatus);
         await loadHistory();
       } else {
-        if (result.message.includes('另一个恢复任务')) {
+        if (result.message.startsWith('RECORD_CLEANED_NO_DATA:')) {
+          // 后端已将无数据记录标记为已清理，必须立即同步列表，避免旧行继续显示恢复按钮。
+          showToast(result.message.replace('RECORD_CLEANED_NO_DATA:', ''), 'info', 8000);
+          setCachedStatus(historyId, 'unknown' as LinkStatus);
+          await loadHistory();
+        } else if (result.message.includes('另一个恢复任务')) {
           showToast('请等待当前恢复任务完成后再操作', 'info');
         } else {
           showToast(result.message, 'error');

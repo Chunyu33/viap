@@ -585,6 +585,94 @@ fn preflight_directory_link(target: &Path, source: &Path) -> Result<(), String> 
     remove_directory_link(&probe_link)
 }
 
+/// 为源目录生成同父目录下的临时备份路径。
+///
+/// 迁移切换必须使用同卷 rename，临时目录放在源目录父级可以保证改名是原子的，
+/// 同时避免把正在迁移的目录再次纳入目标路径扫描。
+#[cfg(windows)]
+fn create_migration_backup_path(source: &Path) -> Result<PathBuf, String> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| format!("源目录缺少父目录，无法创建迁移备份：{}", source.display()))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    for attempt in 0..10 {
+        let backup_name = format!(
+            ".viap_migration_backup_{}_{}_{}",
+            std::process::id(),
+            timestamp,
+            attempt
+        );
+        let backup_path = parent.join(backup_name);
+
+        // symlink_metadata 能识别悬空重解析点，避免临时路径碰撞后误改用户目录。
+        if backup_path.symlink_metadata().is_err() {
+            return Ok(backup_path);
+        }
+    }
+
+    Err(format!(
+        "无法创建唯一的迁移备份路径，请清理 {} 下的 .viap_migration_backup_* 后重试",
+        parent.display()
+    ))
+}
+
+/// 校验原路径已经是指向预期目标的目录链接。
+///
+/// create_directory_link 返回成功后仍做一次实际路径确认，防止链接创建过程被外部程序
+/// 干扰时误进入清理备份阶段。
+#[cfg(windows)]
+fn verify_directory_link(link: &Path, target: &Path) -> Result<(), String> {
+    if !crate::utils::is_junction(link) {
+        return Err(format!("原路径未成为目录链接：{}", link.display()));
+    }
+
+    let actual_target = crate::utils::get_junction_target(link)
+        .ok_or_else(|| format!("无法读取目录链接目标：{}", link.display()))?;
+    let expected = fs::canonicalize(target)
+        .map_err(|e| format!("无法解析目标目录：{}，原因：{}", target.display(), e))?;
+    let actual = fs::canonicalize(Path::new(&actual_target))
+        .map_err(|e| format!("无法解析目录链接目标：{}，原因：{}", actual_target, e))?;
+
+    if actual != expected {
+        return Err(format!(
+            "目录链接目标不一致：预期 {}，实际 {}",
+            expected.display(),
+            actual.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// 在链接创建失败时，只移除 Viap 创建的目录链接并恢复原目录。
+///
+/// 对非链接目录绝不递归删除，避免异常状态下把用户新建的数据目录当成半成品清理。
+#[cfg(windows)]
+fn restore_source_from_backup(source: &Path, backup: &Path, target: &Path) -> Result<(), String> {
+    if crate::utils::is_junction(source) {
+        verify_directory_link(source, target)?;
+        remove_directory_link(source)?;
+    } else if source.symlink_metadata().is_ok() {
+        return Err(format!(
+            "原路径出现非目录链接内容，拒绝覆盖以保护数据：{}",
+            source.display()
+        ));
+    }
+
+    fs::rename(backup, source).map_err(|e| {
+        format!(
+            "恢复原目录失败：{} -> {}，原因：{}",
+            backup.display(),
+            source.display(),
+            e
+        )
+    })
+}
+
 #[cfg(windows)]
 fn rollback_restore_link(original_path: &Path, target_path: &Path) -> String {
     let cleanup_result = if original_path.exists() && !crate::utils::is_junction(original_path) {
@@ -1321,15 +1409,14 @@ pub fn migrate_app(
             });
         }
 
-        // 步骤 4: 删除源目录（数据已完整复制到 target，直接原地删除）
-        // 不再使用 rename 备份方案：Shell 已知文件夹（Desktop、Videos 等）和
-        // Chrome 缓存等目录被 Windows Shell / 索引服务持有引用，fs::rename 会
-        // 因 ACCESS_DENIED 失败。新方案直接删除源目录，消除了 rename 成功但
-        // symlink 失败且 rename-back 也失败的双重失败极端情况。
+        // 步骤 4：原子切换源目录
+        // 不能直接 remove_dir_all：目录删除不是事务操作，遇到 uTools 等被占用文件时，
+        // Windows 可能已经删掉部分文件才返回失败。先改名为同父目录临时备份，失败时
+        // 源目录仍保持完整；链接确认成功后才清理备份，整个切换过程不会暴露半目录。
         emit_progress(app_handle, &source, 93.0, "linking", "正在创建目录链接...", source_size, source_size);
 
         if let Err(e) = preflight_directory_link(&target_path, source_path) {
-            // 删除源目录前先预检链接能力；预检失败时源目录仍在，回滚只需清理目标副本。
+            // 预检失败时源目录仍在，只清理本次创建的目标副本。
             let _ = remove_directory_robust(&target_path);
             return Ok(MigrationResult {
                 success: false,
@@ -1344,14 +1431,28 @@ pub fn migrate_app(
             });
         }
 
-        if let Err(e) = remove_directory_robust(source_path) {
-            // 删除源目录失败，可能原因：文件被进程锁定 / 权限不足 / 只读保护
-            // 必须清理 target，将状态恢复到迁移前（source 完整，target 不存在）
+        let backup_path = match create_migration_backup_path(source_path) {
+            Ok(path) => path,
+            Err(e) => {
+                let _ = remove_directory_robust(&target_path);
+                return Ok(MigrationResult {
+                    success: false,
+                    message: format!(
+                        "迁移中止：无法准备安全切换。\n\n{}\n\n原数据仍完整保留。",
+                        e
+                    ),
+                    new_path: None,
+                });
+            }
+        };
+
+        if let Err(e) = fs::rename(source_path, &backup_path) {
+            // 改名失败通常是目录仍被程序占用；此时源目录从未被删除，目标副本可安全清理。
             let _ = remove_directory_robust(&target_path);
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
-                    "删除原目录失败，迁移中止。\n\
+                    "迁移中止：原目录仍被其他程序占用，未删除任何源文件。\n\
                      已自动清理目标副本，原数据完好无损。\n\n\
                      失败路径：{}\n\
                      失败原因：{}\n\n\
@@ -1365,9 +1466,41 @@ pub fn migrate_app(
             });
         }
 
-        // 步骤 5: 创建目录链接（Junction 或软链接）
+        // 步骤 5：创建并确认目录链接（Junction 或软链接）
         match create_directory_link(&target_path, source_path) {
             Ok(_) => {
+                if let Err(verify_error) = verify_directory_link(source_path, &target_path) {
+                    let restore_result = restore_source_from_backup(source_path, &backup_path, &target_path);
+                    let restore_message = match restore_result {
+                        Ok(()) => {
+                            let _ = remove_directory_robust(&target_path);
+                            format!("原数据已完整恢复到：{}", source)
+                        }
+                        Err(restore_error) => format!(
+                            "自动恢复未完成。原数据备份仍保留在：{}；恢复原因：{}",
+                            backup_path.display(),
+                            restore_error
+                        ),
+                    };
+                    return Ok(MigrationResult {
+                        success: false,
+                        message: format!(
+                            "目录链接确认失败，迁移已中止。\n\n{}\n\n{}",
+                            verify_error, restore_message
+                        ),
+                        new_path: Some(target_path_str.clone()),
+                    });
+                }
+
+                // 链接已经确认指向完整目标，之后清理临时备份不会影响实际运行数据。
+                let cleanup_warning = remove_directory_robust(&backup_path).err().map(|e| {
+                    format!(
+                        "临时备份清理失败，仍保留在 {}：{}",
+                        backup_path.display(),
+                        e
+                    )
+                });
+
                 // 步骤 6: 写入迁移历史
                 let is_app = matches!(record_type, MigrationRecordType::App);
                 if let Err(e) = crate::storage::history::add_migration_record(
@@ -1388,7 +1521,13 @@ pub fn migrate_app(
 
                 emit_progress(app_handle, &source, 100.0, "done", "迁移完成", source_size, source_size);
 
-                let success_msg = format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str);
+                let success_msg = match cleanup_warning {
+                    Some(warning) => format!(
+                        "迁移成功！应用已从 {} 迁移到 {}\n\n⚠️ {}",
+                        source, target_path_str, warning
+                    ),
+                    None => format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str),
+                };
 
                 Ok(MigrationResult {
                     success: true,
@@ -1397,19 +1536,10 @@ pub fn migrate_app(
                 })
             }
             Err(symlink_err) => {
-                // source 已删除，target 是唯一数据副本
-                // 策略：优先尝试 rename 把 target 移回 source（同盘原子操作，成功率高）
-                // rename 失败（跨盘）时不再做 copy-then-delete（可能制造两个残缺副本），
-                // 而是保留 target 并返回明确的恢复指引
-                let rollback_result = fs::rename(&target_path, source_path);
-
-                match rollback_result {
-                    Ok(_) => {
-                        // 回滚成功：source 已恢复，target 已清除，用户数据安全
-                        // 清理可能遗留的空父目录（如 D:\Apps 是本次迁移新建的，rename 后成为空目录）
-                        if let Some(parent) = target_path.parent() {
-                            let _ = fs::remove_dir(parent);
-                        }
+                // 链接创建失败时，源目录仍在临时备份中；先恢复原目录，再清理目标副本。
+                match restore_source_from_backup(source_path, &backup_path, &target_path) {
+                    Ok(()) => {
+                        let _ = remove_directory_robust(&target_path);
                         Ok(MigrationResult {
                             success: false,
                             message: format!(
@@ -1419,34 +1549,28 @@ pub fn migrate_app(
                             new_path: None,
                         })
                     }
-                    Err(rename_err) => {
-                        // rename 失败（通常是跨盘 os error 17），target 仍是唯一副本
-                        // 此时数据安全但位置不在原处，必须明确告知用户
+                    Err(restore_err) => {
+                        // 恢复失败时保留目标副本和备份目录，两个副本都不再自动删除，避免数据损失。
                         orbit_log!(
                             "ERROR", "migration",
-                            "symlink 失败且 rename 回滚也失败。symlink_err={}, rename_err={}, data_at={}",
-                            symlink_err, rename_err, target_path_str
+                            "链接失败且源目录恢复失败。link_err={}, restore_err={}, data_at={}, backup_at={}",
+                            symlink_err, restore_err, target_path_str, backup_path.display()
                         );
                         Ok(MigrationResult {
                             success: false,
-                            // 用特殊前缀让前端识别「数据已转移但链接失败」状态
                             message: format!(
                                 "SYMLINK_FAILED_DATA_AT_TARGET:{target}\n\
-                                 创建目录链接失败，自动回滚也未成功。\n\n\
-                                 ⚠️ 您的数据完整保存在新位置，原位置已清空：\n\
-                                 数据位置：{target}\n\n\
-                                 请选择以下任一方式恢复：\n\
-                                 方式一（推荐）：将数据移回原位置\n\
-                                 把「{target}」整个目录移动到「{source}」\n\n\
-                                 方式二：手动创建目录链接\n\
-                                 以管理员身份运行 CMD，执行：\n\
-                                 mklink /J \"{source}\" \"{target}\"\n\n\
-                                 链接失败原因：{symlink_err}",
+                                 创建目录链接失败，自动恢复也未完成。\n\n\
+                                 ⚠️ 数据副本仍完整保存在：{target}\n\
+                                 原目录备份仍保留在：{backup}\n\n\
+                                 请勿删除上述任一目录，关闭占用程序后再手动恢复。\n\n\
+                                 链接失败原因：{symlink_err}\n\
+                                 恢复失败原因：{restore_err}",
                                 target = target_path_str,
-                                source = source,
+                                backup = backup_path.display(),
                                 symlink_err = symlink_err,
+                                restore_err = restore_err,
                             ),
-                            // 返回 target 路径，让前端知道数据在哪
                             new_path: Some(target_path_str.clone()),
                         })
                     }

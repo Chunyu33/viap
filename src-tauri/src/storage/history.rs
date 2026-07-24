@@ -74,6 +74,74 @@ pub fn save_history(storage: &HistoryStorage) -> Result<(), String> {
     Ok(())
 }
 
+/// 判断目录是否为空，只用于安全清理“卸载后留下的空目录”。
+///
+/// 这里禁止跟随 Junction，避免把目标目录误当成普通空目录并扩大清理范围。
+pub(crate) fn is_empty_directory(path: &Path) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("读取目录状态失败 {}: {}", path.display(), e))?;
+    if !metadata.file_type().is_dir() || utils::is_junction(path) {
+        return Ok(false);
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|e| format!("读取目录内容失败 {}: {}", path.display(), e))?;
+    match entries.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        Some(Err(e)) => Err(format!("读取目录条目失败 {}: {}", path.display(), e)),
+    }
+}
+
+/// 清理已经没有可恢复数据的活动记录。
+///
+/// 仅处理原路径已不存在、目标路径不存在或为空的场景；目标目录含任何条目时拒绝操作，
+/// 防止用户点击“恢复”时误删仍然可以恢复的数据。
+pub(crate) fn mark_record_without_recoverable_data(
+    history_id: &str,
+    reason: &str,
+) -> Result<Option<MigrationResult>, String> {
+    let mut storage = load_history();
+    let record_index = match storage
+        .records
+        .iter()
+        .position(|record| record.id == history_id && record.status == "active")
+    {
+        Some(index) => index,
+        None => return Ok(None),
+    };
+
+    let record = storage.records[record_index].clone();
+    let original_path = Path::new(&record.original_path);
+    if original_path.exists() || utils::is_junction(original_path) {
+        return Ok(None);
+    }
+
+    let target_path = Path::new(&record.target_path);
+    if target_path.exists() && !is_empty_directory(target_path)? {
+        return Ok(None);
+    }
+    if target_path.exists() {
+        fs::remove_dir(target_path)
+            .map_err(|e| format!("删除空目标目录失败 {}: {}", target_path.display(), e))?;
+    }
+
+    storage.records[record_index].status = "ghost_cleaned".to_string();
+    save_history(&storage)?;
+    if record.record_type == MigrationRecordType::App {
+        crate::storage::migrated_app_metadata::remove_migrated_app(&record.original_path);
+    }
+
+    Ok(Some(MigrationResult {
+        success: false,
+        message: format!(
+            "RECORD_CLEANED_NO_DATA:{}\n\n{}\n\n未创建原安装目录，迁移记录已更新为已清理。",
+            record.app_name, reason
+        ),
+        new_path: None,
+    }))
+}
+
 /// 添加一条迁移记录，返回记录 ID
 pub fn add_migration_record(
     app_name: &str,
@@ -168,14 +236,26 @@ pub fn cleanup_broken_record(history_id: String) -> Result<MigrationResult, Stri
     let original = std::path::Path::new(&record.original_path);
     let target = std::path::Path::new(&record.target_path);
 
+    // 目标目录含文件时仍可能是唯一可恢复的数据副本，清理记录前必须拒绝删除。
+    if target.exists() && !is_empty_directory(target)? {
+        return Ok(MigrationResult {
+            success: false,
+            message: format!(
+                "目标目录仍包含数据，已拒绝自动删除：{}\n\n请先恢复数据，确认无误后再清理迁移记录。",
+                record.target_path
+            ),
+            new_path: Some(record.target_path),
+        });
+    }
+
     // 删除 Junction（若仍存在）—— remove_dir 只删 Junction 本身，不跟踪目标
     if crate::utils::is_junction(original) {
         let _ = std::fs::remove_dir(original);
     }
 
-    // 删除目标目录残留（若存在且为空/已卸载）
+    // 目标目录此时只能是空目录，删除不会触及任何数据文件。
     if target.exists() {
-        let _ = std::fs::remove_dir_all(target);
+        let _ = std::fs::remove_dir(target);
     }
 
     // 标记记录为 ghost_cleaned
@@ -239,6 +319,7 @@ pub fn check_link_status(record_id: String) -> Result<LinkStatusResult, String> 
         Some(r) => r,
         None => return Ok(LinkStatusResult {
             healthy: false, target_exists: false, is_junction: false,
+            target_empty: false, original_exists: false,
             error: Some("未找到该迁移记录".to_string()),
         }),
     };
@@ -247,10 +328,12 @@ pub fn check_link_status(record_id: String) -> Result<LinkStatusResult, String> 
     let target_path = Path::new(&record.target_path);
     let is_junc = utils::is_junction(original_path);
     let target_exists = target_path.exists();
+    let target_empty = target_exists && is_empty_directory(target_path).unwrap_or(false);
+    let original_exists = original_path.exists() || is_junc;
 
     Ok(LinkStatusResult {
         healthy: is_junc && target_exists,
-        target_exists, is_junction: is_junc, error: None,
+        target_exists, is_junction: is_junc, target_empty, original_exists, error: None,
     })
 }
 
@@ -488,6 +571,21 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
         };
 
         let record = storage.records[record_index].clone();
+
+        // 应用已被外部卸载后，原路径可能消失，目标目录也可能只剩空壳。
+        // 此时不能创建空的原安装目录冒充恢复成功，先由后端更新记录并明确提示用户。
+        if !Path::new(&record.original_path).exists()
+            && !utils::is_junction(Path::new(&record.original_path))
+            && (!Path::new(&record.target_path).exists()
+                || is_empty_directory(Path::new(&record.target_path))?)
+        {
+            if let Some(result) = mark_record_without_recoverable_data(
+                &history_id,
+                "原安装目录已不存在，目标目录为空或已被卸载清理。",
+            )? {
+                return Ok(result);
+            }
+        }
 
         // 若记录类型为 LargeFolder，分发给大文件夹恢复逻辑
         // 统一入口使所有恢复操作都能正确更新 history 记录状态
