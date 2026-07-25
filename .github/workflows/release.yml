@@ -100,6 +100,8 @@ jobs:
           if (-not (Test-Path $builtExe)) { throw '未找到标准版原始 exe' }
           if (-not $builtInstaller) { throw '未找到标准版安装包' }
           Copy-Item $builtExe $exe -Force
+          # NSIS 安装后会把 exe 的 bundle 标记改成 NSS，签名前必须同步这个改动。
+          pwsh -NoProfile -File scripts/prepare-integrity-exe.ps1 -Path $exe
           foreach ($file in @($exe, $builtInstaller.FullName)) {
             npm run tauri -- signer sign $file
           }
@@ -196,6 +198,10 @@ jobs:
           )
           foreach ($file in $files) {
             if (-not (Test-Path $file)) { throw "未找到待签名文件: $file" }
+            # 离线安装版同样由 NSIS 安装，原始 exe 需先转换为安装后的最终字节。
+            if ($file -like '*-offline-webview2.exe') {
+              pwsh -NoProfile -File scripts/prepare-integrity-exe.ps1 -Path $file
+            }
             npm run tauri -- signer sign $file
           }
 
