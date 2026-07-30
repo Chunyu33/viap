@@ -93,6 +93,8 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new()
           $tag = '${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}'
           $exe = "viap_${tag}_x64.exe"
+          # 标准版原始 exe 位于 bundle 目录的上一级，签名时需要保留该文件用于完整性校验。
+          $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
           $builtInstaller = Get-ChildItem -Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
           if (-not (Test-Path $builtExe)) { throw '未找到标准版原始 exe' }
           if (-not $builtInstaller) { throw '未找到标准版安装包' }
