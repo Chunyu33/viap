@@ -9,7 +9,7 @@ import {
   RefreshCw, FolderOpen, AlertTriangle,
   Link2, Undo2, Plus, X, Loader2, Check,
   Monitor, FileText, Download, Image, Video,
-  MessageCircle, Building2, Users, Phone, Bird, Globe, Code, Package, ArrowRightLeft,
+  MessageCircle, Building2, Users, Phone, Bird, Globe, Code, Package, Palette, Film, ArrowRightLeft,
 } from 'lucide-react';
 import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
@@ -26,6 +26,7 @@ import {
 } from '../types';
 import { TabNavigationContext } from '../App';
 import { readLocalUserSettings } from '../utils/userSettings';
+import AppDataAccordion from './largeFolders/AppDataAccordion';
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return '--';
@@ -50,6 +51,10 @@ function getFolderIcon(iconId: string) {
     chrome_cache: <Globe className="w-4 h-4" />,
     edge_cache: <Globe className="w-4 h-4" />,
     vscode_extensions: <Code className="w-4 h-4" />,
+    // 新增 IDE 模板统一使用代码图标，保持列表视觉密度一致。
+    vscode_user_data: <Code className="w-4 h-4" />,
+    cursor_appdata: <Code className="w-4 h-4" />,
+    cursor_extensions: <Code className="w-4 h-4" />,
     npm_global: <Package className="w-4 h-4" />,
     npm_cache: <Package className="w-4 h-4" />,
     yarn_cache: <Package className="w-4 h-4" />,
@@ -60,8 +65,19 @@ function getFolderIcon(iconId: string) {
     pip_cache: <Package className="w-4 h-4" />,
     uv_cache: <Package className="w-4 h-4" />,
     nuget_packages: <Package className="w-4 h-4" />,
+    docker_data: <Package className="w-4 h-4" />,
+    dotnet_data: <Package className="w-4 h-4" />,
+    adobe_appdata: <Palette className="w-4 h-4" />,
+    adobe_localdata: <Palette className="w-4 h-4" />,
+    jianying_appdata: <Film className="w-4 h-4" />,
+    jianying_localdata: <Film className="w-4 h-4" />,
+    // AI 工具目录没有统一品牌图标，使用代码图标避免引入额外依赖。
     claude_code: <Code className="w-4 h-4" />,
     codex_data: <Code className="w-4 h-4" />,
+    devin_data: <Code className="w-4 h-4" />,
+    ollama_data: <Code className="w-4 h-4" />,
+    comfyui_data: <Code className="w-4 h-4" />,
+    gemini_data: <Code className="w-4 h-4" />,
   };
   return map[iconId] || <FolderOpen className="w-4 h-4" />;
 }
@@ -1062,12 +1078,15 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
                       </button>
                     </div>
                   </div>
-                  {appDataFolders.map(f => (
-                    <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
-                      onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
-                      restoreProgress={restoreProgressMap[f.id]}
-                      showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
-                  ))}
+                  <AppDataAccordion
+                    folders={appDataFolders}
+                    renderFolder={(f) => (
+                      <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
+                        onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                        restoreProgress={restoreProgressMap[f.id]}
+                        showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
+                    )}
+                  />
                 </section>
               )}
 

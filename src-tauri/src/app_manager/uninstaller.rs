@@ -1528,17 +1528,22 @@ fn scan_filesystem_residue(
             continue;
         }
 
-        for entry in WalkDir::new(root_path)
+        // 命中应用目录后直接收敛为一个可清理条目，避免继续遍历子项并重复计算体积。
+        let mut entries = WalkDir::new(root_path)
             .max_depth(5)
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-        {
+            .into_iter();
+        while let Some(result) = entries.next() {
+            let Ok(entry) = result else { continue };
             if entry.depth() == 0 {
                 continue;
             }
 
             let path = entry.path();
             if is_blacklisted_path(path) {
+                // 黑名单目录下不可能产生合法残留，直接剪枝可显著减少 ProgramData 扫描量。
+                if entry.file_type().is_dir() {
+                    entries.skip_current_dir();
+                }
                 continue;
             }
 
@@ -1566,6 +1571,11 @@ fn scan_filesystem_residue(
                 size_mb,
                 selected: true,
             });
+
+            if entry.file_type().is_dir() {
+                // 父目录已覆盖全部子项，继续向下扫描只会产生重复结果和重复 IO。
+                entries.skip_current_dir();
+            }
         }
     }
 }

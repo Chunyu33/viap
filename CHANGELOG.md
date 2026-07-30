@@ -1,387 +1,67 @@
 # Changelog
 
+> English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
+
+## v1.1.10
+
+### Highlights
+
+- Added categorized, collapsible application data management with lazy size scanning.
+- Added focused application data templates for Cursor, Devin, VS Code, Ollama, and ComfyUI.
+- Refined application data categories and removed non-core templates from the default list.
+- Moved template management and folder size scanning into dedicated Rust modules.
+- Locked migration actions during uninstall and optimized leftover scanning responsiveness.
+- Simplified the application data list styling to match the standard row layout.
 
 ## v1.1.9 - 2026-10-14
 
-### 发布流程修复
-
-- 修复 NSIS 安装后的 exe 被 Tauri 修改 bundle 标记后，与发布流程签名的原始 exe 不一致导致完整性校验始终失败的问题
+- Fixed release signing for NSIS installers after Tauri bundle processing.
 
 ## v1.1.8 - 2026-07-24
 
-### 迁移安全修复
-
-- 数据迁移页应用数据目录改为用户主动加载后后台逐项统计，避免机械硬盘冷启动长时间卡顿
-- 修复目录在扫描期间消失或 Junction 目标缺失时前端可能一直显示加载中的问题
-
-- 修复 uTools 等目录存在占用文件时，递归删除源目录可能出现部分删除的问题
-- 跨盘迁移改为先原子改名保留源目录备份，创建并确认目录链接成功后才清理备份；任一步失败都会保留至少一个完整数据副本
-- 修复应用被外部卸载后，迁移历史仍可将空目标目录恢复为原安装目录的问题
-- 完整性校验兼容 Tauri signer 生成的 Base64 封装签名文件，修复签名解析失败
-
-### 图标优化
-
-- Windows 应用图标新增 `48x48.png` 资源，并将 48px 图层加入 `icon.ico`，修复部分系统缩放场景缺少 48px 图标的问题
+- Added on-demand application data scanning to reduce HDD startup stalls.
+- Improved migration safety, rollback behavior, and broken junction handling.
+- Improved file integrity verification for signed release artifacts.
 
 ## v1.1.7 - 2026-07-16
 
-### 便携版数据兼容修复
+- Added portable-mode settings and data compatibility.
+- Preserved existing installation data when switching to portable mode or changing the data directory.
 
-- 新增统一用户设置文件，主题、字号、默认迁移目录、回收站和扫描调试设置可随便携版目录携带
-- 便携版首次启动自动兼容已有安装版数据，复制缺失文件到本地 `data` 目录，不删除原安装版数据
-- 更改数据目录时改为递归迁移完整 Viap 数据和缓存，避免丢失应用模板、卸载日志、迁移元数据和应用快照
+## v1.1.6 - 2026-07-16
 
+- Added release artifact integrity verification.
+- Improved forced uninstall safety and cleanup result reporting.
 
-## v1.1.6 — 2026-07-16
+## v1.1.5 - 2026-07-14
 
-### 文件完整性校验
+- Added the offline WebView2 Windows installer.
+- Added the portable ZIP release and portable data directory support.
 
-- 设置页“更新”区域新增“校验文件完整性”，校验当前运行 exe 是否与官方发行构建完全一致
-- 发布流程为标准版、WebView2 离线版和便携版的原始 exe、安装包/ZIP分别生成 Minisign `.sig` 签名文件
-- 校验复用 Tauri updater 公钥，并通过流式读取共享校验多个发行构建，避免大文件重复加载
-- 明确区分校验通过、签名内容不一致、网络失败、签名缺失、签名解析失败和本地文件读取失败，不将网络或配置异常默认判定为篡改
+## v1.1.4 - 2026-06-17
 
-### 强制卸载修复
+- Improved migration error messages, notifications, and developer directory detection.
+- Added an update log entry in Settings.
 
-- 修复便携应用目录名与应用名不一致时，强制删除被错误的安全校验拦截
-- 强制删除支持使用实际 exe、图标路径和注册表安装路径进行二次确认，减少便携应用误报
-- 同步修复残留清理勾选项主题样式、回收站设置生效和卸载失败操作日志记录
+## v1.1.3 - 2026-06-16
 
-## v1.1.5 — 2026-07-14
+- Added configurable application font size with consistent list row scaling.
 
-### 发布与便携版
+## v1.1.2 - 2026-06-16
 
-- 新增带 WebView2 离线运行环境的 Windows 安装包，适合无法联网安装运行环境的设备
-- 新增便携版 ZIP，数据默认保存在程序目录下的 `data` 文件夹
-- 便携版不注册自动更新插件、不自动检测更新，改为提示用户从 GitHub Releases 手动下载
+- Improved startup rendering and application list snapshot performance.
+- Improved migration, restore, and progress reporting reliability.
 
-### 迁移安全与目录识别
+## v1.1.1 - 2026-06-08
 
-- 用户手册补充 AppData、Local、Roaming 不应整体迁移的说明，建议按软件颗粒度选择目录
-- 说明许可证校验、系统服务、内核驱动、自修复和强路径校验软件不适合目录链接迁移
-- 微信数据目录兼容新版 `Documents\xwechat_files`，并保留旧版 `Documents\WeChat Files` 回退
-- 启动扫描按磁盘介质区分，机械硬盘冷启动跳过的盘符会在首页提示，并可通过手动刷新完整扫描
+- Added junction-based same-disk migration without administrator privileges.
+- Improved cross-disk copy safety and rollback handling.
 
-### 启动动画、应用加载优化
+## v1.1.0 - 2026-06-08
 
-- 启动时展示约 2.4 秒的主题化动画启动页，顺便加载应用列表
-- 跳过 HDD 冷启动，跳过的盘符会在启动页显示，并在首页提示用户手动刷新
+- Added parallel file copying and fast same-disk moves.
+- Improved forced deletion safeguards and migration error handling.
 
-## v1.1.4 — 2026-06-17
+## v1.0.9 - 2026-06-07
 
-### 小修复与体验优化
-
-- Toast 通知按类型使用默认停留时长，错误提示默认延长到 8 秒，避免长错误信息过快消失
-- Toast 鼠标悬停时会暂停自动关闭计时，移开后继续倒计时，方便阅读长提示
-- Toast 支持多行内容和长路径自动换行，提升迁移失败提示可读性
-- 修复数据迁移目标目录冲突时可能显示 `TARGET_EXISTS_RETRY` 内部状态码的问题
-- 应用迁移与数据迁移的目标目录冲突、链接失败等内部状态统一转换为明确中文提示
-- 数据迁移新增常见开发者目录识别：Gradle、Maven、npm/Yarn、Cargo/Rustup、pip/uv、NuGet、Claude Code、Codex 等
-- 设置页关于区域新增“更新日志”入口，直接打开 GitHub 上的 CHANGELOG.md
-
-## v1.1.3 — 2026-06-16
-### 用户体验优化
-
-- 设置页新增 12-16px 字体大小调节，四个功能模块和列表行高会统一跟随
-
-## v1.1.2 — 2026-06-16
-
-### 启动体验优化
-
-- 主窗口改为前端首帧就绪后再显示，避免 WebView 初始化期间出现白屏窗口
-- 首屏仅挂载应用管理页，数据迁移、迁移记录、设置页改为首次访问时再挂载，降低启动渲染压力
-- 根节点提前使用应用背景色，减少低配设备上的纯白闪烁
-
-### 应用列表性能优化
-
-- 应用列表支持持久化快照秒开，冷启动先显示上次扫描结果，再由后台扫描校验刷新
-- 图标加载改为 `viap-icon` 自定义协议按需返回 PNG 字节，避免 Base64 图标随应用列表批量 IPC 传输
-- 手动刷新统一走流式扫描链路，应用列表、图标 URL、大小缓存和 debug 耗时都会随刷新结果更新
-- 切换 Tab 时直接恢复内存缓存，不再重复扫描应用列表
-
-### 迁移与恢复增强
-
-- 迁移过程复用复制计划，扫描、空间检查和复制不再重复遍历磁盘
-- 复制进度改为按文件数和体积持续上报，减少“扫描 0% 后突然复制”的卡顿感
-- 应用管理、数据迁移、迁移记录中的恢复/还原按钮新增百分比进度反馈
-- 恢复流程加强复制校验和失败回滚，降低目标数据不完整风险
-
-### 调试与文档
-
-- 设置页新增扫描耗时开关；开启后应用管理页左侧显示低干扰 debug 浮层
-- debug 浮层支持折叠为小图标，展开后显示各扫描阶段耗时和快照校验状态
-- 用户手册和 README 同步补充微软商店应用、图标协议、扫描缓存与迁移行为说明
-
----
-
-## v1.1.1 — 2026-06-08
-
-### 迁移机制优化
-
-- 同盘迁移默认使用 Junction（目录联结），无需管理员权限即可完成
-- 跨盘迁移自动切换软链接机制，权限不足时给出明确提示和解决方案
-- 数据已完整复制到目标位置，即使链接步骤失败也不会丢失
-- 用户手册同步更新，准确说明同盘/跨盘的不同机制
-
----
-
-## v1.1.0 — 2026-06-08
-
-### 迁移/恢复性能大幅提升
-
-- 文件复制改为多线程并行，配合 2MB 大缓冲区，NVMe 固态下速度提升 10 倍以上
-- 同盘迁移（如 C 盘内移动）不再走全量复制，改为系统级原子移动，毫秒级完成
-- 目标目录结构提前批量创建，消除重复操作开销
-
-### 强制删除更安全
-
-- 卸载程序缺失时，先列出安装目录内容供确认，再执行删除
-- 支持按文件/文件夹勾选，默认全选，避免误删
-
-### 其他修复
-
-- 修复并行复制出错后未及时停止的问题
-- 修复大文件复制后丢失只读/隐藏等 Windows 文件属性
-- 修复目标路径为源路径子目录时可能写满磁盘的问题
-- 增强应用进程占用检测覆盖率
-
----
-
-## v1.0.9 — 2026-06-07
-
-### 扫描噪音修复
-
-- 修复绿色软件 / 便携应用在列表中出现时将整个父目录（如 AppData\Local）误计为应用体积的 Bug
-- 该 Bug 导致部分目录显示异常巨大的"大小"（实际是父目录的总大小而非应用自身）
-- 同时修复了 Desktop、Downloads 等目录下孤立 exe 被误识别的同类问题
-
----
-
-## v1.0.8 — 2026-06-06
-
-### 迁移历史安全修复
-
-- 用户绕过 Viap 自行卸载或删除已迁移应用后，迁移记录不再显示误导性的"恢复"按钮
-- 损坏的链接记录统一改为"清理"按钮，一键清除残留 Junction 和空目标目录
-- 状态提示更明确：区分"用户手动操作导致"和"数据已丢失"两种损坏场景
-
----
-
-## v1.0.7 — 2026-06-04
-
-### 前端体验优化
-
-- 引入全局状态管理，切换 Tab 不再重置搜索词、筛选条件和排序状态
-- 过渡动画：切页时页面从底部滑入，操作反馈更流畅
-- 危险应用默认隐藏：系统目录、浏览器、GPU 驱动等不可迁移项默认不在列表中显示，可一键切换查看
-- 设置页优化：新增问题反馈入口（一键复制邮箱/GitHub Issues/QQ群）、B站/抖音同名快捷复制
-- 迁移记录页：筛选栏固定吸附顶部、列头点击排序（按名称/路径/大小）、列表不滚动
-- 应用列表 footer 新增应用总数统计
-
-### 迁移安全增强
-
-- 创建目录链接失败时主动回滚（自动将数据移回原位置），避免数据滞留在目标盘
-- 回滚失败时给出明确指引：数据位置、恢复方式、命令行参考
-- 源目录删除失败时错误信息更准确，区分进程占用、权限不足、只读保护
-- 危险路径名单扩充：新增 Microsoft Office、.NET Runtime 拦截；新增 8 款安全软件、3 款数据库、Steam 游戏库风险提示
-
-### 修复
-
-- 修复迁移记录页一直显示加载中的问题
-- 修复大文件夹页缺少层次分割线
-
----
-
-## v1.0.6 — 2026-06-02
-
-### 图标持久化缓存
-
-- 新增二级缓存架构：内存缓存（ICON_CACHE）+ 磁盘缓存（`cache/icons/{sha1}.png`），跨重启命中
-- 缓存 key = `sha1(exe_path + icon_index + modified_time)`，exe 升级后 mtime 变化自动失效
-- 首次提取后写入磁盘，后续启动直接读取 PNG，跳过 ExtractIconExW 调用
-
-### 目录大小持久化缓存（SWR）
-
-- 新增 `cache/size_cache.json`，7 天 TTL，采用 Stale-While-Revalidate 策略
-- Phase 1：启动时秒发缓存值，前端立即显示大小
-- Phase 2：后台异步 walkdir 重算真实大小，有变化自动更新缓存并刷新 UI
-- 冷启动/休眠唤醒场景大幅提速，机械硬盘效果显著
-
-### 应用列表排序
-
-- 列表新增列头点击排序：按名称（中文拼音）、按大小升序/降序
-- 纯本地内存排序，无后端调用
-- 刷新列表时自动重置排序状态
-
----
-
-## v1.0.5 — 2026-06-02
-
-### 应用列表加载性能优化
-
-- **大小计算移入 Rust 后台线程**：前端不再通过 IPC 获取目录大小，改为后台线程通过 `scan-progress` 事件分批推送
-- **`scan_all()` 并行大小计算**：刷新列表时在 Rust 端用 rayon 并行 walkdir，返回结果直接携带准确大小
-- **前端纯被动接收**：删除 `loadAppSizes` 函数，前端不再做任何 IO 调度，仅接收 `sizes`/`sizes_done` 事件填入 sizeMap
-- **大小计算排序**：非 C 盘优先计算（迁移目标盘先展示），C 盘排后，8 个一批并行 walkdir 控制磁盘 IO 并发
-
-### Bug 修复
-
-- 修复移除 `loadAppSizes` 后 listener 提前清理导致大小事件丢失的问题
-- 修复大小更新 key 不匹配（后端以 install_location 推送，前端以 registry_path 查找）
-- 修复刷新按钮反馈不明显（新增「正在刷新应用列表...」进度条）
-- 修复 Viap 自身在批量迁移中可选择的问题（选择框 disabled + 全选排除）
-
----
-
-## v1.0.4 — 2026-06-01
-
-### 危险路径分级拦截（BLOCKED / WARNING 两级体系）
-- 新增两级危险路径检测体系：**BLOCKED** 直接 Toast 报错终止，**WARNING** 弹确认弹窗 + 免责声明后放行
-- 规则表扩充至 32 条（17 BLOCKED + 15 WARNING），前后端完全同步
-- 新增 `开发工具` WARNING 类别：Visual Studio、JetBrains IDE（Rider/IntelliJ/GoLand/WebStorm）、VSCode
-  - 这些应用含被 Windows 内核内存映射的 DLL，进程检测无法拦截，在 WARNING 阶段提前告知风险
-- 批量模式下 WARNING 路径静默跳过（Toast 提示），不中断批量流程
-- 后端 `user_confirmed_warning` 参数作为防绕过兜底校验
-
-### 进程占用检测增强
-- 后端步骤 0.5 新增智能占用检测：含 exe 目录用进程路径匹配，数据目录用文件独占锁探测
-- `check_directory_file_locks` 每 200 个文件检查取消标志，大目录扫描期间取消即时响应
-- 前端进度监听器新增 `checking` 步骤支持，与后端步骤 0.5 状态同步
-- 迁移弹窗进度条仅在数据操作阶段（counting/copying/verifying/linking）显示，进程检查阶段不显示进度条
-
-### 迁移稳定性修复
-- 新增空目录安全检查：源目录预扫描有内容但遍历为空时阻止迁移，防止权限问题导致数据丢失
-- 复制失败时细化错误消息：拒绝访问类错误给出明确原因和解决步骤（内核映射 DLL、后台进程等）
-- 迁移弹窗按钮区域始终固定可见：长进程列表时可滚动，底部按钮不被推出视口
-
-### 卸载联动
-- 卸载应用时自动将对应迁移记录标记为 `uninstalled`，同步清理兜底元数据
-
-### Bug 修复
-- 修复批量迁移进程占用弹窗中"取消"按钮被进程列表推出视口的问题
-- 修复迁移弹窗进度条在"检查进程占用"阶段显示的问题（现仅数据操作阶段显示）
-- 修复迁移弹窗 checking 阶段无说明文字的问题（新增"检测完成后才会开始复制文件"提示）
-
-### 流式批量加载应用列表
-- 应用扫描改为流式推送：三级扫描（注册表 → LNK → 文件系统）分阶段通过 `scan-progress` 事件推送到前端，Tier 1 注册表数据 ~200ms 即可显示首批应用
-- 图标分批提取（每批 20 个），边提取边推送，前端实时渲染，无需等待全部完成
-- 新增 `appStore` 模块级单例：切换 Tab 后应用列表零 IPC 恢复，不再重新扫描
-- 搜索/筛选状态跨 Tab 保持，用户无感知
-- 流式扫描进度提示横幅：正在扫描快捷方式/文件系统/加载图标等阶段文字提示
-
-
-### 文档
-- 用户手册同步更新（危险路径分级说明、开发工具迁移注意事项）
-
----
-
-## v1.0.3 — 2026-05-31
-
-### 危险路径检测
-- 新增 `useDangerousPathCheck` hook，抽取 17 条危险路径规则（系统目录 3 + 浏览器 7 + GPU 7），与后端 `migration.rs` 规则完全同步
-- 前端提前拦截不可迁移目录（系统核心组件、浏览器安装目录、GPU 驱动），给出明确理由和替代建议
-- `LargeFolders.tsx` 删除内联函数，改用共享 hook
-- `AppMigration.tsx` 单迁移和批量迁移均接入危险路径检测，命中时 Toast 提示并跳过
-
-### 说明
-- 本版主要集中在危险路径拦截等易用性改进
-
----
-
-## v1.0.2 — 2026-05-22
-
-### 迁移引擎重构
-- 移除 rename 备份策略，改为复制完成后直接删除源目录，彻底解决 Shell 已知文件夹（桌面、视频、Chrome 缓存等）迁移时 `PermissionDenied` 失败的问题
-- 新流程 `copy → delete(source) → symlink` 消除了旧方案中"rename 成功但 symlink 失败且 rename-back 也失败"的双重失败极端情况
-- 新增 `remove_directory_robust`：自动清除只读属性后删除，解决只读文件导致目录删除失败的问题
-
-### 迁移文件占用检测增强
-- 新增智能占用检测：根据源目录是否含 exe 自动选择检测策略
-  - 含 exe（应用目录）→ 进程 exe 路径前缀匹配（解决 exe/dll 内存映射不阻塞独占打开的问题）
-  - 不含 exe（数据/缓存目录）→ 文件独占锁探测 `FILE_SHARE_NONE`（解决进程 exe 不在目录内的问题）
-- `copy_file_with_cancel` 中 PermissionDenied 从静默跳过改为中断迁移，防止数据不完整
-- `remove_directory_robust` 中文件删除失败不再忽略，避免源目录删除不完整导致 symlink 失败
-
-### 恢复流程重构
-- 恢复前新增进程占用检测（步骤 3.5），在删除 Junction 之前拒绝恢复，避免 move_dir 失败后回滚破坏数据的连锁事故
-- `move_dir` 失败回滚改为检查 target 完整性后才重建 Junction；target 不完整时给出手动合并指引，避免指向残缺数据
-- 普通目录保护区分"上次恢复未完成（target 存在，可修复）"和"数据已恢复完毕（target 不存在）"两种情况，给出具体修复指引
-- 大文件夹恢复统一入口改为 `restore_app`，通过 record_type 自动分发，确保 history 记录状态正确更新
-- 新增 `update_record_status_by_id` 按 ID 精确更新记录状态
-- 新增 `restore_large_folder_by_history` 含完整恢复逻辑和回滚保护
-
-### UI 增强
-- 迁移历史链接状态从单一"损坏"扩展为 "可修复（数据完整）"和"严重损坏（数据丢失）"，以不同颜色和提示文字区分
-- 进程锁检测阶段点击"取消迁移"和 X 按钮即时关闭弹窗，不再无响应
-- 进程锁检测阶段关闭弹窗不再弹出不必要的"确定取消"确认对话框
-- 进程锁检测阶段弹窗 UI 优化：取消 loading 和进度条，显示警告图标 + "我知道了"关闭按钮，明确该阶段不可继续迁移
-
-### 说明
-- 本版包含超过 500 行的核心引擎安全加固，强烈建议升级
-
----
-
-## v1.0.1 — 2026-05-21
-
-### 安装包修复
-- 修复 GitHub Actions 构建的安装包启动时报"无法定位程序输入点"的问题
-
-### 迁移流程优化
-- 取消迁移现在即时响应，不再需要等待当前步骤完成
-- 迁移前自动检测应用是否在后台运行，有则直接提示关闭，避免走到一半失败
-- 迁移失败后回滚更干净，不再留下残留目录导致下次迁移卡死
-- 上次迁移失败残留的目标目录，再次迁移时会明确提示"上次未完成"，一键覆盖重试
-
-### 扫描与显示修复
-- 修复应用列表出现大量系统 UWP 运行时组件（WindowsApps 目录下）的问题
-- 修复部分应用图标无法显示的问题（安装路径尾部多余符号导致）
-- 批量迁移时进度事件不再互相覆盖
-
-### 恢复操作改进
-- 恢复成功后自动清理目标盘副本，无需手动删除
-- 修复恢复过程中数据迁移回原位置后的残余副本清理问题
-
----
-
-## 2026-05-20 — 迁移稳定性修复与功能增强
-
-### 迁移覆盖保护
-- 目标目录已有残留时不再直接报错，弹窗询问是否覆盖后自动清理并重新迁移
-- 新增安全检测：原路径仍是链接指向目标盘时拒绝覆盖，提示先恢复再迁移，防止误删数据
-
-### 恢复操作改进
-- 增加并发保护：同时恢复多个项目时提示"请等待上一个完成"
-- 修复部分情况下原路径已是普通目录却被误判为链接的问题
-
-### 幽灵链接扫描增强
-- 现在可检测三种异常：目标数据丢失、链接断裂、原路径消失
-- 清理时即使无法删除普通目录，也会同步更新记录状态
-- 错误提示更清晰，包含目标路径方便定位
-
-### 其他修复
-- 修复大文件夹列表首次加载时大小显示为 "--" 的问题
-- 修复自动检查更新失败时意外弹窗的问题
-- 修复应用迁移后列表读取不到的问题
-- 修复迁移备份目录残留和权限提示不明确的问题
-
----
-
-## 2026-05-04 — 内存缓存架构与前端性能优化
-
-### 应用列表
-- 新增内存缓存：切换页面或返回时列表零等待，无需重新扫描
-- 迁移/卸载后自动更新缓存，不需要重新全量扫描
-- 新增手动刷新按钮
-
-### 性能提升
-- 应用大小计算跨页面保持，切回应用列表秒开
-- 大量应用时界面保持流畅，不再卡顿
-
-### 扫描改进
-- 应用识别更准确，减少误判安装包为应用
-- 临时下载目录中的应用不再出现在列表中
-- 无图标应用自动从安装目录提取替代图标
-
-### 界面优化
-- 应用总占用空间显示在列表底部，随筛选结果实时计算
-- 搜索和筛选条件切换页面后保留
+- Fixed incorrect oversized results when portable applications were detected inside shared parent directories.

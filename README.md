@@ -91,6 +91,17 @@ node scripts/generate-icons.js
 node scripts/generate-ico.js
 ```
 
+## Reporting Issues
+
+Please search existing issues first, then describe one problem per issue with a clear, factual title. Following the core principles of [How To Ask Questions The Smart Way](https://www.catb.org/esr/faqs/smart-questions.html) helps issues get understood and resolved faster:
+
+- **Bug reports** must include the exact reproduction steps, expected and actual behavior, LightC version, Windows version, selected interface language, and relevant logs or screenshots.
+- Include the smallest reproducible example when possible. Redact personal paths, usernames, tokens, and other sensitive information before posting logs or screenshots.
+- **Feature requests** should explain the problem and intended outcome, rather than only demanding a specific implementation.
+- Keep the discussion concise, respectful, and open to clarification. Please avoid assumptions, insults, or orders; a clear report with useful context is far more effective.
+- Low-quality issues (e.g., arrogant questions, pure complaints, no context, no reproduction steps) will not be processed.
+
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).
