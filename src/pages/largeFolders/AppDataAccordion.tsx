@@ -60,7 +60,20 @@ export default function AppDataAccordion({ folders, renderFolder }: AppDataAccor
                 {formatSize(totalSize)}
               </span>
             </button>
-            {expanded && <div>{group.folders.map(renderFolder)}</div>}
+            <div
+              className="grid transition-[grid-template-rows,opacity] duration-200 ease-in-out"
+              style={{
+                // 保持内容挂载，通过 grid 行高过渡实现真正的手风琴动画。
+                gridTemplateRows: expanded ? '1fr' : '0fr',
+                opacity: expanded ? 1 : 0,
+                pointerEvents: expanded ? 'auto' : 'none',
+              }}
+              aria-hidden={!expanded}
+            >
+              <div className="min-h-0 overflow-hidden">
+                {group.folders.map(renderFolder)}
+              </div>
+            </div>
           </section>
         );
       })}
