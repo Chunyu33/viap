@@ -247,10 +247,15 @@ async fn uninstall_application(input: uninstaller::UninstallInput) -> Result<uni
 }
 
 #[tauri::command]
-fn scan_app_residue(
+async fn scan_app_residue(
     app_name: String, publisher: Option<String>, install_location: Option<String>,
 ) -> Result<Vec<uninstaller::LeftoverItem>, String> {
-    uninstaller::scan_app_residue(app_name, publisher, install_location)
+    // 残留扫描包含大量文件系统和注册表读取，放入阻塞线程池避免拖住 Tauri 主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        uninstaller::scan_app_residue(app_name, publisher, install_location)
+    })
+    .await
+    .map_err(|error| format!("残留扫描线程异常: {}", error))?
 }
 
 #[tauri::command]

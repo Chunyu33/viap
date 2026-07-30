@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v1.1.8'
+        description: 'Release tag, for example v1.1.10'
         required: false
-        default: 'v1.1.8'
+        default: 'v1.1.10'
 
 permissions:
   contents: write
@@ -64,18 +64,16 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.8 更新内容
+            ## v1.1.10 更新内容
 
-            ### 迁移安全修复
+            ### 卸载体验与性能
 
-            - 数据迁移页应用数据目录改为用户主动加载后后台逐项统计，避免机械硬盘冷启动长时间卡顿
+            - 修复卸载期间其他应用操作仍可点击的问题，并为当前卸载行显示固定位置的 loading 图标
+            - 残留扫描改为后台执行，并通过目录剪枝减少重复文件系统访问
 
-            - 修复 uTools 等目录存在占用文件时，递归删除源目录可能出现部分删除的问题
-            - 完整性校验兼容 Tauri signer 生成的 Base64 封装签名文件，修复签名解析失败
+            ### 发布资产
 
-            ### 图标优化
-
-            - Windows 应用图标新增 `48x48.png` 资源，并将 48px 图层加入 `icon.ico`，修复部分系统缩放场景缺少 48px 图标的问题
+            - 提供常规安装版、离线 WebView2 安装版和便携版 ZIP
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
@@ -95,7 +93,6 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new()
           $tag = '${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}'
           $exe = "viap_${tag}_x64.exe"
-          $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
           $builtInstaller = Get-ChildItem -Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
           if (-not (Test-Path $builtExe)) { throw '未找到标准版原始 exe' }
           if (-not $builtInstaller) { throw '未找到标准版安装包' }
@@ -158,8 +155,6 @@ jobs:
           if (-not $installer) { throw '未找到 WebView2 离线安装包' }
           Copy-Item $installer.FullName "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe"
           $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
-          if (-not (Test-Path $builtExe)) { throw '未找到 WebView2 离线版原始 exe' }
-          Copy-Item $builtExe "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe"
 
       - name: Build portable package
         shell: pwsh
@@ -172,7 +167,6 @@ jobs:
           $portableDir = Join-Path $pwd 'portable-package'
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
           Copy-Item 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe' (Join-Path $portableDir 'viap.exe')
-          Copy-Item 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe' "viap_${env:RELEASE_TAG}_x64-portable.exe"
           @'
           Viap 便携版
 
@@ -183,7 +177,7 @@ jobs:
           '@ | Set-Content -Encoding UTF8 (Join-Path $portableDir '便携版说明.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath "viap_${env:RELEASE_TAG}_x64-portable.zip" -Force
 
-      - name: Sign extra integrity assets
+      - name: Sign extra release assets
         shell: pwsh
         run: |
           chcp 65001
@@ -191,17 +185,11 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
           $OutputEncoding = [System.Text.UTF8Encoding]::new()
           $files = @(
-            "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe",
             "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe",
-            "viap_${env:RELEASE_TAG}_x64-portable.exe",
             "viap_${env:RELEASE_TAG}_x64-portable.zip"
           )
           foreach ($file in $files) {
             if (-not (Test-Path $file)) { throw "未找到待签名文件: $file" }
-            # 离线安装版同样由 NSIS 安装，原始 exe 需先转换为安装后的最终字节。
-            if ($file -like '*-offline-webview2.exe') {
-              pwsh -NoProfile -File scripts/prepare-integrity-exe.ps1 -Path $file
-            }
             npm run tauri -- signer sign $file
           }
 
@@ -214,9 +202,5 @@ jobs:
           files: |
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe.sig
-            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe
-            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe.sig
-            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe
-            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe.sig
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip.sig
