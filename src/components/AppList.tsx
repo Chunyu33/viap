@@ -45,6 +45,8 @@ interface AppListProps {
   refreshing?: boolean;
   /** Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮 */
   viapInstallPath?: string;
+  /** 卸载期间锁定列表操作，避免多个文件操作并行修改应用状态。 */
+  operationsLocked?: boolean;
   /** 流式扫描阶段 */
   scanPhase?: 'idle' | 'snapshot' | 'tier1' | 'tier2' | 'tier3' | 'icons' | 'sizes' | 'sizes_done' | 'done';
   /** 当前累计扫描到的应用数 */
@@ -122,7 +124,7 @@ const AppRow = memo(function AppRow({
   isUninstalling, isMigrated, isRestoring,
   restoreProgress,
   isSelected, onToggleSelect, showCheckbox,
-  appSize, isViap, iconsLoading,
+  appSize, isViap, iconsLoading, operationsLocked,
 }: {
   app: InstalledApp;
   onMigrate: (app: InstalledApp) => void;
@@ -139,6 +141,7 @@ const AppRow = memo(function AppRow({
   appSize?: number;
   isViap?: boolean;
   iconsLoading?: boolean;
+  operationsLocked: boolean;
 }) {
   const rowStyle: React.CSSProperties = {
     height: 'var(--row-height)' as unknown as string,
@@ -162,6 +165,7 @@ const AppRow = memo(function AppRow({
       {showCheckbox && !isMigrated && !isViap && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleSelect?.(app); }}
+          disabled={operationsLocked}
           className={`flex-shrink-0 w-4 h-4 rounded-sm border flex items-center justify-center ${
             isSelected
               ? ''
@@ -225,6 +229,7 @@ const AppRow = memo(function AppRow({
       <div className="flex items-center gap-1 flex-shrink-0" style={{ width: '150px', justifyContent: 'flex-end' }}>
         <button
           onClick={() => onOpenFolder(app)}
+          disabled={operationsLocked}
           className="btn btn-ghost btn-icon"
           title="打开目录"
         >
@@ -234,7 +239,7 @@ const AppRow = memo(function AppRow({
         {isMigrated ? (
           <button
             onClick={() => onRestore(app)}
-            disabled={isRestoring}
+            disabled={operationsLocked || isRestoring}
             className="btn btn-sm h-6 text-[11px]"
             style={isRestoring ? {
               // 直接在按钮背景绘制进度条，列表行无需额外占用空间。
@@ -249,7 +254,7 @@ const AppRow = memo(function AppRow({
         ) : (
           <button
             onClick={() => onMigrate(app)}
-            disabled={isViap}
+            disabled={operationsLocked || isViap}
             className="btn btn-primary btn-sm h-6 text-[11px]"
             title={isViap ? 'Viap 是当前运行的应用，不可迁移自身' : undefined}
           >
@@ -259,11 +264,11 @@ const AppRow = memo(function AppRow({
 
         <button
           onClick={() => onUninstall(app)}
-          disabled={isUninstalling || isViap}
-          className="btn btn-link btn-link-danger h-6 text-[11px]"
+          disabled={operationsLocked || isUninstalling || isViap}
+          className="btn btn-link btn-link-danger h-6 w-9 justify-center text-[11px]"
           title={isViap ? 'Viap 是当前运行的应用，不可卸载自身' : undefined}
         >
-          {isUninstalling ? '卸载中...' : '卸载'}
+          {isUninstalling ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : '卸载'}
         </button>
       </div>
     </div>
@@ -311,6 +316,7 @@ export default function AppList({
   onRefresh,
   refreshing = false,
   viapInstallPath,
+  operationsLocked = false,
   scanPhase,
   // scanTotalCount = 0,
 }: AppListProps) {
@@ -494,6 +500,7 @@ export default function AppList({
             placeholder="搜索应用..."
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
+            disabled={operationsLocked}
             className="w-full h-8 pl-7 pr-7 text-[12px] rounded border outline-none transition-colors"
             style={{
               background: 'var(--bg-input)',
@@ -506,6 +513,7 @@ export default function AppList({
           {inputQuery && (
             <button
               onClick={() => setInputQuery('')}
+              disabled={operationsLocked}
               className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded-sm"
               style={{ color: 'var(--text-tertiary)' }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; }}
@@ -520,17 +528,20 @@ export default function AppList({
           onChange={setMigrationFilter}
           options={migrationOptions}
           className="w-[120px]"
+          disabled={operationsLocked}
         />
         <FilterSelect
           value={driveFilter}
           onChange={setDriveFilter}
           options={driveOptions}
           className="w-[120px]"
+          disabled={operationsLocked}
         />
         {/* BLOCKED 应用显隐切换 + 刷新 */}
         <span className="text-[11px] flex-shrink-0 ml-1 flex items-center gap-1">
           <button
             onClick={() => setShowBlockedApps(!showBlockedApps)}
+            disabled={operationsLocked}
             className="flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
             style={{
               background: 'transparent',
@@ -554,7 +565,7 @@ export default function AppList({
                 borderColor: 'var(--border-color)',
               }}
               title="刷新应用列表"
-              disabled={refreshing}
+              disabled={operationsLocked || refreshing}
               onMouseEnter={(e) => { if (!refreshing) (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)'; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
@@ -565,7 +576,7 @@ export default function AppList({
 
         {onToggleSelect && onSelectAll && onBatchMigrate && (
           <div className="flex items-center gap-2 ml-auto">
-            <button onClick={onSelectAll} className="text-[11px] btn-link">
+            <button onClick={onSelectAll} disabled={operationsLocked} className="text-[11px] btn-link">
               {selectableCount > 0 && selectedKeys && selectedKeys.size === selectableCount
                 ? '取消全选'
                 : '全选未迁移'}
@@ -583,7 +594,7 @@ export default function AppList({
             ) : (
               <button
                 onClick={onBatchMigrate}
-                disabled={!selectedKeys || selectedKeys.size === 0}
+                disabled={operationsLocked || !selectedKeys || selectedKeys.size === 0}
                 className="btn btn-primary h-7 text-[11px]"
                 style={{
                   visibility: selectedKeys && selectedKeys.size > 0 ? 'visible' : 'hidden',
@@ -612,6 +623,7 @@ export default function AppList({
         <button
           className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
           onClick={() => handleSort('name')}
+          disabled={operationsLocked}
           style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
         >
           名称
@@ -626,6 +638,7 @@ export default function AppList({
         <button
           className="flex-shrink-0 w-16 flex items-center justify-end gap-0.5 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
           onClick={() => handleSort('size')}
+          disabled={operationsLocked}
           style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
         >
           大小
@@ -688,6 +701,7 @@ export default function AppList({
                   // 兼容 registry-scanned 应用（key = registry_path）和非注册表应用（key = install_location）
                   appSize={sizeMap?.get(key) ?? sizeMap?.get(app.install_location.toLowerCase())}
                   isViap={isViapSelf}
+                  operationsLocked={operationsLocked}
                 />
               );
             })}

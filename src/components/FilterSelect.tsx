@@ -13,6 +13,8 @@ interface FilterSelectProps<T extends string> {
   onChange: (value: T) => void;
   className?: string;
   menuClassName?: string;
+  /** 卸载等不可变更状态下禁用筛选器，避免用户修改列表视图。 */
+  disabled?: boolean;
 }
 
 export default function FilterSelect<T extends string>({
@@ -21,6 +23,7 @@ export default function FilterSelect<T extends string>({
   onChange,
   className = '',
   menuClassName = '',
+  disabled = false,
 }: FilterSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -84,7 +87,8 @@ export default function FilterSelect<T extends string>({
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="h-8 w-full min-w-[88px] pl-3 pr-8 rounded-md text-[12px] text-left bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors border border-[var(--border-color)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30"
+        disabled={disabled}
+        className="h-8 w-full min-w-[88px] pl-3 pr-8 rounded-md text-[12px] text-left bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors border border-[var(--border-color)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30 disabled:cursor-default disabled:opacity-60"
         aria-haspopup="listbox"
         aria-expanded={open}
       >

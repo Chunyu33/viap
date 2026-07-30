@@ -815,7 +815,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   }
 
   /** 强制删除入口：先预览文件列表 → 用户确认 → 执行删除 */
-  async function forceRemoveApp(app: InstalledApp, useRecycleBin: boolean) {
+  async function forceRemoveApp(app: InstalledApp, useRecycleBin: boolean): Promise<boolean> {
     try {
       // 第一步：预览安装目录内容
       const items = await invoke<LeftoverItem[]>('preview_force_remove', {
@@ -843,15 +843,18 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         } else {
           showToast(result.message || '删除失败', 'error');
         }
-        return;
+        return false;
       }
       // 第二步：打开预览弹窗等待用户确认
       setForceRmUseRecycleBin(useRecycleBin);
       setForceRmPreviewApp(app);
       setForceRmPreviewItems(items);
       setForceRmPreviewOpen(true);
+      // 预览弹窗仍属于卸载流程，直到用户取消或确认删除前都保持全局操作锁。
+      return true;
     } catch (error) {
       showToast(`预览安装目录失败: ${error}`, 'error');
+      return false;
     }
   }
 
@@ -863,51 +866,51 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       return;
     }
 
-    // 读取用户设置的删除方式（默认移入回收站）
-    const useRecycleBin = readLocalUserSettings().useRecycleBin;
-
-    // 先预览卸载命令
-    let previewCommands: string[] = [];
-    let previewFailed = false;
-    try {
-      const preview = await invoke<UninstallPreview>('preview_uninstall', {
-        input: {
-          app_id: app.display_name,
-          registry_path: app.registry_path,
-          install_location: app.install_location,
-          display_icon: app.display_icon,
-          use_recycle_bin: useRecycleBin,
-        },
-      });
-      previewCommands = preview.commands;
-    } catch {
-      previewFailed = true;
-    }
-
     const currentUninstallKey = `${app.display_name}|${app.registry_path}`;
-
-    // 卸载程序不可用（损坏/缺失）→ 走强制删除流程
-    if (previewFailed || previewCommands.length === 0) {
-      const forceConfirm = await confirm(
-        `${app.display_name} 的卸载程序不可用（可能已损坏或被删除）。\n\n是否执行强制删除？将直接移除安装目录和注册表项。`,
-        { title: '强制删除', kind: 'warning', okLabel: '强制删除', cancelLabel: '取消' }
-      );
-      if (!forceConfirm) return;
-      await forceRemoveApp(app, useRecycleBin);
-      return;
-    }
-
-    // 正常卸载流程
-    const commandLines = `\n\n即将执行的卸载命令：\n${previewCommands.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`;
-
-    const confirmed = await confirm(
-      `即将启动 ${app.display_name} 的卸载程序。\n\n此操作可能删除应用及其相关组件，是否继续？${commandLines}`,
-      { title: '确认强力卸载', kind: 'warning', okLabel: '继续卸载', cancelLabel: '取消' }
-    );
-    if (!confirmed) return;
-
+    // 整个卸载流程复用同一份删除策略，异常转强制删除时也必须保持一致。
+    const useRecycleBin = readLocalUserSettings().useRecycleBin;
+    let keepUninstallLock = false;
     try {
+      // 从卸载流程开始就锁定列表，避免预览确认期间用户又启动其他文件操作。
       setUninstallingKey(currentUninstallKey);
+
+      // 先预览卸载命令
+      let previewCommands: string[] = [];
+      let previewFailed = false;
+      try {
+        const preview = await invoke<UninstallPreview>('preview_uninstall', {
+          input: {
+            app_id: app.display_name,
+            registry_path: app.registry_path,
+            install_location: app.install_location,
+            display_icon: app.display_icon,
+            use_recycle_bin: useRecycleBin,
+          },
+        });
+        previewCommands = preview.commands;
+      } catch {
+        previewFailed = true;
+      }
+
+      // 卸载程序不可用（损坏/缺失）→ 走强制删除流程
+      if (previewFailed || previewCommands.length === 0) {
+        const forceConfirm = await confirm(
+          `${app.display_name} 的卸载程序不可用（可能已损坏或被删除）。\n\n是否执行强制删除？将直接移除安装目录和注册表项。`,
+          { title: '强制删除', kind: 'warning', okLabel: '强制删除', cancelLabel: '取消' }
+        );
+        if (!forceConfirm) return;
+        keepUninstallLock = await forceRemoveApp(app, useRecycleBin);
+        return;
+      }
+
+      // 正常卸载流程
+      const commandLines = `\n\n即将执行的卸载命令：\n${previewCommands.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}`;
+
+      const confirmed = await confirm(
+        `即将启动 ${app.display_name} 的卸载程序。\n\n此操作可能删除应用及其相关组件，是否继续？${commandLines}`,
+        { title: '确认强力卸载', kind: 'warning', okLabel: '继续卸载', cancelLabel: '取消' }
+      );
+      if (!confirmed) return;
 
       const result = await invoke<UninstallResult>('uninstall_application', {
         input: {
@@ -950,13 +953,15 @@ export default function AppMigration({ visible }: { visible: boolean }) {
           { title: '卸载未完成', kind: 'warning', okLabel: '强制删除', cancelLabel: '取消' }
         );
         if (forceConfirm) {
-          await forceRemoveApp(app, useRecycleBin);
+          keepUninstallLock = await forceRemoveApp(app, useRecycleBin);
         }
       } else {
         showToast(`卸载未完成：${error}`, 'error');
       }
     } finally {
-      setUninstallingKey(null);
+      if (!keepUninstallLock) {
+        setUninstallingKey(null);
+      }
     }
   }
 
@@ -1650,6 +1655,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
             onRefresh={handleRefreshApps}
             refreshing={refreshing}
             viapInstallPath={viapInstallPath || undefined}
+            operationsLocked={uninstallingKey !== null}
             scanPhase={scanPhase}
             scanTotalCount={scanTotalCount}
           />
@@ -1707,6 +1713,8 @@ export default function AppMigration({ visible }: { visible: boolean }) {
             setForceRmPreviewOpen(false);
             setForceRmPreviewApp(null);
             setForceRmPreviewItems([]);
+            // 用户取消强制删除预览后，释放此前为整个卸载流程设置的全局操作锁。
+            setUninstallingKey(null);
           }
         }}
         onToggleItem={handleForceRmToggleItem}
