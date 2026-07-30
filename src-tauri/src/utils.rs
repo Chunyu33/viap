@@ -79,15 +79,6 @@ pub fn get_dir_size_safe(path: &Path) -> u64 {
         .sum()
 }
 
-/// 获取文件夹大小（兼容旧接口，内部委托 get_dir_size_safe）
-pub fn get_folder_size(path: &Path) -> u64 {
-    if path.exists() && path.is_dir() {
-        get_dir_size_safe(path)
-    } else {
-        0
-    }
-}
-
 /// 展开路径中的环境变量（如 %APPDATA%/subdir → C:/Users/.../AppData/Roaming/subdir）
 pub fn expand_env_vars(path_str: &str) -> String {
     let mut result = String::with_capacity(path_str.len());

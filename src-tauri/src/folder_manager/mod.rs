@@ -6,197 +6,32 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::models::*;
 use crate::utils;
 use crate::storage::data_dir;
 use crate::storage::data_dir::ensure_data_dir;
 
+mod size_scan;
+mod templates;
+
+pub use templates::{default_app_data_templates, load_app_data_templates};
+
 // ============================================================================
 // 应用数据模板管理
 // ============================================================================
 
-/// 默认内置模板列表（与旧版硬编码一致，确保向后兼容）
-pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
-    vec![
-        // 微信路径由 detector 动态识别，兼容新版 Documents\xwechat_files 和旧版 WeChat Files。
-        AppDataTemplate {
-            id: "wechat".to_string(), display_name: "微信".to_string(),
-            icon_id: "wechat".to_string(),
-            process_names: vec!["WeChat.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "wxwork".to_string(), display_name: "企业微信".to_string(),
-            icon_id: "wxwork".to_string(),
-            process_names: vec!["WXWork.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "qq".to_string(), display_name: "QQ".to_string(),
-            icon_id: "qq".to_string(),
-            process_names: vec!["QQ.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "dingtalk".to_string(), display_name: "钉钉".to_string(),
-            icon_id: "dingtalk".to_string(),
-            process_names: vec!["DingTalk.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "feishu".to_string(), display_name: "飞书".to_string(),
-            icon_id: "feishu".to_string(),
-            process_names: vec!["Lark.exe".to_string(), "Feishu.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "chrome_cache".to_string(), display_name: "Chrome 缓存".to_string(),
-            icon_id: "chrome_cache".to_string(),
-            process_names: vec!["chrome.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "edge_cache".to_string(), display_name: "Edge 缓存".to_string(),
-            icon_id: "edge_cache".to_string(),
-            process_names: vec!["msedge.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "vscode_extensions".to_string(), display_name: "VS Code 扩展".to_string(),
-            icon_id: "vscode_extensions".to_string(),
-            process_names: vec!["code.exe".to_string()], path: None,
-        },
-        AppDataTemplate {
-            id: "npm_global".to_string(), display_name: "npm 全局包".to_string(),
-            icon_id: "npm_global".to_string(),
-            process_names: vec![], path: None,
-        },
-        AppDataTemplate {
-            id: "npm_cache".to_string(), display_name: "npm 缓存".to_string(),
-            icon_id: "npm_cache".to_string(),
-            process_names: vec!["node.exe".to_string()], path: Some(r"%LOCALAPPDATA%\npm-cache".to_string()),
-        },
-        AppDataTemplate {
-            id: "yarn_cache".to_string(), display_name: "Yarn 缓存".to_string(),
-            icon_id: "yarn_cache".to_string(),
-            process_names: vec!["node.exe".to_string(), "yarn.exe".to_string()], path: Some(r"%LOCALAPPDATA%\Yarn\Cache".to_string()),
-        },
-        AppDataTemplate {
-            id: "gradle_cache".to_string(), display_name: "Gradle 缓存".to_string(),
-            icon_id: "gradle_cache".to_string(),
-            process_names: vec!["java.exe".to_string(), "gradle.exe".to_string(), "gradlew.exe".to_string()], path: Some(r"%USERPROFILE%\.gradle".to_string()),
-        },
-        AppDataTemplate {
-            id: "maven_repository".to_string(), display_name: "Maven 本地仓库".to_string(),
-            icon_id: "maven_repository".to_string(),
-            process_names: vec!["java.exe".to_string(), "mvn.exe".to_string()], path: Some(r"%USERPROFILE%\.m2\repository".to_string()),
-        },
-        AppDataTemplate {
-            id: "cargo_home".to_string(), display_name: "Cargo 包缓存".to_string(),
-            icon_id: "cargo_home".to_string(),
-            process_names: vec!["cargo.exe".to_string(), "rustc.exe".to_string(), "rust-analyzer.exe".to_string()], path: Some(r"%USERPROFILE%\.cargo".to_string()),
-        },
-        AppDataTemplate {
-            id: "rustup_home".to_string(), display_name: "Rustup 工具链".to_string(),
-            icon_id: "rustup_home".to_string(),
-            process_names: vec!["rustup.exe".to_string(), "rustc.exe".to_string(), "rust-analyzer.exe".to_string()], path: Some(r"%USERPROFILE%\.rustup".to_string()),
-        },
-        AppDataTemplate {
-            id: "pip_cache".to_string(), display_name: "pip 缓存".to_string(),
-            icon_id: "pip_cache".to_string(),
-            process_names: vec!["python.exe".to_string(), "pip.exe".to_string()], path: Some(r"%LOCALAPPDATA%\pip\Cache".to_string()),
-        },
-        AppDataTemplate {
-            id: "uv_cache".to_string(), display_name: "uv 缓存".to_string(),
-            icon_id: "uv_cache".to_string(),
-            process_names: vec!["uv.exe".to_string(), "python.exe".to_string()], path: Some(r"%LOCALAPPDATA%\uv\cache".to_string()),
-        },
-        AppDataTemplate {
-            id: "nuget_packages".to_string(), display_name: "NuGet 包缓存".to_string(),
-            icon_id: "nuget_packages".to_string(),
-            process_names: vec!["dotnet.exe".to_string(), "nuget.exe".to_string(), "devenv.exe".to_string()], path: Some(r"%USERPROFILE%\.nuget\packages".to_string()),
-        },
-        AppDataTemplate {
-            id: "claude_code".to_string(), display_name: "Claude Code 数据".to_string(),
-            icon_id: "claude_code".to_string(),
-            process_names: vec!["node.exe".to_string(), "claude.exe".to_string()], path: Some(r"%USERPROFILE%\.claude".to_string()),
-        },
-        AppDataTemplate {
-            id: "codex_data".to_string(), display_name: "Codex 数据".to_string(),
-            icon_id: "codex_data".to_string(),
-            process_names: vec!["node.exe".to_string(), "codex.exe".to_string()], path: Some(r"%USERPROFILE%\.codex".to_string()),
-        },
-    ]
-}
-
 /// 获取应用数据模板（Tauri 命令，供设置页展示和编辑）
 #[tauri::command]
 pub fn get_app_data_templates() -> Result<Vec<AppDataTemplate>, String> {
-    Ok(load_app_data_templates())
-}
-
-/// 加载应用数据模板（文件不存在时自动创建默认模板）
-pub fn load_app_data_templates() -> Vec<AppDataTemplate> {
-    let path = utils::app_data_templates_path(&ensure_data_dir());
-    if !path.exists() {
-        let defaults = default_app_data_templates();
-        let json = serde_json::to_string_pretty(&defaults).unwrap_or_default();
-        let _ = std::fs::write(&path, &json);
-        return defaults;
-    }
-    let templates = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<AppDataTemplate>>(&s).ok())
-        .unwrap_or_else(default_app_data_templates);
-
-    merge_missing_default_templates(templates)
-}
-
-/// 旧版本已经生成过 app_data_templates.json 时，需要把新增内置模板补进去。
-/// 只按 id 合并缺失项，保留用户已经编辑过的名称、路径和进程配置。
-fn merge_missing_default_templates(mut templates: Vec<AppDataTemplate>) -> Vec<AppDataTemplate> {
-    // pnpm Store 依赖硬链接机制，迁移后容易破坏包存储语义；旧版已写入配置的条目需要主动清理。
-    let mut changed = remove_deprecated_app_data_templates(&mut templates);
-
-    let existing_ids: std::collections::HashSet<String> = templates
-        .iter()
-        .map(|template| template.id.to_lowercase())
-        .collect();
-
-    for default_template in default_app_data_templates() {
-        if existing_ids.contains(&default_template.id.to_lowercase()) {
-            continue;
-        }
-        templates.push(default_template);
-        changed = true;
-    }
-
-    if changed {
-        let path = utils::app_data_templates_path(&ensure_data_dir());
-        if let Ok(json) = serde_json::to_string_pretty(&templates) {
-            let _ = std::fs::write(&path, json);
-        }
-    }
-
-    templates
-}
-
-fn remove_deprecated_app_data_templates(templates: &mut Vec<AppDataTemplate>) -> bool {
-    let before_len = templates.len();
-    templates.retain(|template| !deprecated_app_data_template_ids()
-        .iter()
-        .any(|deprecated_id| template.id.eq_ignore_ascii_case(deprecated_id)));
-    templates.len() != before_len
-}
-
-fn deprecated_app_data_template_ids() -> &'static [&'static str] {
-    &["pnpm_store"]
+    Ok(templates::load_app_data_templates())
 }
 
 /// 保存应用数据模板
 #[tauri::command]
 pub fn save_app_data_templates(templates: Vec<AppDataTemplate>) -> Result<(), String> {
-    let path = utils::app_data_templates_path(&ensure_data_dir());
-    let json = serde_json::to_string_pretty(&templates)
-        .map_err(|e| format!("序列化模板失败: {}", e))?;
-    std::fs::write(&path, &json)
-        .map_err(|e| format!("写入模板文件失败: {}", e))?;
-    Ok(())
+    templates::save_app_data_templates(templates)
 }
 
 // ============================================================================
@@ -348,12 +183,7 @@ pub fn start_folder_size_scan(
     app_handle: AppHandle,
     scan_id: Option<String>,
 ) -> Result<(), String> {
-    let background_folders = folders
-        .into_iter()
-        .filter(|folder| folder.folder_type != LargeFolderType::AppData)
-        .collect();
-    compute_folder_sizes_async(app_handle, background_folders, scan_id);
-    Ok(())
+    size_scan::start_folder_size_scan(folders, app_handle, scan_id)
 }
 
 /// 用户主动触发应用数据大小扫描。
@@ -366,52 +196,7 @@ pub fn start_app_data_size_scan(
     app_handle: AppHandle,
     scan_id: Option<String>,
 ) -> Result<(), String> {
-    let app_data_folders: Vec<LargeFolder> = folders
-        .into_iter()
-        .filter(|folder| folder.folder_type == LargeFolderType::AppData)
-        .collect();
-    compute_folder_sizes_async(app_handle, app_data_folders, scan_id);
-    Ok(())
-}
-
-/// 后台异步计算各文件夹大小并通过事件推送
-/// 始终推送事件（即使大小为 0），避免前端因缺少事件而永久显示 "--"
-/// Junction 文件夹计算其目标目录的实际大小
-fn compute_folder_sizes_async(
-    app_handle: AppHandle,
-    folders: Vec<LargeFolder>,
-    scan_id: Option<String>,
-) {
-    std::thread::spawn(move || {
-        for folder in &folders {
-            // 即使目录在扫描期间消失，也要发送终态事件，避免前端一直等待该目录。
-            if !folder.exists {
-                let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
-                    folder_id: folder.id.clone(), size: 0, scan_id: scan_id.clone(),
-                });
-                continue;
-            }
-            // Junction 文件夹计算目标目录大小，非 Junction 计算自身大小。
-            let path = if folder.is_junction {
-                match &folder.junction_target {
-                    Some(target) => PathBuf::from(target),
-                    None => {
-                        // 链接目标缺失时返回 0，让前端结束本轮扫描并保留迁移异常提示入口。
-                        let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
-                            folder_id: folder.id.clone(), size: 0, scan_id: scan_id.clone(),
-                        });
-                        continue;
-                    }
-                }
-            } else {
-                PathBuf::from(&folder.path)
-            };
-            let size = utils::get_folder_size(&path);
-            let _ = app_handle.emit("large-folder-size", LargeFolderSizeEvent {
-                folder_id: folder.id.clone(), size, scan_id: scan_id.clone(),
-            });
-        }
-    });
+    size_scan::start_app_data_size_scan(folders, app_handle, scan_id)
 }
 
 // ============================================================================
