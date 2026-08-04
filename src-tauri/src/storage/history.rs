@@ -659,7 +659,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             });
         }
 
-        crate::app_manager::migration::emit_progress(
+        crate::migration::emit_progress(
             &app_handle,
             &record.original_path,
             0.0,
@@ -707,7 +707,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             }
         }
 
-        let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+        let restore_result = crate::migration::restore_directory_with_progress(
             original_path,
             target_path,
             &record.original_path,
@@ -726,7 +726,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             record.app_name,
             record.target_path,
             record.original_path,
-            crate::app_manager::migration::format_bytes(restore_result.restored_size)
+            crate::migration::format_bytes(restore_result.restored_size)
         );
         if let Some(warning) = restore_result.cleanup_warning {
             message.push_str(&format!("\n\n{}", warning));

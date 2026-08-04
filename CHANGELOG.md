@@ -8,7 +8,8 @@
 
 - Switched the copy engine to the native CopyFileExW API: preserves file timestamps and NTFS alternate data streams, and significantly speeds up small-file-heavy migrations.
 - Tuned copy concurrency: large files copy sequentially for peak SSD throughput, small files copy on a bounded 8-thread pool.
-- Fixed migration backups not being removed: application directories now also get file-lock detection before migration (e.g. OneDrive shell-extension DLLs loaded by Explorer), backup deletion cleans up as much as possible, and leftover backups are filtered from the app scanner so they are no longer misidentified as new apps.
+- Fixed migration backups not being removed: application directories now also get file-lock detection before migration (e.g. OneDrive shell-extension DLLs loaded by Explorer), backup deletion cleans up as much as possible, leftover backups are scheduled for auto-removal on reboot, and leftover backups are filtered from the app scanner so they are no longer misidentified as new apps.
+- Refactored the migration engine into a more modular structure.
 
 ## v1.1.10
 
