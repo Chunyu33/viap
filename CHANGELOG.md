@@ -2,6 +2,14 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.1.11
+
+### Highlights
+
+- Switched the copy engine to the native CopyFileExW API: preserves file timestamps and NTFS alternate data streams, and significantly speeds up small-file-heavy migrations.
+- Tuned copy concurrency: large files copy sequentially for peak SSD throughput, small files copy on a bounded 8-thread pool.
+- Fixed migration backups not being removed: application directories now also get file-lock detection before migration (e.g. OneDrive shell-extension DLLs loaded by Explorer), backup deletion cleans up as much as possible, and leftover backups are filtered from the app scanner so they are no longer misidentified as new apps.
+
 ## v1.1.10
 
 ### Highlights
@@ -12,6 +20,7 @@
 - Moved template management and folder size scanning into dedicated Rust modules.
 - Locked migration actions during uninstall and optimized leftover scanning responsiveness.
 - Simplified the application data list styling to match the standard row layout.
+
 
 ## v1.1.9 - 2026-10-14
 

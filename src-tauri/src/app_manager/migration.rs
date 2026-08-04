@@ -1,8 +1,8 @@
 // 应用迁移模块
 // 负责应用目录迁移、空间校验、进度上报、回滚与历史写入
 
+use std::cell::Cell;
 use std::fs;
-use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,6 +20,29 @@ use crate::utils;
 
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
+
+// Windows 原生复制 API（CopyFileExW），仅在 Windows 目标上引入
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::{GetLastError, HANDLE, WIN32_ERROR};
+#[cfg(windows)]
+use windows::Win32::Storage::FileSystem::{CopyFileExW, LPPROGRESS_ROUTINE_CALLBACK_REASON};
+
+/// 复制并发线程数：Windows 单卷复制实测 8 线程为吞吐甜点，
+/// 全核并发会争抢 NTFS 元数据锁（$MFT / $LogFile）反而降低总吞吐。
+const COPY_PARALLELISM: usize = 8;
+/// 大文件阈值：超过该大小的文件走顺序单流复制，保证 SSD 顺序吞吐峰值。
+const LARGE_FILE_THRESHOLD: u64 = 32 * 1024 * 1024; // 32MB
+/// 无缓冲复制阈值：>= 该大小的文件尝试 COPY_FILE_NO_BUFFERING 绕过系统缓存。
+const NO_BUFFERING_THRESHOLD: u64 = 256 * 1024 * 1024; // 256MB
+// CopyFileExW 标志（winbase.h 标准值，windows 0.58 绑定未导出常量，此处按规范值定义）
+/// 允许复制到无法加密的目标（源为 EFS 加密文件时避免复制失败）
+const COPY_FILE_ALLOW_DECRYPTED_DESTINATION: u32 = 0x0000_0008;
+/// 大文件绕过系统缓存直写，达到近设备峰值吞吐
+const COPY_FILE_NO_BUFFERING: u32 = 0x0000_1000;
 
 /// 复制计划：扫描阶段一次性生成，后续空间检查和复制阶段复用同一份数据。
 pub(crate) struct CopyPlan {
@@ -190,129 +213,242 @@ pub(crate) fn build_copy_plan_with_progress(
     Ok(CopyPlan { file_list, dir_list, total_size })
 }
 
-/// 同步 Windows 文件属性，避免只读/隐藏/系统属性在迁移后丢失导致应用行为异常。
-#[cfg(windows)]
-fn apply_file_attributes(src: &Path, dest: &Path) {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::MetadataExt;
+/// 单个文件的复制进度上下文（栈上分配，CopyFileExW 进度回调与调用线程同线程）
+struct CopyProgressContext<'a> {
+    /// 全局累计已复制字节数
+    copied_size: Arc<AtomicU64>,
+    /// 已上报进度百分比（CAS 节流，避免高频 emit 拖慢复制）
+    last_report_pct: Arc<AtomicU64>,
+    /// 本次迁移总字节数（进度百分比分母）
+    total_size: u64,
+    /// 本文件已回调累计传输字节（回调与调用线程同线程，用 Cell 免原子开销）
+    last_transferred: Cell<u64>,
+    /// 用户取消标志
+    cancel_flag: Arc<AtomicBool>,
+    /// 内部取消标志（首个错误出现后通知其余线程停止）
+    internal_cancel: Arc<AtomicBool>,
+    /// 进度事件发送句柄
+    app_handle: &'a tauri::AppHandle,
+    /// 任务标识（源路径）
+    task_id: &'a str,
+}
 
-    if let Ok(src_meta) = fs::metadata(src) {
-        let attrs = src_meta.file_attributes();
-        const SAFE_ATTR_MASK: u32 = 0x27; // READONLY|HIDDEN|SYSTEM|ARCHIVE
-        let safe_attrs = attrs & SAFE_ATTR_MASK;
-        if safe_attrs != 0 {
-            extern "system" {
-                fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
-            }
-            let path_wide: Vec<u16> = dest
-                .as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            unsafe {
-                SetFileAttributesW(path_wide.as_ptr(), safe_attrs);
-            }
-        }
+/// 按全局已复制字节数计算进度并 CAS 节流上报（复制回调与复制完成补账共用）。
+fn try_report_progress(
+    app_handle: &tauri::AppHandle,
+    task_id: &str,
+    last_report_pct: &AtomicU64,
+    new_copied: u64,
+    total_size: u64,
+) {
+    let current_pct = (10.0 + (new_copied as f64 / total_size as f64 * 78.0)) as u64;
+    let prev = last_report_pct.load(Ordering::Relaxed);
+    if current_pct > prev
+        && last_report_pct
+            .compare_exchange(prev, current_pct, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        emit_progress(
+            app_handle,
+            task_id,
+            current_pct as f64,
+            "copying",
+            &format!(
+                "已复制 {} / {}",
+                format_bytes(new_copied),
+                format_bytes(total_size)
+            ),
+            new_copied,
+            total_size,
+        );
     }
 }
 
-#[cfg(not(windows))]
-fn apply_file_attributes(_src: &Path, _dest: &Path) {}
+/// CopyFileExW 进度回调：按块累加传输字节并节流上报进度，
+/// 返回 PROGRESS_CANCEL(1) 实现取消（用户取消或内部错误取消）。
+///
+/// 注意：回调与 CopyFileExW 调用线程同线程，ctx 指针在调用期间始终有效。
+#[cfg(windows)]
+unsafe extern "system" fn copy_progress_routine(
+    _total_file_size: i64,
+    total_bytes_transferred: i64,
+    _stream_size: i64,
+    _stream_bytes_transferred: i64,
+    _stream_number: u32,
+    _callback_reason: LPPROGRESS_ROUTINE_CALLBACK_REASON,
+    _h_source_file: HANDLE,
+    _h_destination_file: HANDLE,
+    lp_data: *const core::ffi::c_void,
+) -> u32 {
+    let ctx = &*(lp_data as *const CopyProgressContext);
 
-/// 分块复制单个文件，在每 2MB 块之间检查取消标志
-/// 避免大文件（数 GB）的 fs::copy 阻塞期间无法取消和上报进度
-/// 权限拒绝时中断迁移（步骤 0.5 已做预检，此处不应再出现被锁文件）
+    // 用户取消或内部错误触发取消：返回 PROGRESS_CANCEL 让 CopyFileExW 中止
+    if ctx.cancel_flag.load(Ordering::Relaxed) || ctx.internal_cancel.load(Ordering::Relaxed) {
+        return 1;
+    }
+
+    // 用增量累加避免重复统计（回调按块触发，传输量单调递增）
+    let transferred = total_bytes_transferred as u64;
+    let delta = transferred.saturating_sub(ctx.last_transferred.get());
+    ctx.last_transferred.set(transferred);
+    if delta > 0 {
+        let new_copied = ctx.copied_size.fetch_add(delta, Ordering::Relaxed) + delta;
+        try_report_progress(
+            ctx.app_handle,
+            ctx.task_id,
+            &ctx.last_report_pct,
+            new_copied,
+            ctx.total_size,
+        );
+    }
+    0 // PROGRESS_CONTINUE
+}
+
+/// 将 CopyFileExW 失败码转换为用户可读的错误消息。
+#[cfg(windows)]
+fn map_copy_error(src: &Path, err: WIN32_ERROR) -> String {
+    let code = err.0;
+    // 5 = ERROR_ACCESS_DENIED，32 = ERROR_SHARING_VIOLATION：文件被其他程序占用
+    if code == 5 || code == 32 {
+        format!(
+            "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
+            src.display()
+        )
+    } else {
+        // 只输出错误码即可定位问题（WIN32_ERROR 未实现 Display，错误名由上层提示覆盖）
+        format!("复制文件失败 {}（错误码 {}）", src.display(), code)
+    }
+}
+
+/// 通过 Windows 原生 CopyFileExW 复制单个文件。
+///
+/// 相比旧实现的手动分块读写：
+/// 1. 单次 API 调用替代 6~10 次系统调用，小文件密集场景吞吐显著提升
+/// 2. 自动保留文件时间戳 / NTFS 备用数据流 / 文件属性，修复大文件 mtime 丢失问题
+/// 3. 进度回调支持块级进度累计与取消（回调返回 PROGRESS_CANCEL 中止）
+///
+/// 权限拒绝时中断迁移（步骤 0.5 已做预检，此处不应再出现被锁文件）。
+/// 返回该文件大小（复制成功即完整写入），供跳过统计使用。
+#[cfg(windows)]
 fn copy_file_with_cancel(
     src: &Path,
     dest: &Path,
     cancel_flag: &Arc<AtomicBool>,
     internal_cancel: &Arc<AtomicBool>,
+    copied_size: &Arc<AtomicU64>,
+    last_report_pct: &Arc<AtomicU64>,
+    total_size: u64,
+    app_handle: &tauri::AppHandle,
+    task_id: &str,
 ) -> Result<u64, String> {
     // 被锁文件：步骤 0.5 已做预检，此处出现说明文件在复制过程中被新进程锁定，直接中断
-    let file = match fs::File::open(src) {
-        Ok(f) => f,
+    let file_size = match fs::metadata(src) {
+        Ok(meta) => meta.len(),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            // 步骤 0.5 已做预检，到这里说明文件在复制过程中被新进程锁定
-            // 不能静默跳过（会导致数据不完整），直接中断迁移
             return Err(format!(
                 "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
                 src.display()
             ));
         }
-        Err(e) => return Err(format!("打开源文件失败 {}: {}", src.display(), e)),
+        Err(e) => return Err(format!("读取文件元数据失败 {}: {}", src.display(), e)),
     };
-    let file_size = file.metadata()
-        .map_err(|e| format!("读取文件元数据失败 {}: {}", src.display(), e))?
-        .len();
 
-    // 小文件（< 256KB）直接使用 fs::copy，免去分块开销
-    if file_size < 256 * 1024 {
-        let copied = match fs::copy(src, dest) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return Err(format!(
-                        "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
-                        src.display()
-                    ));
-                }
-                return Err(format!("复制文件失败 {}: {}", src.display(), e));
-            }
+    let src_wide: Vec<u16> = src
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let dest_wide: Vec<u16> = dest
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // 大文件尝试无缓冲直写（绕过系统缓存）；失败自动降级为常规复制
+    let mut use_no_buffering = file_size >= NO_BUFFERING_THRESHOLD;
+    let flags = COPY_FILE_ALLOW_DECRYPTED_DESTINATION;
+
+    let ctx = CopyProgressContext {
+        copied_size: copied_size.clone(),
+        last_report_pct: last_report_pct.clone(),
+        total_size,
+        last_transferred: Cell::new(0),
+        cancel_flag: cancel_flag.clone(),
+        internal_cancel: internal_cancel.clone(),
+        app_handle,
+        task_id,
+    };
+
+    // 最多两次尝试：无缓冲复制失败（部分卷/文件系统不支持）时降级重试
+    for _ in 0..2 {
+        let copy_flags = if use_no_buffering {
+            flags | COPY_FILE_NO_BUFFERING
+        } else {
+            flags
         };
-        if copied != file_size {
-            let _ = fs::remove_file(dest);
-            return Err(format!(
-                "复制文件不完整 {}: 预期 {} 字节，实际 {} 字节",
-                src.display(), file_size, copied
-            ));
+        // windows 0.58 绑定返回 Result：失败时用 GetLastError 取真实 Win32 错误码
+        let result = unsafe {
+            CopyFileExW(
+                PCWSTR(src_wide.as_ptr()),
+                PCWSTR(dest_wide.as_ptr()),
+                Some(copy_progress_routine),
+                Some(&ctx as *const CopyProgressContext as *const core::ffi::c_void),
+                None, // 取消通过进度回调返回 PROGRESS_CANCEL 实现，无需 pbCancel
+                copy_flags,
+            )
+        };
+        if result.is_ok() {
+            break;
         }
-        apply_file_attributes(src, dest);
-        return Ok(copied);
-    }
 
-    const BUF_SIZE: usize = 2 * 1024 * 1024; // 2MB
-    let mut reader = BufReader::with_capacity(BUF_SIZE, file);
-    let dest_file = fs::File::create(dest)
-        .map_err(|e| format!("创建目标文件失败 {}: {}", dest.display(), e))?;
-    let mut writer = BufWriter::with_capacity(BUF_SIZE, dest_file);
-    let mut buffer = vec![0u8; BUF_SIZE];
-    let mut copied: u64 = 0;
-
-    loop {
-        if cancel_flag.load(Ordering::Relaxed) || internal_cancel.load(Ordering::Relaxed) {
-            // 删除未完成的目标文件，避免残留
+        let err = unsafe { GetLastError() };
+        // 1235 = ERROR_REQUEST_ABORTED：进度回调返回了 PROGRESS_CANCEL（用户/内部取消）
+        if err.0 == 1235 {
             let _ = fs::remove_file(dest);
             return Err("用户取消了迁移".to_string());
         }
-        let bytes_read = reader.read(&mut buffer)
-            .map_err(|e| format!("读取文件失败 {} (已复制 {}/{}): {}", src.display(), copied, file_size, e))?;
-        if bytes_read == 0 {
-            break;
+        if use_no_buffering {
+            // 无缓冲复制失败（卷不支持等），清掉半成品后降级重试
+            let _ = fs::remove_file(dest);
+            use_no_buffering = false;
+            continue;
         }
-        writer.write_all(&buffer[..bytes_read])
-            .map_err(|e| format!("写入文件失败 {}: {}", dest.display(), e))?;
-        copied += bytes_read as u64;
+        return Err(map_copy_error(src, err));
     }
-    writer.flush()
-        .map_err(|e| format!("刷新文件缓冲区失败 {}: {}", dest.display(), e))?;
 
-    if copied != file_size {
-        let _ = fs::remove_file(dest);
-        return Err(format!(
-            "复制文件不完整 {}: 预期 {} 字节，实际 {} 字节",
-            src.display(), file_size, copied
-        ));
+    // 补齐进度回调未覆盖的尾差（小文件可能一次回调都没有），保证字节计数精确
+    let counted = ctx.last_transferred.get();
+    if counted < file_size {
+        let new_copied =
+            ctx.copied_size.fetch_add(file_size - counted, Ordering::Relaxed) + file_size;
+        try_report_progress(app_handle, task_id, last_report_pct, new_copied, total_size);
     }
-    apply_file_attributes(src, dest);
 
-    Ok(copied)
+    Ok(file_size)
+}
+
+/// 非 Windows 平台回退实现：迁移功能仅支持 Windows，此处仅保证跨平台编译。
+#[cfg(not(windows))]
+fn copy_file_with_cancel(
+    src: &Path,
+    dest: &Path,
+    _cancel_flag: &Arc<AtomicBool>,
+    _internal_cancel: &Arc<AtomicBool>,
+    _copied_size: &Arc<AtomicU64>,
+    _last_report_pct: &Arc<AtomicU64>,
+    _total_size: u64,
+    _app_handle: &tauri::AppHandle,
+    _task_id: &str,
+) -> Result<u64, String> {
+    fs::copy(src, dest).map_err(|e| format!("复制文件失败 {}: {}", src.display(), e))
 }
 
 /// 带进度上报和取消支持的文件复制
 ///
-/// 替代 fs_extra::copy_items，逐个文件复制以便：
-/// 1. 在每个文件 / 每 2MB 之间检查取消标志
-/// 2. 按实际复制量上报进度百分比
+/// 替代 fs_extra::copy_items，改用 CopyFileExW 逐个文件复制以便：
+/// 1. 在复制进度回调中检查取消标志，任意时刻可中止
+/// 2. 按实际复制量上报进度百分比（回调内累计 + 完成补账）
+/// 3. 大文件顺序复制、小文件 8 线程并行，兼顾吞吐与元数据开销
 ///
 /// 返回 (总文件大小, 因权限拒绝跳过的字节数)
 fn copy_dir_with_progress(
@@ -345,7 +481,15 @@ fn copy_dir_with_progress(
         return Ok((0, 0));
     }
 
-    // 阶段 2：rayon 并行复制文件，AtomicU64 共享状态 + Mutex 错误收集
+    // 阶段 2：按大小分流复制
+    // 大文件顺序单流复制保证 SSD 顺序吞吐峰值；小文件 8 线程并行分摊元数据开销
+    // （全核并发会争抢 NTFS 元数据锁，实测反而降低总吞吐）
+    let (mut large_files, small_files): (Vec<_>, Vec<_>) = file_list
+        .into_iter()
+        .partition(|(_, _, size)| *size > LARGE_FILE_THRESHOLD);
+    // 大文件按体积降序，优先搬走最大的文件
+    large_files.sort_by(|a, b| b.2.cmp(&a.2));
+
     emit_progress(app_handle, task_id, 10.0, "copying", "开始复制文件...", 0, total_size);
 
     let internal_cancel = Arc::new(AtomicBool::new(false));
@@ -354,36 +498,31 @@ fn copy_dir_with_progress(
     let last_report_pct = Arc::new(AtomicU64::new(0));
     let error_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    file_list.par_iter().for_each(|(src, dest, size)| {
+    // 大文件顺序复制：一次一个大文件，避免多条大流同时打盘
+    for (src, dest, size) in &large_files {
         // 任一条件触发即跳过：已有错误 / 用户取消 / 内部取消
         if error_slot.lock().unwrap().is_some()
             || internal_cancel.load(Ordering::Relaxed)
             || cancel_flag.load(Ordering::Relaxed)
         {
-            return;
+            break;
         }
-
-        match copy_file_with_cancel(src, dest, cancel_flag, &internal_cancel) {
+        match copy_file_with_cancel(
+            src,
+            dest,
+            cancel_flag,
+            &internal_cancel,
+            &copied_size,
+            &last_report_pct,
+            total_size,
+            app_handle,
+            task_id,
+        ) {
             Ok(actually_copied) => {
                 if actually_copied == 0 && *size > 0 {
                     skipped_size.fetch_add(*size, Ordering::Relaxed);
                 }
-                let new_copied = copied_size.fetch_add(actually_copied, Ordering::Relaxed) + actually_copied;
-
-                let current_pct = (10.0 + (new_copied as f64 / total_size as f64 * 78.0)) as u64;
-                let prev = last_report_pct.load(Ordering::Relaxed);
-                if current_pct > prev
-                    && last_report_pct
-                        .compare_exchange(prev, current_pct, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    emit_progress(
-                        app_handle, task_id,
-                        current_pct as f64, "copying",
-                        &format!("已复制 {} / {}", format_bytes(new_copied), format_bytes(total_size)),
-                        new_copied, total_size,
-                    );
-                }
+                // 进度已在 CopyFileExW 回调内上报，此处无需重复 emit
             }
             Err(e) => {
                 let mut slot = error_slot.lock().unwrap();
@@ -393,7 +532,53 @@ fn copy_dir_with_progress(
                 }
             }
         }
-    });
+    }
+
+    // 小文件并行复制：受限线程池（COPY_PARALLELISM 线程）避免全核争抢 NTFS 元数据锁
+    if error_slot.lock().unwrap().is_none()
+        && !internal_cancel.load(Ordering::Relaxed)
+        && !cancel_flag.load(Ordering::Relaxed)
+    {
+        let copy_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(COPY_PARALLELISM)
+            .build()
+            .map_err(|e| format!("创建复制线程池失败: {}", e))?;
+        copy_pool.install(|| {
+            small_files.par_iter().for_each(|(src, dest, size)| {
+                // 任一条件触发即跳过：已有错误 / 用户取消 / 内部取消
+                if error_slot.lock().unwrap().is_some()
+                    || internal_cancel.load(Ordering::Relaxed)
+                    || cancel_flag.load(Ordering::Relaxed)
+                {
+                    return;
+                }
+                match copy_file_with_cancel(
+                    src,
+                    dest,
+                    cancel_flag,
+                    &internal_cancel,
+                    &copied_size,
+                    &last_report_pct,
+                    total_size,
+                    app_handle,
+                    task_id,
+                ) {
+                    Ok(actually_copied) => {
+                        if actually_copied == 0 && *size > 0 {
+                            skipped_size.fetch_add(*size, Ordering::Relaxed);
+                        }
+                    }
+                    Err(e) => {
+                        let mut slot = error_slot.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(e);
+                            internal_cancel.store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+        });
+    }
 
     // 检查并发复制是否有错误
     if let Some(err) = error_slot.lock().unwrap().take() {
@@ -409,14 +594,19 @@ fn copy_dir_with_progress(
     Ok((total_size, skipped_size))
 }
 
-/// 检测目录内文件是否被其他进程独占持有（适用于数据目录，如浏览器缓存）
+/// 检测目录内文件是否被其他进程独占持有
 ///
 /// 原理：以独占模式（FILE_SHARE_NONE）尝试打开每个文件。
 /// 若其他进程持有写锁（如 Chrome 正在写 Cache），此调用返回
 /// ERROR_SHARING_VIOLATION(32) 或 ERROR_ACCESS_DENIED(5)。
 ///
-/// 注意：此方法不适用于应用目录——exe/dll 被内存映射时不阻塞独占打开，
-/// 应用目录需用进程 exe 路径匹配检测。
+/// 适用场景：
+/// - 数据目录：检测真实写锁（浏览器缓存等）
+/// - 应用目录：检测被 explorer/系统服务加载的 DLL（如 shell extension），
+///   这类文件虽不阻塞复制（读共享），但会导致迁移后的备份目录清理失败
+///
+/// 注意：此方法检测不到应用本体——exe 被内存映射时不阻塞独占打开，
+/// 应用本体需用进程 exe 路径匹配检测，两者互补使用。
 ///
 /// 返回：被占用文件的相对路径列表，最多 10 条；空列表表示无占用。
 /// 每 200 个文件检查一次取消标志，避免大目录扫描期间取消无响应。
@@ -479,7 +669,11 @@ pub(crate) fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error>
         Err(_) => {}
     }
 
-    // 因只读文件导致失败：遍历清除只读属性后逐个删除
+    // 因只读文件导致失败：遍历清除只读属性后逐个删除。
+    // 尽量删除所有可删文件：单个文件被进程占用（如资源管理器加载的
+    // shell extension DLL）不应阻止其余文件清理，残留目录只保留真正
+    // 被占用的文件，便于用户稍后手动处理。
+    let mut first_file_error: Option<(PathBuf, std::io::Error)> = None;
     let mut first_dir_error: Option<(PathBuf, std::io::Error)> = None;
 
     for entry in WalkDir::new(path).contents_first(true).into_iter().filter_map(|e| e.ok()) {
@@ -490,8 +684,12 @@ pub(crate) fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error>
             let _ = fs::set_permissions(entry_path, perms);
         }
         if entry_path.is_file() || entry_path.is_symlink() {
-            // 文件删除失败直接返回，说明文件仍被进程持有
-            fs::remove_file(entry_path)?;
+            // 文件被进程持有时删除失败：记录第一个失败，继续清理其余文件
+            if let Err(e) = fs::remove_file(entry_path) {
+                if first_file_error.is_none() {
+                    first_file_error = Some((entry_path.to_path_buf(), e));
+                }
+            }
         } else if entry_path.is_dir() && entry_path != path {
             if let Err(e) = fs::remove_dir(entry_path) {
                 // 记录第一个失败的子目录，用于最终错误消息诊断
@@ -502,10 +700,17 @@ pub(crate) fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error>
         }
     }
 
-    // 最终删除根目录
+    // 最终删除根目录；优先用文件失败信息（更具体，能指出被占用项）
     fs::remove_dir(path).map_err(|e| {
-        // 优先用子目录失败信息（更具体），没有则用根目录删除失败信息
-        if let Some((failed_dir, dir_err)) = first_dir_error {
+        if let Some((failed_file, file_err)) = first_file_error {
+            std::io::Error::new(
+                file_err.kind(),
+                format!(
+                    "文件删除失败（被占用：{}，原因：{}）；根目录删除失败：{}",
+                    failed_file.display(), file_err, e
+                ),
+            )
+        } else if let Some((failed_dir, dir_err)) = first_dir_error {
             std::io::Error::new(
                 dir_err.kind(),
                 format!(
@@ -1110,11 +1315,13 @@ pub fn migrate_app(
         }
 
         // 步骤 0.5: 智能文件占用检测
-        // 根据源目录类型选择检测策略：
-        //   - 含 exe（应用目录）→ 进程 exe 路径前缀匹配
-        //     原因：exe/dll 被 Windows 内存映射，独占锁探测打开会成功，检测不到
-        //   - 不含 exe（数据/缓存目录）→ 文件独占锁探测
-        //     原因：数据文件有真实写锁，而进程 exe 不在该目录内，路径匹配无效
+        // 两种检测互补，都执行：
+        //   1. 含 exe（应用目录）→ 进程 exe 路径前缀匹配
+        //      拦截正在运行的应用本体（exe 被 Windows 内存映射时独占锁探测检测不到）
+        //   2. 所有目录 → 文件独占锁探测
+        //      拦截被 explorer/系统服务加载的 DLL（shell extension 等）与被写锁
+        //      持有的数据文件——这类文件虽不阻塞复制（读共享），但会导致迁移后
+        //      备份目录清理失败，必须在迁移前发现
         emit_progress(app_handle, &source, 0.0, "checking", "正在检测文件占用...", 0, 0);
 
         // 及时响应取消（大目录 WalkDir 可能耗时较长）
@@ -1136,6 +1343,7 @@ pub fn migrate_app(
 
         if has_exe_in_source {
             // 应用目录：用进程 exe 路径前缀匹配
+            // 拦截正在运行的应用本体（exe 被内存映射时独占锁探测检测不到）
             let mut sys = sysinfo::System::new_all();
             sys.refresh_all();
             let source_lower = source.to_lowercase();
@@ -1167,25 +1375,41 @@ pub fn migrate_app(
                     new_path: None,
                 });
             }
-        } else {
-            // 数据目录：用文件独占锁探测（独占打开每个文件，检测 SHARING_VIOLATION）
-            let locked_files = check_directory_file_locks(source_path, cancel_flag);
-            if !locked_files.is_empty() {
-                return Ok(MigrationResult {
-                    success: false,
-                    message: format!(
-                        "目录中有文件正被其他程序占用，无法迁移。\n\n\
-                         被占用的文件：\n{}\n\n\
-                         请关闭正在使用这些文件的程序（如浏览器、游戏、编辑器等）后重试。",
-                        locked_files
-                            .iter()
-                            .map(|f| format!("  • {}", f))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    ),
-                    new_path: None,
-                });
-            }
+        }
+
+        // 无论是否含 exe，都做文件独占锁探测：
+        // 应用目录里可能含被 explorer/系统服务加载的 DLL（如 OneDrive 的
+        // FileSyncShell64.dll 是 shell extension，explorer 启动即加载，进程
+        // exe 前缀匹配检测不到）。这类文件不阻塞复制（读共享），但会导致
+        // 迁移后的备份目录清理失败，必须在迁移前拦截。
+        let locked_files = check_directory_file_locks(source_path, cancel_flag);
+        // 锁探测被取消时其返回值为占位"检测已取消"，此处优先按取消处理，
+        // 避免把取消误报成"文件被占用"
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("用户取消了迁移".to_string());
+        }
+        if !locked_files.is_empty() {
+            // 含 exe 时占用源多为被加载的 DLL，提示注销/重启；否则提示关闭程序
+            let hint = if has_exe_in_source {
+                "被占用的文件通常是 .dll 等被资源管理器或系统服务加载的组件，\n\
+                 请注销当前用户或重启系统后重试。"
+            } else {
+                "请关闭正在使用这些文件的程序（如浏览器、游戏、编辑器等）后重试。"
+            };
+            return Ok(MigrationResult {
+                success: false,
+                message: format!(
+                    "目录中有文件正被其他程序占用，无法迁移。\n\n\
+                     被占用的文件：\n{}\n\n{}",
+                    locked_files
+                        .iter()
+                        .map(|f| format!("  • {}", f))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    hint
+                ),
+                new_path: None,
+            });
         }
 
         // 步骤 0.5.1：及时响应取消（sysinfo 刷新可能较慢）
@@ -1493,9 +1717,14 @@ pub fn migrate_app(
                 }
 
                 // 链接已经确认指向完整目标，之后清理临时备份不会影响实际运行数据。
+                // 清理失败（多为 explorer/服务加载的 DLL 被占用）时迁移仍成功，
+                // 但必须给出明确提示，避免残留备份目录被误认成新应用。
                 let cleanup_warning = remove_directory_robust(&backup_path).err().map(|e| {
                     format!(
-                        "临时备份清理失败，仍保留在 {}：{}",
+                        "临时备份目录清理失败，仍保留在：{}。\n\
+                         原因：{}。\n\
+                         该目录已被扫描过滤，不会被识别为新应用；\n\
+                         其中被占用的文件通常在注销或重启系统后释放，届时可手动删除此目录。",
                         backup_path.display(),
                         e
                     )

@@ -62,11 +62,13 @@ minisign-verify = "0.2.5"
 # 仅启用 rustls，避免完整性校验引入系统 TLS 依赖
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
 
-# Windows API 绑定，用于提取应用图标
+# Windows API 绑定，用于提取应用图标和原生文件复制
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
     "Win32_UI_Shell",
+    # CopyFileExW 原生复制：保留时间戳/ADS，单次 API 调用替代手动分块读写
+    "Win32_Storage_FileSystem",
 ] }
