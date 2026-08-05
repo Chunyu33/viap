@@ -10,6 +10,7 @@
 - Tuned copy concurrency: large files copy sequentially for peak SSD throughput, small files copy on a bounded 8-thread pool.
 - Fixed migration backups not being removed: application directories now also get file-lock detection before migration (e.g. OneDrive shell-extension DLLs loaded by Explorer), backup deletion cleans up as much as possible, leftover backups are scheduled for auto-removal on reboot, and leftover backups are filtered from the app scanner so they are no longer misidentified as new apps.
 - Refactored the migration engine into a more modular structure.
+- Fixed broken links after in-app updates (e.g. opencode, Antigravity): the history page now offers one-click "re-migrate" on broken records (reuses the migration engine to move the updated version from the original path back to the target and rebuild the link; confirms before overwriting a non-empty target). Also fixed the link-status misclassification where an empty target with a fresh real directory at the original path was reported as "data lost", and added updater-component detection (Squirrel / electron-updater) that warns after migration that updates will require re-migration.
 
 ## v1.1.10
 

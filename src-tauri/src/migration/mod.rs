@@ -117,8 +117,54 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// 构建复制计划并持续上报扫描进度，避免大目录扫描期间前端长时间停在 0%。
+/// 检测目录根层是否包含自动更新组件（Squirrel / electron-updater 等）
+///
+/// 这类应用更新时会递归删除安装目录并重建（递归删除会顺带清空 Junction
+/// 目标内容），导致迁移链接失效。命中后迁移成功消息附加提示，引导用户在
+/// 更新后执行「重新迁移」修复。
+fn detect_updater(source: &Path) -> bool {
+    // 更新器特征文件（固定位于安装根目录，精确文件名避免误判）
+    const UPDATER_FILES: &[&str] = &[
+        "Update.exe",     // Squirrel（Electron 应用）
+        "Squirrel.exe",   // Squirrel 安装器
+        "app-update.yml", // electron-updater 配置
+        "updater.exe",    // 通用更新器
+    ];
+    std::fs::read_dir(source)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| UPDATER_FILES.iter().any(|u| name.eq_ignore_ascii_case(u)))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
 
+/// 构造迁移成功消息，按需附加更新器提示与备份清理警告
+fn migration_success_message(
+    source: &str,
+    target: &str,
+    has_updater: bool,
+    warning: Option<&str>,
+) -> String {
+    let mut msg = format!("迁移成功！应用已从 {} 迁移到 {}", source, target);
+    if let Some(w) = warning {
+        msg.push_str(&format!("\n\n⚠️ {}", w));
+    }
+    if has_updater {
+        msg.push_str(
+            "\n\n⚠️ 检测到该应用含自动更新组件，更新时会重建安装目录导致链接失效，\n\
+             更新后请在迁移历史中对失效记录执行「重新迁移」修复。",
+        );
+    }
+    msg
+}
+
+/// 核心迁移命令
+/// 将应用从源路径迁移到目标路径，并创建目录链接（同卷 Junction / 跨卷软链接）
 pub fn migrate_app(
     app_name: String,
     source: String,
@@ -284,6 +330,10 @@ pub fn migrate_app(
                         .map(|ext| ext.eq_ignore_ascii_case("exe"))
                         .unwrap_or(false)
             });
+
+        // 检测自动更新组件：应用更新会重建安装目录导致链接失效，
+        // 命中后成功消息附加「重新迁移」引导提示
+        let has_updater = detect_updater(source_path);
 
         if has_exe_in_source {
             // 应用目录：用进程 exe 路径前缀匹配
@@ -453,7 +503,7 @@ pub fn migrate_app(
                             "迁移完成", source_size, source_size);
                         return Ok(MigrationResult {
                             success: true,
-                            message: format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str),
+                            message: migration_success_message(&source, &target_path_str, has_updater, None),
                             new_path: Some(target_path_str),
                         });
                     }
@@ -704,13 +754,12 @@ pub fn migrate_app(
 
                 emit_progress(app_handle, &source, 100.0, "done", "迁移完成", source_size, source_size);
 
-                let success_msg = match cleanup_warning {
-                    Some(warning) => format!(
-                        "迁移成功！应用已从 {} 迁移到 {}\n\n⚠️ {}",
-                        source, target_path_str, warning
-                    ),
-                    None => format!("迁移成功！应用已从 {} 迁移到 {}", source, target_path_str),
-                };
+                let success_msg = migration_success_message(
+                    &source,
+                    &target_path_str,
+                    has_updater,
+                    cleanup_warning.as_deref(),
+                );
 
                 Ok(MigrationResult {
                     success: true,
