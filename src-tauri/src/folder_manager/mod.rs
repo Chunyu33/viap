@@ -235,7 +235,7 @@ pub async fn migrate_large_folder(
     let handle = app_handle.clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        crate::app_manager::migration::migrate_app(
+        crate::migration::migrate_app(
             folder_name, source_path, target_dir, &cancel_flag, &handle,
             MigrationRecordType::LargeFolder, force, confirmed,
         )
@@ -357,7 +357,7 @@ fn restore_large_folder_inner(
 ) -> Result<MigrationResult, String> {
     let target_path = PathBuf::from(target_str);
 
-    let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+    let restore_result = crate::migration::restore_directory_with_progress(
         junction_path,
         &target_path,
         &junction_path.to_string_lossy(),
@@ -374,7 +374,7 @@ fn restore_large_folder_inner(
         "恢复成功！文件夹已从 {} 移回 {}（{}）",
         target_str,
         junction_str,
-        crate::app_manager::migration::format_bytes(restore_result.restored_size)
+        crate::migration::format_bytes(restore_result.restored_size)
     );
     if let Some(warning) = restore_result.cleanup_warning {
         message.push_str(&format!("\n\n{}", warning));
@@ -463,7 +463,7 @@ pub fn restore_large_folder_by_history(
             }
         }
 
-        let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+        let restore_result = crate::migration::restore_directory_with_progress(
             &junction_path,
             &target_path,
             &record.original_path,
@@ -479,7 +479,7 @@ pub fn restore_large_folder_by_history(
             "恢复成功！文件夹已从 {} 移回 {}（{}）",
             record.target_path,
             record.original_path,
-            crate::app_manager::migration::format_bytes(restore_result.restored_size)
+            crate::migration::format_bytes(restore_result.restored_size)
         );
         if let Some(warning) = restore_result.cleanup_warning {
             message.push_str(&format!("\n\n{}", warning));

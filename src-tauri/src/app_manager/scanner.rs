@@ -1247,6 +1247,11 @@ fn is_skippable_dir(name: &str) -> bool {
         "updater", "updates", "installation", "installers",
     ];
     let lower = name.to_lowercase();
+    // Viap 自身的临时/备份目录（如 .viap_migration_backup_*、.viap_link_probe_*），
+    // 是迁移过程的产物而非应用，即使残留也不能被识别为新应用
+    if lower.starts_with(".viap") {
+        return true;
+    }
     if TRANSIENT_DIRS.iter().any(|d| &lower == d) {
         return true;
     }

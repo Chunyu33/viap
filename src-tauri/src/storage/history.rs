@@ -450,6 +450,112 @@ pub fn clean_ghost_links() -> Result<CleanupResult, String> {
     Ok(CleanupResult { cleaned_count, cleaned_size, errors })
 }
 
+/// 重新迁移因应用更新而失效的迁移记录
+///
+/// 场景：应用在线更新时递归删除了 Junction 目标内容并在原位置重建了真实目录
+/// （新版本），迁移记录因此检测为链接失效。此时原路径目录是完整的新版本数据，
+/// 重新迁移到目标路径即可重建链接，数据不丢失。
+///
+/// 目标目录非空时需用户显式确认（force_overwrite=true），避免误删目标里的数据。
+#[tauri::command]
+pub async fn remigrate_ghost_link(
+    history_id: String,
+    force_overwrite: Option<bool>,
+    state: tauri::State<'_, MigrationState>,
+    app_handle: tauri::AppHandle,
+) -> Result<MigrationResult, String> {
+    use std::sync::atomic::Ordering;
+
+    let force = force_overwrite.unwrap_or(false);
+
+    let record = load_history()
+        .records
+        .iter()
+        .find(|r| r.id == history_id && r.status == "active")
+        .ok_or_else(|| format!("迁移记录不存在或已失效: {}", history_id))?
+        .clone();
+
+    let original_path = Path::new(&record.original_path);
+    let target_path = Path::new(&record.target_path);
+
+    // 校验：原路径必须是真实目录（应用更新后的新版本），不能是 Junction
+    if !original_path.is_dir() {
+        return Err(format!("原路径不存在，无法重新迁移：{}", record.original_path));
+    }
+    if utils::is_junction(original_path) {
+        return Err("原路径仍是有效的目录链接，无需重新迁移。".to_string());
+    }
+
+    // 目标目录非空且未确认 → 要求确认，避免误删目标里可能的数据
+    let target_non_empty = target_path.exists()
+        && std::fs::read_dir(target_path)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false);
+    if target_non_empty && !force {
+        return Ok(MigrationResult {
+            success: false,
+            message: format!("TARGET_NOT_EMPTY_CONFIRM:{}", record.target_path),
+            new_path: None,
+        });
+    }
+
+    let target_parent = target_path
+        .parent()
+        .ok_or_else(|| format!("目标路径缺少父目录: {}", record.target_path))?;
+    if !target_parent.exists() {
+        return Err(format!("目标盘目录不存在: {}", target_parent.display()));
+    }
+
+    // 先清掉旧兜底元数据：migrate_app 成功后内部会按 original_path 重新写入，
+    // 若在 migrate_app 之后再清理反而会误删刚写入的新条目
+    if record.record_type == MigrationRecordType::App {
+        crate::storage::migrated_app_metadata::remove_migrated_app(&record.original_path);
+    }
+
+    state.cancel_flag.store(false, Ordering::SeqCst);
+    let cancel_flag = state.cancel_flag.clone();
+    let source = record.original_path.clone();
+    let target_parent_str = target_parent.to_string_lossy().to_string();
+    let app_name = record.app_name.clone();
+    let record_type = record.record_type;
+
+    // 复用迁移引擎：force_overwrite 覆盖目标残留（空目录或用户已确认的目录）；
+    // user_confirmed_warning=true 因为同一路径迁移时已确认过危险等级
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::migration::migrate_app(
+            app_name,
+            source,
+            target_parent_str,
+            &cancel_flag,
+            &app_handle,
+            record_type,
+            true,
+            true,
+        )
+    })
+    .await
+    .map_err(|e| format!("重新迁移线程异常: {}", e))??;
+
+    if result.success {
+        // migrate_app 已新建一条迁移记录并写盘；必须重新加载最新状态再删除
+        // 旧的失效记录。不能复用 migrate_app 之前加载的快照，否则 save_history
+        // 会用旧快照覆盖磁盘，把 migrate_app 刚写入的新记录冲掉。
+        let mut storage = load_history();
+        if let Some(idx) = storage.records.iter().position(|r| r.id == history_id) {
+            storage.records.remove(idx);
+        }
+        save_history(&storage)?;
+
+        // 与 lib.rs 的 migrate_app 命令一致：失效应用列表缓存，
+        // 让应用管理模块刷新出「已迁移」状态
+        if let Some(ref new_path) = result.new_path {
+            crate::app_manager::cache::on_app_migrated(&record.original_path, new_path);
+        }
+    }
+
+    Ok(result)
+}
+
 // ============================================================================
 // 统计信息
 // ============================================================================
@@ -659,7 +765,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             });
         }
 
-        crate::app_manager::migration::emit_progress(
+        crate::migration::emit_progress(
             &app_handle,
             &record.original_path,
             0.0,
@@ -707,7 +813,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             }
         }
 
-        let restore_result = crate::app_manager::migration::restore_directory_with_progress(
+        let restore_result = crate::migration::restore_directory_with_progress(
             original_path,
             target_path,
             &record.original_path,
@@ -726,7 +832,7 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             record.app_name,
             record.target_path,
             record.original_path,
-            crate::app_manager::migration::format_bytes(restore_result.restored_size)
+            crate::migration::format_bytes(restore_result.restored_size)
         );
         if let Some(warning) = restore_result.cleanup_warning {
             message.push_str(&format!("\n\n{}", warning));

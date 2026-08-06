@@ -8,7 +8,11 @@
 // - folder_manager/   文件夹管理（发现、迁移、恢复大文件夹）
 // - app_manager/      应用管理（扫描、迁移、卸载、检测）
 
+#[macro_use]
+mod log_macros;
+
 mod app_manager;
+mod migration;
 mod models;
 mod utils;
 mod system;
@@ -165,7 +169,7 @@ async fn migrate_app(
     let confirmed = user_confirmed_warning.unwrap_or(false);
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        app_manager::migration::migrate_app(
+        migration::migrate_app(
             app_name, source, target_parent, &cancel_flag, &app_handle,
             MigrationRecordType::App, force, confirmed,
         )
@@ -334,6 +338,7 @@ pub fn run() {
             storage::history::get_migrated_paths,
             storage::history::restore_app,
             storage::history::cleanup_broken_record,
+            storage::history::remigrate_ghost_link,
             storage::history::check_link_status,
             storage::history::clean_ghost_links,
             storage::history::preview_ghost_links,

@@ -119,7 +119,7 @@ pub fn migrate_special_folder(
     #[cfg(windows)]
     {
         ensure_app_not_running(&app_name)?;
-        crate::app_manager::migration::migrate_app(app_name, source_path, target_dir, cancel_flag, app_handle, crate::models::MigrationRecordType::LargeFolder, force_overwrite, user_confirmed_warning)
+        crate::migration::migrate_app(app_name, source_path, target_dir, cancel_flag, app_handle, crate::models::MigrationRecordType::LargeFolder, force_overwrite, user_confirmed_warning)
     }
 
     #[cfg(not(windows))]

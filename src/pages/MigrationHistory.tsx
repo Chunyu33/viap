@@ -4,6 +4,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { confirm } from '@tauri-apps/plugin-dialog';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
@@ -16,8 +17,8 @@ import EmptyState from '../components/EmptyState';
 import { useViapStore } from '../store';
 
 // no_data: 原路径已消失且目标为空/不存在，通常表示应用已被外部卸载。
-// broken_fixable: Junction 损坏但 target 仍存在（通常是用户手动绕过 Viap 操作导致）
-// broken_lost: target 已不存在，数据已丢失，只能清理
+// broken_fixable: 链接失效但可修复——原路径存在真实目录（应用更新重建）或目标仍有数据，可重新迁移/恢复
+// broken_lost: target 已不存在且原路径已消失，数据已丢失，只能清理
 type LinkStatus = 'checking' | 'healthy' | 'broken_fixable' | 'broken_lost' | 'no_data' | 'unknown';
 
 function formatSize(bytes: number): string {
@@ -100,7 +101,7 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup,
+  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
@@ -108,6 +109,7 @@ function HistoryRow({
   restoreProgress?: number;
   linkStatus: LinkStatus;
   onCleanup?: (id: string) => void;
+  onRemigrate?: (id: string) => void;
 }) {
   const isLargeFolder = record.record_type === 'LargeFolder';
   const [expanded, setExpanded] = useState(false);
@@ -162,10 +164,10 @@ function HistoryRow({
         </div>
 
         {/* status */}
-        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '用户手动删除或改动，建议清理' : linkStatus === 'broken_lost' ? '数据已丢失，只能清理' : linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : ''}>
+        <div className="flex-shrink-0 w-5 flex justify-center" title={linkStatus === 'healthy' ? '正常' : linkStatus === 'broken_fixable' ? '链接失效，可重新迁移修复' : linkStatus === 'broken_lost' ? '数据已丢失，只能清理' : linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : ''}>
           {linkStatus === 'checking' && <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-tertiary)' }} />}
           {linkStatus === 'healthy' && <CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--color-success)' }} />}
-          {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost' || linkStatus === 'no_data') && <span title={linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : '用户手动绕过 Viap 操作导致，建议清理'}><AlertTriangle className="w-3.5 h-3.5" style={{ color: linkStatus === 'broken_lost' || linkStatus === 'no_data' ? 'var(--color-danger)' : 'var(--color-warning)' }} /></span>}
+          {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost' || linkStatus === 'no_data') && <span title={linkStatus === 'no_data' ? '应用已卸载，没有可恢复的数据' : '链接失效，可重新迁移或清理'}><AlertTriangle className="w-3.5 h-3.5" style={{ color: linkStatus === 'broken_lost' || linkStatus === 'no_data' ? 'var(--color-danger)' : 'var(--color-warning)' }} /></span>}
         </div>
 
         {/* size */}
@@ -173,8 +175,39 @@ function HistoryRow({
           {formatSize(record.size)}
         </span>
 
-        {/* action: 损坏状态 → 清理, 正常 → 恢复 */}
-        {(linkStatus === 'broken_fixable' || linkStatus === 'broken_lost' || linkStatus === 'no_data') ? (
+        {/* action: 可修复 → 重新迁移 + 清理, 数据丢失 → 清理, 正常 → 恢复 */}
+        {linkStatus === 'broken_fixable' ? (
+          <>
+            <button
+              onClick={e => { e.stopPropagation(); onRemigrate?.(record.id); }}
+              disabled={isRestoring}
+              className="btn btn-sm h-6 text-[11px] flex-shrink-0"
+              style={isRestoring ? {
+                // 重新迁移进度直接绘制在按钮底色中，保持历史列表列宽稳定。
+                background: `linear-gradient(to right, var(--color-primary-light) 0%, var(--color-primary-light) ${Math.round(restoreProgress ?? 0)}%, transparent ${Math.round(restoreProgress ?? 0)}%)`,
+                borderColor: 'var(--color-primary)',
+                color: 'var(--color-primary)',
+              } : {
+                color: 'var(--color-primary)',
+                borderColor: 'var(--color-primary)',
+              }}
+              title="应用更新或手动改动导致链接失效，将原路径当前内容重新迁移到目标位置并重建链接"
+            >
+              {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              {isRestoring ? `${Math.round(restoreProgress ?? 0)}%` : '重新迁移'}
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onCleanup?.(record.id); }}
+              disabled={isRestoring}
+              className="btn btn-sm h-6 text-[11px] flex-shrink-0"
+              style={{ color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+              title="清理残留记录（不删除原路径数据）"
+            >
+              <Trash2 className="w-3 h-3" />
+              清理
+            </button>
+          </>
+        ) : (linkStatus === 'broken_lost' || linkStatus === 'no_data') ? (
           <button
             onClick={e => { e.stopPropagation(); onCleanup?.(record.id); }}
             disabled={isRestoring}
@@ -250,7 +283,7 @@ function HistoryRow({
                 : 'var(--text-secondary)'
             }}>
               {linkStatus === 'healthy' ? '正常'
-                : linkStatus === 'broken_fixable' ? '损坏（用户手动删除或改动，建议清理）'
+                : linkStatus === 'broken_fixable' ? '链接失效（应用更新或手动改动），可重新迁移修复'
                 : linkStatus === 'broken_lost' ? '严重损坏（数据已丢失，只能清理）'
                 : linkStatus === 'checking' ? '检查中'
                 : '未知'}
@@ -340,12 +373,15 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           let status: LinkStatus;
           if (result.healthy) {
             status = 'healthy';
-          } else if (!result.original_exists && (!result.target_exists || result.target_empty)) {
-            status = 'no_data';
-          } else if (result.target_exists && !result.target_empty) {
-            status = 'broken_fixable'; // target 存在，junction 损坏，可修复
+          } else if (!result.target_exists) {
+            // 目标不存在：原路径还在 → 数据丢失；原路径也没了 → 应用已卸载
+            status = result.original_exists ? 'broken_lost' : 'no_data';
+          } else if (result.target_empty && !result.original_exists) {
+            status = 'no_data'; // 目标空且原路径消失 → 无可恢复数据
           } else {
-            status = 'broken_lost';    // target 不存在，数据丢失
+            // 目标存在（空或非空）且原路径有内容 → 可修复：
+            // 应用更新重建了原路径目录（新版本）或目标仍有数据
+            status = 'broken_fixable';
           }
           setCachedStatus(record.id, status);
           setLinkStatuses(prev => ({ ...prev, [record.id]: status }));
@@ -375,6 +411,56 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
     } catch (error) {
       showToast(`清理失败: ${error}`, 'error');
     } finally {
+      setRestoringId(null);
+    }
+  }
+
+  /**
+   * 重新迁移因应用更新而失效的记录：把原路径当前内容（新版本）重新迁移到
+   * 目标位置并重建链接。目标目录非空时先请求后端确认标记，弹窗确认后重试。
+   */
+  async function handleRemigrate(historyId: string) {
+    const record = records.find(item => item.id === historyId);
+    let unlisten: UnlistenFn | null = null;
+    try {
+      setRestoringId(historyId);
+      setRestoreProgressMap(prev => ({ ...prev, [historyId]: 0 }));
+      if (record) {
+        try {
+          // 重新迁移复用 migration-progress 事件，按原路径 task_id 匹配
+          unlisten = await listen<MigrationProgressEvent>('migration-progress', (event) => {
+            const data = event.payload;
+            if (data.task_id.toLowerCase() === record.original_path.toLowerCase()) {
+              setRestoreProgressMap(prev => ({ ...prev, [historyId]: data.percent }));
+            }
+          });
+        } catch { /* 监听失败不阻断重迁移 */ }
+      }
+      let result = await invoke<MigrationResult>('remigrate_ghost_link', { historyId });
+
+      // 目标目录非空：弹窗确认后带 forceOverwrite 重试（覆盖目标残留）
+      if (!result.success && result.message.startsWith('TARGET_NOT_EMPTY_CONFIRM:')) {
+        const targetPath = result.message.replace('TARGET_NOT_EMPTY_CONFIRM:', '');
+        const confirmed = await confirm(
+          `目标目录 ${targetPath} 不为空，重新迁移将覆盖其中的内容。\n\n` +
+          '原路径当前的内容（应用更新后的新版本）会完整迁移过去，目标中现有文件将被删除。是否继续？',
+          { title: '确认覆盖目标目录', kind: 'warning' },
+        );
+        if (!confirmed) return;
+        result = await invoke<MigrationResult>('remigrate_ghost_link', { historyId, forceOverwrite: true });
+      }
+
+      if (result.success) {
+        showToast(result.message, 'success');
+        setCachedStatus(historyId, 'unknown' as LinkStatus);
+        await loadHistory();
+      } else {
+        showToast(result.message || '重新迁移失败', 'error');
+      }
+    } catch (error) {
+      showToast(`重新迁移失败: ${error}`, 'error');
+    } finally {
+      if (unlisten) unlisten();
       setRestoringId(null);
     }
   }
@@ -581,7 +667,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                     isRestoring={restoringId === record.id}
                     restoreProgress={restoreProgressMap[record.id]}
                     linkStatus={linkStatuses[record.id] || 'unknown'}
-                    onCleanup={handleCleanupBroken} />
+                    onCleanup={handleCleanupBroken}
+                    onRemigrate={handleRemigrate} />
                 ))}
 
                 {/* pagination */}
