@@ -467,9 +467,8 @@ pub async fn remigrate_ghost_link(
     use std::sync::atomic::Ordering;
 
     let force = force_overwrite.unwrap_or(false);
-    let mut storage = load_history();
 
-    let record = storage
+    let record = load_history()
         .records
         .iter()
         .find(|r| r.id == history_id && r.status == "active")
@@ -538,11 +537,20 @@ pub async fn remigrate_ghost_link(
     .map_err(|e| format!("重新迁移线程异常: {}", e))??;
 
     if result.success {
-        // migrate_app 已新建一条迁移记录，删除旧的失效记录避免重复
+        // migrate_app 已新建一条迁移记录并写盘；必须重新加载最新状态再删除
+        // 旧的失效记录。不能复用 migrate_app 之前加载的快照，否则 save_history
+        // 会用旧快照覆盖磁盘，把 migrate_app 刚写入的新记录冲掉。
+        let mut storage = load_history();
         if let Some(idx) = storage.records.iter().position(|r| r.id == history_id) {
             storage.records.remove(idx);
         }
         save_history(&storage)?;
+
+        // 与 lib.rs 的 migrate_app 命令一致：失效应用列表缓存，
+        // 让应用管理模块刷新出「已迁移」状态
+        if let Some(ref new_path) = result.new_path {
+            crate::app_manager::cache::on_app_migrated(&record.original_path, new_path);
+        }
     }
 
     Ok(result)
