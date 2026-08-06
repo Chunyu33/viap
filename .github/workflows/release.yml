@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v1.1.10'
+        description: 'Release tag, for example v1.1.11'
         required: false
-        default: 'v1.1.10'
+        default: 'v1.1.11'
 
 permissions:
   contents: write
@@ -64,16 +64,12 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseBody: |
-            ## v1.1.10 更新内容
+            ## v1.1.11 更新内容
 
-            ### 卸载体验与性能
+            ### 迁移引擎优化
 
-            - 修复卸载期间其他应用操作仍可点击的问题，并为当前卸载行显示固定位置的 loading 图标
-            - 残留扫描改为后台执行，并通过目录剪枝减少重复文件系统访问
-
-            ### 发布资产
-
-            - 提供常规安装版、离线 WebView2 安装版和便携版 ZIP
+            - 迁移引擎改用 Windows 原生 CopyFileExW：保留文件时间戳与 NTFS 备用数据流，小文件密集目录的复制速度显著提升。
+            - 迁移并发调优：大文件顺序单流复制保证 SSD 顺序吞吐峰值，小文件 8 线程并行分摊元数据开销。
 
             ### 完整 Changelog
             详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
