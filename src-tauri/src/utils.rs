@@ -149,3 +149,77 @@ pub fn custom_folders_path(data_dir: &Path) -> PathBuf {
 pub fn history_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join("migration_history.json")
 }
+
+// ============================================================================
+// 长路径支持
+// ============================================================================
+
+/// 把路径转换为 Win32 扩展长度（`\\?\`）宽字符形式，供原生 API 调用使用
+///
+/// # 为什么需要
+///
+/// Viap 的可执行文件没有声明 `longPathAware`，而注册表的长路径策略只对声明过的
+/// 进程生效，因此 `CopyFileExW` / `MoveFileExW` 这类 Win32 API 在路径超过 260 字符时
+/// 会返回 `ERROR_PATH_NOT_FOUND(3)`。Rust 标准库内部会自动加前缀，原生调用不会——
+/// 这就是 Yarn / npm 缓存（目录名很长）迁移报「错误码 3」的根因。
+///
+/// # 边界
+///
+/// 扩展长度形式不做路径归一化：`.` / `..` 不会被解析，相对路径也无法使用，
+/// 因此只对「绝对路径且不含这两个分量」的路径加前缀，其余情况退回普通形式，
+/// 与修复前的行为保持一致。
+pub fn to_extended_length_wide(path: &Path) -> Vec<u16> {
+    let text = path.to_string_lossy().replace('/', "\\");
+    extend_win32_path(&text)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// 为绝对路径加 `\\?\` 前缀；UNC 路径需要 `\\?\UNC\` 形式
+fn extend_win32_path(text: &str) -> String {
+    if !is_extendable_absolute_path(text) {
+        return text.to_string();
+    }
+    if text.starts_with(r"\\?\") {
+        return text.to_string();
+    }
+    if let Some(unc_rest) = text.strip_prefix(r"\\") {
+        return format!(r"\\?\UNC\{}", unc_rest);
+    }
+    format!(r"\\?\{}", text)
+}
+
+/// 判断路径是否可以安全地套用扩展长度前缀
+fn is_extendable_absolute_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let has_drive_prefix = bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\';
+    let is_unc_prefix = text.starts_with(r"\\");
+    if !has_drive_prefix && !is_unc_prefix {
+        return false;
+    }
+    !text.split('\\').any(|part| part == "." || part == "..")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_length_path_covers_drive_unc_and_fallbacks() {
+        let to_text = |path: &str| {
+            let wide = to_extended_length_wide(Path::new(path));
+            String::from_utf16_lossy(&wide[..wide.len() - 1])
+        };
+
+        // 盘符绝对路径：统一加 \\?\ 前缀，并归一化正斜杠
+        assert_eq!(to_text(r"C:\a\b.bin"), r"\\?\C:\a\b.bin");
+        assert_eq!(to_text("C:/a/b.bin"), r"\\?\C:\a\b.bin");
+        // 已有前缀不重复添加；UNC 路径使用 \\?\UNC\ 形式
+        assert_eq!(to_text(r"\\?\C:\a"), r"\\?\C:\a");
+        assert_eq!(to_text(r"\\server\share\a"), r"\\?\UNC\server\share\a");
+        // 相对路径和含 . / .. 的路径必须保持原样，否则会变成非法路径
+        assert_eq!(to_text(r"a\b"), r"a\b");
+        assert_eq!(to_text(r"C:\a\..\b"), r"C:\a\..\b");
+    }
+}

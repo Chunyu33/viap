@@ -76,13 +76,8 @@ pub(crate) fn remove_directory_robust(path: &Path) -> Result<(), std::io::Error>
 /// 失败返回 false，调用方降级为用户手动删除提示。
 #[cfg(windows)]
 pub(crate) fn schedule_remove_on_reboot(path: &Path) -> bool {
-    use std::os::windows::ffi::OsStrExt;
-
-    let path_wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    // 与复制引擎一致：原生 API 需要扩展长度路径，否则深层备份目录超过 260 字符时静默失败
+    let path_wide = crate::utils::to_extended_length_wide(path);
     unsafe {
         // 目标为 NULL + MOVEFILE_DELAY_UNTIL_REBOOT：重启后删除整个目录树
         windows::Win32::Storage::FileSystem::MoveFileExW(

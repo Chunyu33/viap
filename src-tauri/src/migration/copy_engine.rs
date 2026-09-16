@@ -15,8 +15,6 @@ use walkdir::WalkDir;
 use crate::migration::{emit_progress, format_bytes};
 
 #[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::Foundation::{GetLastError, HANDLE, WIN32_ERROR};
@@ -214,6 +212,15 @@ fn map_copy_error(src: &Path, err: WIN32_ERROR) -> String {
             "复制过程中文件被程序占用: {}\n请关闭相关程序后重试。",
             src.display()
         )
+    } else if code == 3 || code == 206 {
+        // 3 = ERROR_PATH_NOT_FOUND，206 = ERROR_FILENAME_EXCED_RANGE：
+        // 修复长路径后仍出现时多为目标盘目录被外部删除或路径本身非法
+        format!(
+            "复制文件失败 {}（错误码 {}：路径不存在或路径过长）\n\
+             请确认源文件与目标目录仍然存在；若目标目录被移动或删除，请重新选择迁移目录后重试。",
+            src.display(),
+            code
+        )
     } else {
         // 只输出错误码即可定位问题（WIN32_ERROR 未实现 Display，错误名由上层提示覆盖）
         format!("复制文件失败 {}（错误码 {}）", src.display(), code)
@@ -253,16 +260,10 @@ fn copy_file_with_cancel(
         Err(e) => return Err(format!("读取文件元数据失败 {}: {}", src.display(), e)),
     };
 
-    let src_wide: Vec<u16> = src
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let dest_wide: Vec<u16> = dest
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    // 必须使用扩展长度路径：程序未声明 longPathAware，原生 CopyFileExW 在
+    // 超过 260 字符时返回 ERROR_PATH_NOT_FOUND(3)（Yarn / npm 缓存极易触发）
+    let src_wide = crate::utils::to_extended_length_wide(src);
+    let dest_wide = crate::utils::to_extended_length_wide(dest);
 
     // 大文件尝试无缓冲直写（绕过系统缓存）；失败自动降级为常规复制
     let mut use_no_buffering = file_size >= NO_BUFFERING_THRESHOLD;
@@ -492,4 +493,69 @@ pub(crate) fn copy_dir_with_progress(
     // 返回 WalkDir 阶段统计的 total_size 而非 AtomicU64 累加的 copied_size，
     // 确保完整性校验基准不受并行取消影响
     Ok((total_size, skipped_size))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// 构造一条超过 260 字符的深层目录，返回（普通路径, 扩展长度路径）
+    fn create_deep_directory(root: &Path, segments: usize) -> (PathBuf, String) {
+        let leaf = "x".repeat(30);
+        let mut plain = root.to_path_buf();
+        for index in 0..segments {
+            plain.push(format!("segment-{}-{}", index, leaf));
+        }
+        let extended = crate::utils::to_extended_length_wide(&plain);
+        let extended_text = String::from_utf16_lossy(&extended[..extended.len() - 1]);
+        std::fs::create_dir_all(Path::new(&extended_text)).expect("创建深层目录失败");
+        (plain, extended_text)
+    }
+
+    /// 长路径回归测试：原生 CopyFileExW 必须带 `\\?\` 前缀，
+    /// 否则 Yarn / npm 缓存这类深层目录会以 ERROR_PATH_NOT_FOUND(3) 失败。
+    #[test]
+    fn copy_file_ex_w_supports_paths_longer_than_max_path() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("viap-longpath-{suffix}"));
+        std::fs::create_dir_all(&root).expect("创建测试根目录失败");
+
+        let (plain_dir, extended_dir) = create_deep_directory(&root, 6);
+        let source = plain_dir.join("payload.bin");
+        assert!(
+            source.to_string_lossy().len() > 260,
+            "测试路径需要超过 MAX_PATH，实际 {}",
+            source.to_string_lossy().len()
+        );
+        std::fs::write(
+            Path::new(&format!(r"{}\payload.bin", extended_dir)),
+            b"long-path-payload",
+        )
+        .expect("写入测试文件失败");
+
+        let destination = root.join("copied.bin");
+        let source_wide = crate::utils::to_extended_length_wide(&source);
+        let destination_wide = crate::utils::to_extended_length_wide(&destination);
+
+        let copied = unsafe {
+            CopyFileExW(
+                PCWSTR(source_wide.as_ptr()),
+                PCWSTR(destination_wide.as_ptr()),
+                None,
+                None,
+                None,
+                COPY_FILE_ALLOW_DECRYPTED_DESTINATION,
+            )
+        };
+        assert!(copied.is_ok(), "扩展长度路径复制应当成功");
+        assert_eq!(
+            std::fs::metadata(&destination).map(|meta| meta.len()).unwrap_or(0),
+            17
+        );
+
+        let _ = std::fs::remove_dir_all(Path::new(&format!(r"\\?\{}", root.display())));
+    }
 }
