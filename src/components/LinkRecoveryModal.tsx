@@ -17,6 +17,7 @@ import type {
   MigrationRecordType, MirrorBackupInfo, MirrorImportResult, RecoveredLinkEntry,
 } from '../types';
 import Checkbox from './Checkbox';
+import FilterSelect from './FilterSelect';
 import { logger } from '../utils/logger';
 
 interface LinkRecoveryModalProps {
@@ -390,17 +391,14 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
             <div className="flex items-center gap-3 mt-2 flex-wrap">
               <label className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
                 扫描深度
-                <select
-                  value={maxDepth}
-                  onChange={(event) => setMaxDepth(Number(event.target.value))}
+                <FilterSelect
+                  size="sm"
+                  className="w-[86px]"
+                  value={String(maxDepth)}
+                  onChange={(value) => setMaxDepth(Number(value))}
                   disabled={scanning}
-                  className="h-6 rounded px-1 text-[11px]"
-                  style={{ background: 'var(--bg-row)', border: '1px solid var(--border-color)', color: 'var(--text-primary)' }}
-                >
-                  {SCAN_DEPTH_OPTIONS.map((depth) => (
-                    <option key={depth} value={depth}>{depth} 层</option>
-                  ))}
-                </select>
+                  options={SCAN_DEPTH_OPTIONS.map((depth) => ({ value: String(depth), label: `${depth} 层` }))}
+                />
               </label>
               <label className="flex items-center gap-1.5 text-[11px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
                 <Checkbox
@@ -540,16 +538,18 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                             <span className="text-[12px] font-medium" style={{ color: 'var(--text-primary)' }}>
                               {entry.app_name}
                             </span>
-                            <select
+                            {/* 下拉菜单通过 portal 渲染在弹窗之外，不会触发所在行的选择 */}
+                            <FilterSelect
+                              size="sm"
+                              className="w-[84px]"
                               value={resolveRecordType(entry, typeOverrides)}
-                              onChange={(event) => handleTypeChange(entry.original_path, event.target.value as MigrationRecordType)}
+                              onChange={(value) => handleTypeChange(entry.original_path, value as MigrationRecordType)}
                               disabled={disabled}
-                              className="h-6 rounded px-1 text-[11px]"
-                              style={{ background: 'var(--bg-modal)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}
-                            >
-                              <option value="App">应用</option>
-                              <option value="LargeFolder">文件夹</option>
-                            </select>
+                              options={[
+                                { value: 'App' as MigrationRecordType, label: '应用' },
+                                { value: 'LargeFolder' as MigrationRecordType, label: '文件夹' },
+                              ]}
+                            />
                             <span className="badge" style={{ fontSize: '10px', color: badge.color, background: badge.background }}>
                               {badge.text}
                             </span>

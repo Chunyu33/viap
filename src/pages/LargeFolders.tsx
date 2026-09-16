@@ -966,10 +966,11 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
   const customFolders = folders.filter(f => f.folder_type === 'Custom');
 
   return (
-    <div className="h-full overflow-hidden flex flex-col" style={{ padding: '12px 16px' }}>
+    <div className="h-full overflow-hidden flex flex-col"
+      style={{ padding: '12px 16px', width: '100%', maxWidth: '1024px', margin: '0 auto' }}>
       <div className="h-full flex flex-col w-full gap-3">
         {/* top stats + actions */}
-        <div className="flex items-center justify-between flex-shrink-0"
+        <div className="flex items-center justify-between flex-wrap gap-2 flex-shrink-0"
           style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
           <div className="flex items-center gap-4 text-[12px]">
             <span style={{ color: 'var(--text-secondary)' }}>
