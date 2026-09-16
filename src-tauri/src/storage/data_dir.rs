@@ -216,6 +216,18 @@ fn is_managed_entry(file_name: &str, is_dir: bool) -> bool {
         .any(|stem| lower == format!("{}.json", stem) || lower.starts_with(&format!("{}.json.", stem)))
 }
 
+/// 判断目录是否确实是本程序的缓存目录
+///
+/// 数据目录可能同时被用户选作迁移目标根目录，里面可能存在同名 cache 目录。
+/// 只有包含本程序的缓存文件时才按受管目录处理，避免误搬或误删应用数据。
+fn looks_like_app_cache(path: &Path) -> bool {
+    const CACHE_FILES: &[&str] = &["app_snapshot.json", "size_cache.json"];
+    const CACHE_DIRS: &[&str] = &["icons"];
+
+    CACHE_FILES.iter().any(|name| path.join(name).is_file())
+        || CACHE_DIRS.iter().any(|name| path.join(name).is_dir())
+}
+
 /// 复制 Viap 的受管数据到新数据目录，返回复制的文件数
 fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result<u32, String> {
     if paths_overlap(old_dir, new_dir) {
@@ -229,6 +241,7 @@ fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result
         return Ok(0);
     }
 
+    let cache_is_managed = looks_like_app_cache(&old_dir.join(MANAGED_DIRECTORY));
     let mut copied_files = 0u32;
     for entry in walkdir::WalkDir::new(old_dir).follow_links(false) {
         let entry = entry.map_err(|error| format!("读取数据目录失败: {}", error))?;
@@ -244,10 +257,14 @@ fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result
         let is_top_level = components.next().is_none();
 
         // 只处理受管条目的顶层项：目录（cache）需要继续深入，其余顶层内容全部跳过
-        if is_top_level && !is_managed_entry(&first_name, entry.file_type().is_dir()) {
-            continue;
-        }
-        if !is_top_level && !first_name.eq_ignore_ascii_case(MANAGED_DIRECTORY) {
+        if is_top_level {
+            if !is_managed_entry(&first_name, entry.file_type().is_dir()) {
+                continue;
+            }
+            if entry.file_type().is_dir() && !cache_is_managed {
+                continue;
+            }
+        } else if !first_name.eq_ignore_ascii_case(MANAGED_DIRECTORY) || !cache_is_managed {
             continue;
         }
 
@@ -296,6 +313,10 @@ fn remove_managed_data_entries(old_dir: &Path) -> Result<u32, String> {
             .map_err(|error| format!("读取条目类型失败 {}: {}", file_name, error))?;
 
         if !is_managed_entry(&file_name, file_type.is_dir()) {
+            continue;
+        }
+        // cache 目录只在确认是本程序缓存时才删除，避免误删同名的应用数据
+        if file_type.is_dir() && !looks_like_app_cache(&entry.path()) {
             continue;
         }
 
@@ -520,6 +541,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("viap-data-dir-cleanup-{suffix}"));
         std::fs::create_dir_all(root.join("cache/icons")).expect("创建缓存目录失败");
         std::fs::create_dir_all(root.join("Wand")).expect("创建应用数据目录失败");
+        // 与 Viap 缓存同名的应用目录必须保持原样
+        std::fs::create_dir_all(root.join("cache")).expect("创建同名缓存目录失败");
         std::fs::write(root.join("migration_history.json"), "history").expect("写入历史失败");
         std::fs::write(root.join("cache/icons/icon.png"), "icon").expect("写入缓存失败");
         std::fs::write(root.join("Wand/payload.bin"), "app-data").expect("写入应用数据失败");
@@ -530,6 +553,28 @@ mod tests {
         assert!(!root.join("migration_history.json").exists());
         assert!(!root.join("cache").exists());
         assert!(root.join("Wand/payload.bin").exists(), "应用数据必须保留");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unrelated_cache_directory_is_not_treated_as_managed() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("viap-data-dir-cache-{suffix}"));
+        let target = root.join("target");
+        // 应用自己的 cache 目录（没有本程序缓存文件）不能被视为受管目录
+        std::fs::create_dir_all(root.join("cache/thumbnails")).expect("创建应用缓存目录失败");
+        std::fs::write(root.join("cache/thumbnails/a.bin"), "app-cache").expect("写入应用缓存失败");
+
+        let copied = migrate_data_files(&root, &target, true).expect("复制测试失败");
+        assert_eq!(copied, 0);
+        assert!(!target.join("cache").exists());
+
+        let removed = remove_managed_data_entries(&root).expect("清理测试失败");
+        assert_eq!(removed, 0);
+        assert!(root.join("cache/thumbnails/a.bin").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }
