@@ -4,10 +4,10 @@
 
 ## v1.2.0
 
-- Lost migration records can be rebuilt: pick the original folder on the Migration Records page, review the detected migrated folders, and confirm to regenerate the records.
-- Rebuilt records fill in their size automatically, or on demand from the Migration Records page.
-- Migration history, custom folders, and related data are backed up automatically on every save, and can be restored from that backup in the same dialog.
-- Settings can now open the folder of the config file and of the UI settings file.
+- Lost migration records can be rebuilt: pick the original folder on the Migration Records page, confirm, and the records are regenerated. Recovering the same folder twice is detected and skipped, and rebuilt records fill in their size automatically.
+- Original and target paths in the migration records can be clicked to open their folder.
+- You control the migration-data backup: turn automatic backup off or back up on demand in Settings, and import the backup with one click if the data folder is deleted.
+- Changing the data folder now moves only the application's own data and cleans up the leftovers, and portable builds no longer leave a cache folder on the system drive.
 
 ## v1.1.11
 

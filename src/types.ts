@@ -303,9 +303,20 @@ export interface LinkRecoveryProgressEvent {
 /** 链接识别导入结果 */
 export interface LinkRecoveryImportResult {
   imported: number;
-  skipped: number;
+  /** 已存在同原路径的活跃记录而被跳过（重复恢复） */
+  duplicated: number;
+  /** 校验未通过被拒绝的条目数 */
+  rejected: number;
   custom_folders_added: number;
   failed: string[];
+}
+
+/** 数据目录切换结果（对应 Rust 后端的 DataDirSwitchResult） */
+export interface DataDirSwitchResult {
+  data_dir: string;
+  copied_files: number;
+  removed_entries: number;
+  warning: string | null;
 }
 
 /** 迁移记录大小补全事件（事件名：migration-record-size） */
@@ -317,6 +328,8 @@ export interface MigrationRecordSizeEvent {
 /** 镜像备份信息 */
 export interface MirrorBackupInfo {
   exists: boolean;
+  /** 自动备份开关是否开启 */
+  auto_backup_enabled: boolean;
   path: string;
   history_count: number;
   custom_folder_count: number;

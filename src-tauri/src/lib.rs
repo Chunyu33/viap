@@ -273,8 +273,43 @@ fn execute_cleanup(
 // Tauri 应用入口
 // ============================================================================
 
+/// 便携版把 WebView2 的用户数据目录也放到程序目录下
+///
+/// 数据目录与指针文件已经避开系统盘，但 WebView2 默认把浏览器缓存、localStorage
+/// 放在 %LOCALAPPDATA%\<标识>\EBWebView。不重定向的话便携版仍会在 C 盘留下目录。
+/// 必须在创建 WebView2 环境之前设置环境变量，因此放在 run() 的最前面。
+#[cfg(feature = "portable")]
+fn redirect_portable_webview_data_dir() {
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some() {
+        return;
+    }
+
+    let program_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let Some(program_dir) = program_dir else {
+        log_warn!("webview", "无法获取程序目录，WebView2 数据仍写入系统盘");
+        return;
+    };
+
+    let webview_dir = program_dir.join("webview");
+    match std::fs::create_dir_all(&webview_dir) {
+        Ok(()) => std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_dir),
+        // 程序目录不可写（如放在只读位置）时保持系统默认，只记录原因
+        Err(error) => log_warn!(
+            "webview",
+            "无法创建 WebView2 数据目录 {}: {}",
+            webview_dir.display(),
+            error
+        ),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "portable")]
+    redirect_portable_webview_data_dir();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
@@ -356,6 +391,7 @@ pub fn run() {
             storage::link_recovery::cancel_link_recovery,
             storage::mirror::get_mirror_backup_info,
             storage::mirror::import_mirror_backup,
+            storage::mirror::backup_now,
             // 存储层 — 操作日志
             storage::operation_log::get_operation_logs,
             // 应用管理

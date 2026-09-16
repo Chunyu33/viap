@@ -8,7 +8,7 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2, HardDrive,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2, HardDrive, FolderOpen,
 } from 'lucide-react';
 import { MigrationProgressEvent, MigrationRecord, MigrationRecordSizeEvent, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
@@ -102,7 +102,7 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate,
+  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate, onOpenPath,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
@@ -111,6 +111,8 @@ function HistoryRow({
   linkStatus: LinkStatus;
   onCleanup?: (id: string) => void;
   onRemigrate?: (id: string) => void;
+  /** 打开路径所在文件夹 */
+  onOpenPath: (path: string) => void;
 }) {
   const isLargeFolder = record.record_type === 'LargeFolder';
   const [expanded, setExpanded] = useState(false);
@@ -157,11 +159,27 @@ function HistoryRow({
           <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{formatDate(record.migrated_at)}</p>
         </div>
 
-        {/* path */}
+        {/* path — 两段路径都可点击打开所在文件夹 */}
         <div className="flex-1 min-w-0 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-          <span className="truncate" style={{ maxWidth: '40%' }} title={record.original_path}>{shortenPath(record.original_path)}</span>
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onOpenPath(record.original_path); }}
+            className="truncate cursor-pointer hover:underline"
+            style={{ maxWidth: '40%', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'inherit' }}
+            title={`打开所在文件夹：${record.original_path}`}
+          >
+            {shortenPath(record.original_path)}
+          </button>
           <ArrowRight className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--text-tertiary)' }} />
-          <span className="truncate" style={{ maxWidth: '40%', color: 'var(--color-success)' }} title={record.target_path}>{shortenPath(record.target_path)}</span>
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onOpenPath(record.target_path); }}
+            className="truncate cursor-pointer hover:underline"
+            style={{ maxWidth: '40%', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'var(--color-success)' }}
+            title={`打开所在文件夹：${record.target_path}`}
+          >
+            {shortenPath(record.target_path)}
+          </button>
         </div>
 
         {/* status */}
@@ -261,11 +279,29 @@ function HistoryRow({
         <div className="px-5 py-3 grid grid-cols-2 gap-x-8 gap-y-2 text-[11px]">
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>原始路径</span>
-            <p className="break-all mt-0.5" style={{ color: 'var(--text-primary)' }}>{record.original_path}</p>
+            <button
+              type="button"
+              onClick={() => onOpenPath(record.original_path)}
+              className="break-all mt-0.5 flex items-start gap-1 text-left cursor-pointer hover:underline"
+              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-primary)' }}
+              title="打开所在文件夹"
+            >
+              <FolderOpen className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
+              {record.original_path}
+            </button>
           </div>
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>目标路径</span>
-            <p className="break-all mt-0.5" style={{ color: 'var(--text-primary)' }}>{record.target_path}</p>
+            <button
+              type="button"
+              onClick={() => onOpenPath(record.target_path)}
+              className="break-all mt-0.5 flex items-start gap-1 text-left cursor-pointer hover:underline"
+              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-primary)' }}
+              title="打开所在文件夹"
+            >
+              <FolderOpen className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
+              {record.target_path}
+            </button>
           </div>
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>迁移时间</span>
@@ -558,6 +594,16 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** 打开路径所在文件夹：原始/目标路径都可能已不存在，失败时给出提示 */
+  async function handleOpenPath(path: string) {
+    const parent = path.replace(/[\\/][^\\/]+$/, '');
+    try {
+      await invoke('open_folder', { path: parent || path });
+    } catch (error) {
+      showToast(`无法打开该位置：${error}`, 'error');
+    }
+  }
+
   /** 手动触发体积补全：只处理体积为 0 的活跃记录 */
   async function handleFillSizes() {
     setSizeScanRunning(true);
@@ -744,7 +790,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                     restoreProgress={restoreProgressMap[record.id]}
                     linkStatus={linkStatuses[record.id] || 'unknown'}
                     onCleanup={handleCleanupBroken}
-                    onRemigrate={handleRemigrate} />
+                    onRemigrate={handleRemigrate}
+                    onOpenPath={handleOpenPath} />
                 ))}
 
                 {/* pagination */}

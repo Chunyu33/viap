@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  AlertTriangle, Check, FolderSearch, HardDriveDownload,
+  AlertTriangle, Check, CheckCircle2, FolderSearch, HardDriveDownload,
   Info, Link2, LoaderCircle, RefreshCw, X,
 } from 'lucide-react';
 import type {
@@ -240,7 +240,9 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
       setSelectedPaths(new Set());
       setFeedback({
         tone: 'info',
-        text: `已重建 ${result.imported} 条迁移记录，跳过 ${result.skipped} 条`
+        text: `已重建 ${result.imported} 条迁移记录`
+          + (result.duplicated > 0 ? `，${result.duplicated} 条已存在未重复写入` : '')
+          + (result.rejected > 0 ? `，${result.rejected} 条未通过校验` : '')
           + (result.custom_folders_added > 0 ? `，登记 ${result.custom_folders_added} 个自定义文件夹` : ''),
       });
       if (result.imported > 0 || result.custom_folders_added > 0) onImported();
@@ -283,6 +285,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
     () => entries.filter((entry) => !entry.already_recorded).length,
     [entries],
   );
+  const recordedCount = entries.length - selectableCount;
   const selectedCount = selectedPaths.size;
   const allSelectableSelected = selectableCount > 0 && selectedCount === selectableCount;
 
@@ -340,7 +343,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                 <div className="min-w-0">
                   <p className="text-[12px] font-medium flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
                     <HardDriveDownload className="w-3.5 h-3.5" />
-                    发现本地自动备份
+                    {mirrorInfo.auto_backup_enabled ? '发现本地自动备份' : '本地自动备份（已关闭）'}
                   </p>
                   <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-tertiary)' }} title={mirrorInfo.path}>
                     程序每次保存迁移数据时自动留的副本（不在数据目录内）· {mirrorInfo.history_count} 条迁移记录
@@ -467,6 +470,11 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
               <div className="flex items-center justify-between gap-2 mb-2">
                 <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
                   发现 <strong style={{ color: 'var(--text-primary)' }}>{entries.length}</strong> 个联接候选
+                  {recordedCount > 0 && (
+                    <span className="ml-2" style={{ color: 'var(--text-tertiary)' }}>
+                      其中 {recordedCount} 条已有记录
+                    </span>
+                  )}
                   <span className="ml-2" style={{ color: 'var(--text-tertiary)' }}>
                     扫描 {scanResult.scanned_dirs} 个目录 · 跳过 {scanResult.skipped_dirs} 个 · 耗时 {scanResult.elapsed_ms} ms
                   </span>
@@ -486,6 +494,16 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                 <div className="rounded px-3 py-2 text-[11px] mb-2 flex items-center gap-1.5" style={{ background: 'var(--color-warning-light)', color: 'var(--color-warning)' }}>
                   <AlertTriangle className="w-3 h-3" />
                   已达到扫描上限并提前结束，请缩小目录范围（例如只扫 C:\Users\你的用户名）后重试
+                </div>
+              )}
+
+              {entries.length > 0 && selectableCount === 0 && (
+                <div
+                  className="rounded px-3 py-2 text-[11px] mb-2 flex items-center gap-1.5"
+                  style={{ background: 'var(--color-success-light)', color: 'var(--color-success)' }}
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  该目录下的联接都已有迁移记录，无需重复恢复
                 </div>
               )}
 

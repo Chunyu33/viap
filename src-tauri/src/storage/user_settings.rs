@@ -39,6 +39,9 @@ pub struct UserSettings {
     pub font_size_px: u8,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// 自动备份迁移数据（历史、自定义文件夹、应用兜底数据）；关闭后只保留手动备份
+    #[serde(default = "default_true")]
+    pub auto_backup_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +64,7 @@ impl Default for UserSettings {
             show_scan_debug: false,
             font_size_px: default_font_size(),
             theme: default_theme(),
+            auto_backup_enabled: true,
         }
     }
 }
@@ -79,6 +83,21 @@ impl UserSettings {
 /// 界面设置文件路径（设置页「数据管理」也据此展示位置）
 pub(crate) fn settings_path() -> PathBuf {
     ensure_data_dir().join(SETTINGS_FILE_NAME)
+}
+
+/// 读取当前用户设置（文件缺失或损坏时回退默认值）
+///
+/// 供后端内部判断自动备份开关等行为，读失败不能中断调用方流程。
+pub(crate) fn load_current_settings() -> UserSettings {
+    let path = settings_path();
+    if !path.exists() {
+        return UserSettings::default();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<UserSettings>(&json).ok())
+        .map(UserSettings::normalized)
+        .unwrap_or_default()
 }
 
 /// 读取设置文件；文件不存在时返回默认值并交给前端导入旧 localStorage。

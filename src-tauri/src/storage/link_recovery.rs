@@ -140,7 +140,7 @@ pub fn import_recovered_links(
         match validate_import_entry(&entry) {
             Ok(()) => accepted.push(entry),
             Err(reason) => {
-                result.skipped += 1;
+                result.rejected += 1;
                 result.failed.push(format!("{}：{}", entry.original_path, reason));
             }
         }
@@ -150,9 +150,10 @@ pub fn import_recovered_links(
         return Ok(result);
     }
 
+    // 已存在同原路径活跃记录的条目会被跳过，保证重复恢复不会写入重复记录
     let (added, duplicated) = history::add_recovered_records(&accepted)?;
     result.imported = added;
-    result.skipped += duplicated;
+    result.duplicated = duplicated;
 
     // App 类型补写兜底元数据：扫描器遗漏时应用列表仍能显示为已迁移
     for entry in accepted.iter().filter(|entry| entry.record_type == MigrationRecordType::App) {

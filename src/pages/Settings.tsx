@@ -14,7 +14,7 @@ import {
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
   Video, Users, MessageSquare, Activity,
-  ShieldCheck, FileCog,
+  ShieldCheck, FileCog, DatabaseBackup,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -23,7 +23,7 @@ import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
-import type { ConfigFileEntry, DataDirConfig, GhostLinkPreview } from '../types';
+import type { ConfigFileEntry, DataDirConfig, DataDirSwitchResult, GhostLinkPreview, MirrorBackupInfo } from '../types';
 import {
   applyFontSize,
   MAX_FONT_SIZE_PX,
@@ -250,6 +250,8 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
   const [configFiles, setConfigFiles] = useState<ConfigFileEntry[]>([]);
+  const [backupInfo, setBackupInfo] = useState<MirrorBackupInfo | null>(null);
+  const [backupRunning, setBackupRunning] = useState(false);
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const [integrityChecking, setIntegrityChecking] = useState(false);
   const currentYear = new Date().getFullYear();
@@ -277,6 +279,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     invoke<ConfigFileEntry[]>('get_config_files')
       .then(setConfigFiles)
       .catch(() => setConfigFiles([]));
+    loadBackupInfo();
     getVersion().then(setAppVersion).catch(() => setAppVersion('1.0.0'));
   }, []);
 
@@ -298,6 +301,32 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   async function loadDataDir() {
     try { const info = await invoke<DataDirConfig>('get_data_dir_info'); setDataDir(info.data_dir); }
     catch { /* ignore */ }
+  }
+
+  async function loadBackupInfo() {
+    try { setBackupInfo(await invoke<MirrorBackupInfo>('get_mirror_backup_info')); }
+    catch { setBackupInfo(null); }
+  }
+
+  /** 手动备份当前迁移数据（不受自动备份开关影响） */
+  async function handleBackupNow() {
+    setBackupRunning(true);
+    try {
+      const info = await invoke<MirrorBackupInfo>('backup_now');
+      setBackupInfo(info);
+      showToast('迁移数据已备份', 'success');
+    } catch (error) {
+      showToast(`备份失败: ${error}`, 'error');
+    } finally {
+      setBackupRunning(false);
+    }
+  }
+
+  /** 切换自动备份开关：与其它界面设置一起落到 ui_settings.json */
+  function handleToggleAutoBackup() {
+    const enabled = !settings.autoBackupEnabled;
+    updateSetting('autoBackupEnabled', enabled);
+    showToast(enabled ? '已开启自动备份' : '已关闭自动备份，仅保留手动备份', 'info');
   }
 
   /** 打开配置文件所在目录：文件存在时在资源管理器中选中它，未生成时退回到父目录 */
@@ -335,9 +364,13 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     if (!confirmed) return;
     setDataDirLoading(true);
     try {
-      await invoke('set_data_dir', { newPath: selected });
-      setDataDir(selected);
-      showToast('数据目录已成功迁移', 'success');
+      const result = await invoke<DataDirSwitchResult>('set_data_dir', { newPath: selected });
+      setDataDir(result.data_dir);
+      const summary = `数据目录已切换（复制 ${result.copied_files} 个文件，清理旧目录 ${result.removed_entries} 项）`;
+      if (result.warning) showToast(`${summary}\n${result.warning}`, 'info', 8000);
+      else showToast(summary, 'success');
+      loadBackupInfo();
+      invoke<ConfigFileEntry[]>('get_config_files').then(setConfigFiles).catch(() => setConfigFiles([]));
     } catch (e) { showToast(`迁移失败: ${e}`, 'error'); }
     finally { setDataDirLoading(false); }
   }
@@ -665,7 +698,49 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         <section>
           <SectionHeader label="存储维护" />
           <div className="rounded border" style={{ borderColor: 'var(--border-color)', padding: '12px 14px' }}>
-            <div className="flex items-start gap-3">
+            {/* 自动备份：数据目录被误删时的兜底，用户可关闭或立即手动备份 */}
+            <div className="setting-item" style={{ padding: 0 }}>
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                  <DatabaseBackup className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="setting-label mb-1">自动备份</p>
+                  <p className="setting-desc" style={{ marginBottom: '12px' }}>
+                    {settings.autoBackupEnabled
+                      ? '每次改动迁移数据后自动备份一份到数据目录之外，误删数据目录时可一键导回。'
+                      : '已关闭：仅在手动点击「立即备份」时备份。'}
+                  </p>
+                  <div className="flex items-center gap-2 mb-2">
+                    <button onClick={handleBackupNow} disabled={backupRunning} className="btn h-7 text-[12px]">
+                      {backupRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DatabaseBackup className="w-3.5 h-3.5" />}
+                      {backupRunning ? '备份中...' : '立即备份'}
+                    </button>
+                    {backupInfo?.exists && (
+                      <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                        {backupInfo.history_count} 条记录 · 最近备份 {backupInfo.saved_at > 0 ? new Date(backupInfo.saved_at).toLocaleString('zh-CN') : '未知'}
+                      </span>
+                    )}
+                  </div>
+                  {backupInfo && (
+                    <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={backupInfo.path}>
+                      {backupInfo.path}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  onClick={handleToggleAutoBackup}
+                  className="btn h-7 text-[11px]"
+                  title={settings.autoBackupEnabled ? '关闭后不再自动备份' : '开启自动备份'}
+                >
+                  {settings.autoBackupEnabled ? '关闭自动备份' : '开启自动备份'}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-color)' }}>
               <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--color-danger-light)' }}>
                 <Trash2 className="w-4 h-4" style={{ color: 'var(--color-danger)' }} />
               </div>

@@ -87,24 +87,67 @@ fn read_mirror_json<T: DeserializeOwned>(file_name: &str) -> Option<T> {
     }
 }
 
+/// 自动备份开关（用户可在设置页关闭，关闭后只保留手动备份）
+fn auto_backup_enabled() -> bool {
+    crate::storage::user_settings::load_current_settings().auto_backup_enabled
+}
+
 /// 镜像迁移历史（save_history 成功后调用）
 pub fn mirror_history(storage: &HistoryStorage) {
+    if !auto_backup_enabled() {
+        return;
+    }
+    write_history_mirror(storage);
+}
+
+/// 镜像自定义文件夹列表（save_custom_folders 成功后调用）
+pub fn mirror_custom_folders(folders: &[CustomFolderEntry]) {
+    if !auto_backup_enabled() {
+        return;
+    }
+    write_custom_folders_mirror(folders);
+}
+
+/// 镜像迁移应用兜底元数据（save_all 成功后调用）
+pub fn mirror_migrated_apps(apps: &[MigratedAppEntry]) {
+    if !auto_backup_enabled() {
+        return;
+    }
+    write_migrated_apps_mirror(apps);
+}
+
+/// 手动备份入口：不受自动备份开关影响
+#[tauri::command]
+pub fn backup_now() -> Result<MirrorBackupInfo, String> {
+    write_history_mirror(&history::load_history());
+
+    let custom_folders = load_custom_folders(&utils::custom_folders_path(&ensure_data_dir()));
+    write_custom_folders_mirror(&custom_folders);
+
+    write_migrated_apps_mirror(&migrated_app_metadata::load_all());
+
+    let info = collect_mirror_info();
+    if !info.exists {
+        return Err(format!("备份写入失败，请检查 {} 是否可写", info.path));
+    }
+    Ok(info)
+}
+
+fn write_history_mirror(storage: &HistoryStorage) {
     match serde_json::to_string_pretty(storage) {
         Ok(json) => write_mirror_file(MIRROR_HISTORY_FILE, &json),
         Err(error) => log_warn!("mirror", "序列化历史镜像失败: {}", error),
     }
 }
 
-/// 镜像自定义文件夹列表（save_custom_folders 成功后调用）
-pub fn mirror_custom_folders(folders: &[CustomFolderEntry]) {
+fn write_custom_folders_mirror(folders: &[CustomFolderEntry]) {
     match serde_json::to_string_pretty(folders) {
         Ok(json) => write_mirror_file(MIRROR_CUSTOM_FOLDER_FILE, &json),
         Err(error) => log_warn!("mirror", "序列化自定义文件夹镜像失败: {}", error),
     }
 }
 
-/// 镜像迁移应用兜底元数据（save_all 成功后调用）
-pub fn mirror_migrated_apps(apps: &[MigratedAppEntry]) {
+fn write_migrated_apps_mirror(apps: &[MigratedAppEntry]) {
     let storage = MigratedAppStorage { apps: apps.to_vec() };
     match serde_json::to_string_pretty(&storage) {
         Ok(json) => write_mirror_file(MIRROR_MIGRATED_APP_FILE, &json),
@@ -126,23 +169,28 @@ fn mirror_saved_at() -> u64 {
         .unwrap_or(0)
 }
 
-/// 读取镜像备份信息，供前端判断是否提供「从镜像备份导入」
+/// 读取镜像备份信息，供前端判断是否提供「从自动备份导入」
 #[tauri::command]
 pub fn get_mirror_backup_info() -> Result<MirrorBackupInfo, String> {
+    Ok(collect_mirror_info())
+}
+
+fn collect_mirror_info() -> MirrorBackupInfo {
     let history_storage = read_mirror_json::<HistoryStorage>(MIRROR_HISTORY_FILE);
     let custom_folders =
         read_mirror_json::<Vec<CustomFolderEntry>>(MIRROR_CUSTOM_FOLDER_FILE).unwrap_or_default();
     let migrated_apps =
         read_mirror_json::<MigratedAppStorage>(MIRROR_MIGRATED_APP_FILE).unwrap_or_default();
 
-    Ok(MirrorBackupInfo {
+    MirrorBackupInfo {
         exists: history_storage.is_some() || !custom_folders.is_empty() || !migrated_apps.apps.is_empty(),
+        auto_backup_enabled: auto_backup_enabled(),
         path: mirror_dir().to_string_lossy().to_string(),
         history_count: history_storage.map(|storage| storage.records.len() as u32).unwrap_or(0),
         custom_folder_count: custom_folders.len() as u32,
         migrated_app_count: migrated_apps.apps.len() as u32,
         saved_at: mirror_saved_at(),
-    })
+    }
 }
 
 /// 从镜像备份导入：迁移历史按记录 ID 去重，自定义文件夹与兜底元数据按路径去重

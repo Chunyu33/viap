@@ -142,7 +142,7 @@ pub struct DataDirConfig {
     pub portable_default: bool,
 }
 
-/// 配置文件条目（供设置页展示并一键打开所在目录）
+/// 指针配置文件信息（安装版 %APPDATA%\viap.json，便携版 <程序目录>\viap.json）
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFileEntry {
     /// 稳定标识：pointer（数据目录指针）/ ui_settings（界面设置）
@@ -150,6 +150,18 @@ pub struct ConfigFileEntry {
     pub path: String,
     /// 文件是否已生成；未生成时程序使用默认值
     pub exists: bool,
+}
+
+/// 数据目录切换结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DataDirSwitchResult {
+    pub data_dir: String,
+    /// 复制到新目录的文件数
+    pub copied_files: u32,
+    /// 从旧目录删除的受管条目数
+    pub removed_entries: u32,
+    /// 非致命提示（如旧目录清理失败）
+    pub warning: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -377,8 +389,10 @@ pub struct RecoveredLinkImport {
 pub struct LinkRecoveryImportResult {
     /// 新增的迁移记录数
     pub imported: u32,
-    /// 因重复或校验失败被跳过的条目数
-    pub skipped: u32,
+    /// 已存在同原路径的活跃记录而被跳过（重复恢复）
+    pub duplicated: u32,
+    /// 校验未通过被拒绝的条目数，原因见 failed
+    pub rejected: u32,
     /// 新登记的自定义文件夹数
     pub custom_folders_added: u32,
     /// 跳过原因（含路径，便于用户定位）
@@ -401,6 +415,8 @@ pub struct MigrationRecordSizeEvent {
 pub struct MirrorBackupInfo {
     /// 镜像文件是否存在
     pub exists: bool,
+    /// 自动备份开关是否开启
+    pub auto_backup_enabled: bool,
     /// 镜像目录路径
     pub path: String,
     /// 镜像中的迁移记录数（含非 active 状态）
