@@ -16,6 +16,7 @@ import type {
   LinkRecoveryImportResult, LinkRecoveryProgressEvent, LinkRecoveryScanResult,
   MigrationRecordType, MirrorBackupInfo, MirrorImportResult, RecoveredLinkEntry,
 } from '../types';
+import Checkbox from './Checkbox';
 import { logger } from '../utils/logger';
 
 interface LinkRecoveryModalProps {
@@ -94,7 +95,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
     try {
       setMirrorInfo(await invoke<MirrorBackupInfo>('get_mirror_backup_info'));
     } catch (error) {
-      logger.error('读取镜像备份信息失败:', error);
+      logger.error('读取自动备份信息失败:', error);
       setMirrorInfo(null);
     }
   }, []);
@@ -264,14 +265,14 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
       const result = await invoke<MirrorImportResult>('import_mirror_backup');
       setFeedback({
         tone: 'info',
-        text: `镜像导入完成：迁移记录 +${result.history_added}（跳过 ${result.history_skipped}）`
+        text: `备份导入完成：迁移记录 +${result.history_added}（跳过 ${result.history_skipped}）`
           + `，自定义文件夹 +${result.custom_folders_added}，兜底元数据 +${result.migrated_apps_added}`,
       });
       setImportResult(null);
       if (result.history_added > 0 || result.custom_folders_added > 0) onImported();
       loadMirrorInfo();
     } catch (error) {
-      setFeedback({ tone: 'error', text: `镜像导入失败：${String(error)}` });
+      setFeedback({ tone: 'error', text: `备份导入失败：${String(error)}` });
     } finally {
       setMirrorImporting(false);
     }
@@ -314,7 +315,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
               恢复迁移记录
             </h2>
             <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-              扫描目录联接并重建丢失的迁移记录；也可从本地镜像备份一键导入
+              扫描目录联接并重建丢失的迁移记录；也可从本地自动备份一键导入
             </p>
           </div>
           <button
@@ -329,7 +330,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
 
         {/* 体部 */}
         <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
-          {/* 镜像备份入口：数据目录被误删时最省事的一条路 */}
+          {/* 自动备份入口：数据目录被误删时最省事的一条路 */}
           {mirrorInfo?.exists && (
             <div
               className="rounded-lg border px-3 py-2.5 mb-3"
@@ -339,11 +340,12 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                 <div className="min-w-0">
                   <p className="text-[12px] font-medium flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}>
                     <HardDriveDownload className="w-3.5 h-3.5" />
-                    发现本地镜像备份
+                    发现本地自动备份
                   </p>
                   <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--text-tertiary)' }} title={mirrorInfo.path}>
-                    {mirrorInfo.history_count} 条迁移记录 · {mirrorInfo.custom_folder_count} 个自定义文件夹
-                    · {mirrorInfo.migrated_app_count} 条兜底元数据 · 备份于 {formatTime(mirrorInfo.saved_at)}
+                    程序每次保存迁移数据时自动留的副本（不在数据目录内）· {mirrorInfo.history_count} 条迁移记录
+                    · {mirrorInfo.custom_folder_count} 个自定义文件夹 · {mirrorInfo.migrated_app_count} 条应用兜底数据
+                    · 备份于 {formatTime(mirrorInfo.saved_at)}
                   </p>
                 </div>
                 <button
@@ -352,7 +354,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                   className="btn btn-sm h-7 text-[11px] flex-shrink-0"
                 >
                   {mirrorImporting ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                  从镜像导入
+                  从备份导入
                 </button>
               </div>
             </div>
@@ -398,19 +400,19 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                 </select>
               </label>
               <label className="flex items-center gap-1.5 text-[11px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-                <input
-                  type="checkbox"
+                <Checkbox
+                  size="sm"
                   checked={recordSize}
-                  onChange={(event) => setRecordSize(event.target.checked)}
+                  onChange={setRecordSize}
                   disabled={scanning}
                 />
                 统计目标目录大小（较慢，机械盘慎用）
               </label>
               <label className="flex items-center gap-1.5 text-[11px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-                <input
-                  type="checkbox"
+                <Checkbox
+                  size="sm"
                   checked={registerFolders}
-                  onChange={(event) => setRegisterFolders(event.target.checked)}
+                  onChange={setRegisterFolders}
                 />
                 把文件夹类目录登记为自定义文件夹
               </label>
@@ -506,26 +508,13 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                           background: checked ? 'var(--color-primary-light)' : 'var(--bg-row)',
                         }}
                       >
-                        <div className="relative flex-shrink-0 w-4 h-4 mt-0.5">
-                          {/* 保留原生 checkbox 的可访问性，只替换视觉层 */}
-                          <input
-                            type="checkbox"
+                        <div className="flex-shrink-0 mt-0.5">
+                          <Checkbox
                             checked={checked}
                             disabled={disabled}
                             onChange={() => toggleEntry(entry.original_path)}
-                            aria-label={`${checked ? '取消选择' : '选择'} ${entry.original_path}`}
-                            className="peer absolute inset-0 z-10 m-0 h-4 w-4 cursor-pointer opacity-0 disabled:cursor-default"
+                            ariaLabel={`${checked ? '取消选择' : '选择'} ${entry.original_path}`}
                           />
-                          <span
-                            aria-hidden="true"
-                            className={`absolute inset-0 flex items-center justify-center rounded-sm border transition-colors ${checked ? '' : 'opacity-60 peer-hover:opacity-100'}`}
-                            style={{
-                              background: checked ? 'var(--color-primary)' : 'transparent',
-                              borderColor: checked ? 'var(--color-primary)' : 'var(--border-color-strong)',
-                            }}
-                          >
-                            {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
-                          </span>
                         </div>
 
                         <div className="min-w-0 flex-1 ml-3">

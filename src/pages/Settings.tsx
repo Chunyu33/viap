@@ -60,12 +60,12 @@ interface IntegrityCheckResult {
 const CONFIG_FILE_COPY: Record<string, { label: string; description: string; missingDescription: string }> = {
   pointer: {
     label: '配置文件',
-    description: '记录数据存储目录的位置，丢失后程序会回到默认目录',
+    description: '指向数据存储目录；必须放在数据目录之外，删掉后程序会回到默认目录',
     missingDescription: '尚未生成，当前使用默认数据存储目录',
   },
   ui_settings: {
     label: '界面设置',
-    description: '保存主题、字号和默认迁移目录等偏好',
+    description: '主题、字号、默认迁移目录等偏好；位于数据目录内，随数据目录一起迁移',
     missingDescription: '尚未生成，当前使用默认界面设置',
   },
 };
