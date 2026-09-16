@@ -35,20 +35,29 @@ const COPY_FILE_NO_BUFFERING: u32 = 0x0000_1000;
 
 /// 复制计划：扫描阶段一次性生成，后续空间检查和复制阶段复用同一份数据。
 pub(crate) struct CopyPlan {
-    /// 待复制文件列表，扫描阶段生成后直接复用，避免复制前二次遍历磁盘。
-    pub(crate) file_list: Vec<(PathBuf, PathBuf, u64)>,
-    /// 待创建目录列表，保留空目录，避免应用依赖占位目录时异常。
+    /// 源根目录：相对路径据此还原为绝对路径
+    pub(crate) source_root: PathBuf,
+    /// 目标根目录
+    pub(crate) target_root: PathBuf,
+    /// 待复制文件（相对源根目录的路径 + 大小）
+    ///
+    /// 只存相对路径而不是源/目标两份绝对路径：大目录（几十万文件）时
+    /// 每个条目能省下一份长前缀，峰值内存明显下降。
+    pub(crate) file_list: Vec<(PathBuf, u64)>,
+    /// 待创建的空目录（相对路径），保留它们避免应用依赖占位目录时异常
     pub(crate) dir_list: Vec<PathBuf>,
     /// 待重建的目录链接（源目录内嵌套的联接 / 目录符号链接）
     pub(crate) link_list: Vec<PlannedLink>,
+    /// 源目录内是否存在可执行文件（深度 5 以内），决定是否需要做进程占用预检
+    pub(crate) has_executable: bool,
     /// 计划复制的总字节数，用于空间检查和复制进度计算。
     pub(crate) total_size: u64,
 }
 
 /// 待重建的目录链接
 pub(crate) struct PlannedLink {
-    /// 链接在目标盘上的位置
-    pub(crate) dest: PathBuf,
+    /// 链接在源树中的相对位置（目标盘上的位置由它推导）
+    pub(crate) relative_path: PathBuf,
     /// 链接应指向的位置（原本指向源树内部时会改写到目标树）
     pub(crate) target: PathBuf,
 }
@@ -58,7 +67,7 @@ enum ReparsePlan {
     /// 目录链接：在目标盘重建链接本身
     DirectoryLink(PlannedLink),
     /// 文件链接：直接复制其内容（符号链接需要开发者模式或管理员权限，内容自包含更稳妥）
-    FileContent { dest: PathBuf, size: u64 },
+    FileContent { size: u64 },
 }
 
 /// 进度上报回调：与 Tauri 解耦，单测可直接跑完整的「扫描 + 复制 + 重建链接」流程
@@ -74,11 +83,12 @@ pub(crate) fn build_copy_plan(
 ) -> Result<CopyPlan, String> {
     progress("counting", 1.0, "正在扫描文件列表...", 0, 0);
 
-    let mut file_list: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
+    let mut file_list: Vec<(PathBuf, u64)> = Vec::new();
     let mut dir_list: Vec<PathBuf> = Vec::new();
     let mut link_list: Vec<PlannedLink> = Vec::new();
     let mut total_size: u64 = 0;
     let mut scanned_files: u64 = 0;
+    let mut has_executable = false;
     let mut last_emit = Instant::now();
 
     for entry_result in WalkDir::new(source).into_iter() {
@@ -99,24 +109,25 @@ pub(crate) fn build_copy_plan(
         if entry.file_type().is_symlink() {
             match plan_reparse_point(entry.path(), source, target) {
                 Some(ReparsePlan::DirectoryLink(link)) => link_list.push(link),
-                Some(ReparsePlan::FileContent { dest, size }) => {
+                Some(ReparsePlan::FileContent { size }) => {
                     total_size += size;
                     scanned_files += 1;
-                    file_list.push((entry.path().to_path_buf(), dest, size));
+                    has_executable |= is_executable_within_depth(rel_path, 5);
+                    file_list.push((rel_path.to_path_buf(), size));
                 }
                 // 悬空链接没有可复制的内容，跳过（已在 plan_reparse_point 中记录日志）
                 None => {}
             }
         } else if entry.file_type().is_dir() {
-            dir_list.push(target.join(rel_path));
+            dir_list.push(rel_path.to_path_buf());
         } else if entry.file_type().is_file() {
-            let dest = target.join(rel_path);
             let size = entry.metadata()
                 .map_err(|e| format!("读取文件元数据失败 {}: {}", entry.path().display(), e))?
                 .len();
             total_size += size;
             scanned_files += 1;
-            file_list.push((entry.path().to_path_buf(), dest, size));
+            has_executable |= is_executable_within_depth(rel_path, 5);
+            file_list.push((rel_path.to_path_buf(), size));
         }
 
         if last_emit.elapsed() >= Duration::from_millis(250) {
@@ -141,13 +152,34 @@ pub(crate) fn build_copy_plan(
         total_size,
     );
 
-    Ok(CopyPlan { file_list, dir_list, link_list, total_size })
+    Ok(CopyPlan {
+        source_root: source.to_path_buf(),
+        target_root: target.to_path_buf(),
+        file_list,
+        dir_list,
+        link_list,
+        has_executable,
+        total_size,
+    })
+}
+
+/// 判断相对路径是否为可执行文件且深度不超过 `max_depth`
+///
+/// 与旧的独立 WalkDir(max_depth = 5) 探测等价：源根目录的直接子项深度为 1。
+/// 合并进复制计划后，同一次遍历同时产出文件清单、总大小和该项判断。
+fn is_executable_within_depth(relative_path: &Path, max_depth: usize) -> bool {
+    if relative_path.components().count() > max_depth {
+        return false;
+    }
+    relative_path
+        .extension()
+        .map(|extension| extension.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
 }
 
 /// 规划单个重解析点的处理方式；返回 None 表示该链接被跳过（悬空）
 fn plan_reparse_point(link_path: &Path, source: &Path, target: &Path) -> Option<ReparsePlan> {
-    let rel_path = link_path.strip_prefix(source).ok()?;
-    let dest = target.join(rel_path);
+    let relative_path = link_path.strip_prefix(source).ok()?.to_path_buf();
 
     // fs::metadata 跟随链接：据此判断链接指向目录还是文件；悬空链接在此报错
     let Ok(metadata) = fs::metadata(link_path) else {
@@ -160,7 +192,7 @@ fn plan_reparse_point(link_path: &Path, source: &Path, target: &Path) -> Option<
     };
 
     if !metadata.is_dir() {
-        return Some(ReparsePlan::FileContent { dest, size: metadata.len() });
+        return Some(ReparsePlan::FileContent { size: metadata.len() });
     }
 
     // 读取链接目标：junction 读出来可能带 \\?\ 前缀，必须走带归一化的工具函数，
@@ -176,7 +208,7 @@ fn plan_reparse_point(link_path: &Path, source: &Path, target: &Path) -> Option<
     };
 
     Some(ReparsePlan::DirectoryLink(PlannedLink {
-        dest,
+        relative_path,
         target: rewritten_target,
     }))
 }
@@ -429,23 +461,27 @@ pub(crate) fn copy_dir(
     cancel_flag: &Arc<AtomicBool>,
     progress: ProgressReporter<'_>,
 ) -> Result<(u64, u64), String> {
-    let CopyPlan { file_list, dir_list, link_list, total_size } = plan;
+    let CopyPlan { source_root, target_root, file_list, dir_list, link_list, total_size, .. } = plan;
 
     // 阶段 1：预建所有目标目录；空目录也必须迁移，否则部分应用会因缺少占位目录异常。
     {
         let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
         for dir in dir_list {
-            dirs.insert(dir);
+            dirs.insert(target_root.join(dir));
         }
-        for (_, dest, _) in &file_list {
-            if let Some(parent) = dest.parent() {
-                dirs.insert(parent.to_path_buf());
+        for (relative_path, _) in &file_list {
+            if let Some(parent) = relative_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    dirs.insert(target_root.join(parent));
+                }
             }
         }
         // 链接自身不能在目标盘建成真实目录，否则重建链接时会因路径已存在而失败
         for link in &link_list {
-            if let Some(parent) = link.dest.parent() {
-                dirs.insert(parent.to_path_buf());
+            if let Some(parent) = link.relative_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    dirs.insert(target_root.join(parent));
+                }
             }
         }
         for dir in dirs {
@@ -464,9 +500,9 @@ pub(crate) fn copy_dir(
     // （全核并发会争抢 NTFS 元数据锁，实测反而降低总吞吐）
     let (mut large_files, small_files): (Vec<_>, Vec<_>) = file_list
         .into_iter()
-        .partition(|(_, _, size)| *size > LARGE_FILE_THRESHOLD);
+        .partition(|(_, size)| *size > LARGE_FILE_THRESHOLD);
     // 大文件按体积降序，优先搬走最大的文件
-    large_files.sort_by(|a, b| b.2.cmp(&a.2));
+    large_files.sort_by(|a, b| b.1.cmp(&a.1));
 
     if total_size > 0 {
         progress("copying", 10.0, "开始复制文件...", 0, total_size);
@@ -479,7 +515,9 @@ pub(crate) fn copy_dir(
     let error_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // 大文件顺序复制：一次一个大文件，避免多条大流同时打盘
-    for (src, dest, size) in &large_files {
+    for (relative_path, size) in &large_files {
+        let src = source_root.join(relative_path);
+        let dest = target_root.join(relative_path);
         // 任一条件触发即跳过：已有错误 / 用户取消 / 内部取消
         if error_slot.lock().unwrap().is_some()
             || internal_cancel.load(Ordering::Relaxed)
@@ -488,8 +526,8 @@ pub(crate) fn copy_dir(
             break;
         }
         match copy_file_with_cancel(
-            src,
-            dest,
+            &src,
+            &dest,
             cancel_flag,
             &internal_cancel,
             &copied_size,
@@ -523,7 +561,7 @@ pub(crate) fn copy_dir(
             .build()
             .map_err(|e| format!("创建复制线程池失败: {}", e))?;
         copy_pool.install(|| {
-            small_files.par_iter().for_each(|(src, dest, size)| {
+            small_files.par_iter().for_each(|(relative_path, size)| {
                 // 任一条件触发即跳过：已有错误 / 用户取消 / 内部取消
                 if error_slot.lock().unwrap().is_some()
                     || internal_cancel.load(Ordering::Relaxed)
@@ -531,9 +569,11 @@ pub(crate) fn copy_dir(
                 {
                     return;
                 }
+                let src = source_root.join(relative_path);
+                let dest = target_root.join(relative_path);
                 match copy_file_with_cancel(
-                    src,
-                    dest,
+                    &src,
+                    &dest,
                     cancel_flag,
                     &internal_cancel,
                     &copied_size,
@@ -573,12 +613,13 @@ pub(crate) fn copy_dir(
             if cancel_flag.load(Ordering::Relaxed) {
                 return Err("用户取消了迁移".to_string());
             }
+            let link_dest = target_root.join(&link.relative_path);
             // 链接创建失败必须让整个迁移失败：目标树缺链接等于结构不完整，
             // 此时源目录尚未删除，中止后数据仍然安全
-            create_directory_link(&link.target, &link.dest).map_err(|e| {
+            create_directory_link(&link.target, &link_dest).map_err(|e| {
                 format!(
                     "重建目录链接失败 {} -> {}: {}",
-                    link.dest.display(),
+                    link_dest.display(),
                     link.target.display(),
                     e
                 )
@@ -725,14 +766,16 @@ mod engine_tests {
         let plan = build_copy_plan(&source, &target, &cancel_flag, &reporter).expect("扫描失败");
         assert_eq!(plan.link_list.len(), 2, "两个嵌套联接都必须进入计划");
         assert!(plan.total_size > 0);
+        // 一次遍历同时产出「是否含 exe」：该判断决定要不要做进程占用预检
+        assert!(!plan.has_executable, "fixture 中没有 exe，不应误报");
 
         // 指向源树内部的联接必须改写到目标树，否则迁移后会指向已删除的旧位置
         let inner_link = plan.link_list.iter()
-            .find(|link| link.dest.ends_with("inner-link"))
+            .find(|link| link.relative_path.ends_with("inner-link"))
             .expect("内部联接缺失");
         assert!(same_path(&inner_link.target, &target.join("inner")));
         let outer_link = plan.link_list.iter()
-            .find(|link| link.dest.ends_with("outer-link"))
+            .find(|link| link.relative_path.ends_with("outer-link"))
             .expect("外部联接缺失");
         assert!(same_path(&outer_link.target, &external));
 

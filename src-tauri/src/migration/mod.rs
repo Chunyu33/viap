@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 use sysinfo::Disks;
 use tauri::Emitter;
-use walkdir::WalkDir;
 
 use crate::models::{MigrationRecordType, MigrationResult};
 use crate::utils;
@@ -33,7 +32,7 @@ use links::{
     create_directory_link, create_migration_backup_path, preflight_directory_link,
     restore_source_from_backup, verify_directory_link,
 };
-use occupancy::check_directory_file_locks;
+use occupancy::check_file_locks;
 
 /// 迁移进度事件（发送到前端）
 #[derive(Clone, Serialize)]
@@ -341,13 +340,29 @@ pub fn migrate_app(
                 });
             }
 
-            // 安全：源路径非 Junction 或指向不同目标，可安全删除目标残留
-            log_warn!("migration", "force_overwrite: 删除残留目标目录 {}", target_path_str);
-            fs::remove_dir_all(&target_path)
-                .map_err(|e| format!(
-                    "无法删除残留目录: {}。请手动删除后重试。原因: {}",
-                    target_path_str, e
-                ))?;
+            // 安全：源路径非 Junction 或指向不同目标，可以清理目标残留。
+            // 默认走回收站（可在设置中关闭）：覆盖决策一旦是误判，用户还能捞回来
+            log_warn!("migration", "force_overwrite: 清理残留目标目录 {}", target_path_str);
+            if crate::storage::user_settings::load_current_settings().use_recycle_bin {
+                if let Err(error) = trash::delete(&target_path) {
+                    return Ok(MigrationResult {
+                        success: false,
+                        message: format!(
+                            "无法把残留目录移入回收站：{}\n\n\
+                             目录：{}\n原因：{}\n\n\
+                             可手动删除该目录后重试，或在设置中关闭「删除文件移入回收站」以允许直接删除。",
+                            target_path_str, target_path_str, error
+                        ),
+                        new_path: None,
+                    });
+                }
+            } else {
+                fs::remove_dir_all(&target_path)
+                    .map_err(|e| format!(
+                        "无法删除残留目录: {}。请手动删除后重试。原因: {}",
+                        target_path_str, e
+                    ))?;
+            }
         }
 
         // 步骤 0.5: 智能文件占用检测
@@ -365,17 +380,26 @@ pub fn migrate_app(
             return Err("用户取消了迁移".to_string());
         }
 
-        let has_exe_in_source = WalkDir::new(source_path)
-            .max_depth(5) // 深度5覆盖 Electron/部分游戏的 bin/ 等深层 exe 目录
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .any(|e| {
-                e.file_type().is_file()
-                    && e.path()
-                        .extension()
-                        .map(|ext| ext.eq_ignore_ascii_case("exe"))
-                        .unwrap_or(false)
-            });
+        // 步骤 1: 先构建复制计划，一次遍历同时拿到文件清单、总大小和"是否含 exe"
+        // 后续的进程预检、文件占用预检、空间检查全部复用这份计划，
+        // 避免以前那样对同一棵树反复遍历（大目录冷缓存下等于把数据读三遍）
+        let reporter = |step: &str, percent: f64, message: &str, copied: u64, total: u64| {
+            emit_progress(app_handle, &source, percent, step, message, copied, total);
+        };
+        let copy_plan = match build_copy_plan(source_path, &target_path, cancel_flag, &reporter) {
+            Ok(plan) => plan,
+            Err(e) => {
+                let _ = remove_directory_robust(&target_path);
+                return Ok(MigrationResult {
+                    success: false,
+                    message: e,
+                    new_path: None,
+                });
+            }
+        };
+        let source_size = copy_plan.total_size;
+        // 深度 5 内存在 exe 说明是应用目录，需要额外做进程占用预检
+        let has_exe_in_source = copy_plan.has_executable;
 
         // 检测自动更新组件：应用更新会重建安装目录导致链接失效，
         // 命中后成功消息附加「重新迁移」引导提示
@@ -422,7 +446,7 @@ pub fn migrate_app(
         // FileSyncShell64.dll 是 shell extension，explorer 启动即加载，进程
         // exe 前缀匹配检测不到）。这类文件不阻塞复制（读共享），但会导致
         // 迁移后的备份目录清理失败，必须在迁移前拦截。
-        let locked_files = check_directory_file_locks(source_path, cancel_flag);
+        let locked_files = check_file_locks(&copy_plan, cancel_flag);
         // 锁探测被取消时其返回值为占位"检测已取消"，此处优先按取消处理，
         // 避免把取消误报成"文件被占用"
         if cancel_flag.load(Ordering::Relaxed) {
@@ -457,25 +481,7 @@ pub fn migrate_app(
             return Err("用户取消了迁移".to_string());
         }
 
-        // 步骤 1: 构建复制计划 + 空间检查
-        // 复制前必须知道总大小；这里直接产出复制计划，避免后续复制阶段再次遍历整棵目录。
-        // 进度回调与 Tauri 解耦：闭包内部负责把事件发给前端
-        let reporter = |step: &str, percent: f64, message: &str, copied: u64, total: u64| {
-            emit_progress(app_handle, &source, percent, step, message, copied, total);
-        };
-        let copy_plan = match build_copy_plan(source_path, &target_path, cancel_flag, &reporter) {
-            Ok(plan) => plan,
-            Err(e) => {
-                let _ = remove_directory_robust(&target_path);
-                return Ok(MigrationResult {
-                    success: false,
-                    message: e,
-                    new_path: None,
-                });
-            }
-        };
-        let source_size = copy_plan.total_size;
-
+        // 步骤 1.5: 空间检查（复用计划里的总大小）
         let available_space = get_available_space(target_parent_path);
         // 1.2× 源大小 + 100MB 最小预留，避免目标盘被填满
         let required_space = (source_size as f64 * 1.2) as u64 + 100 * 1024 * 1024;

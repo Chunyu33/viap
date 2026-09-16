@@ -2,13 +2,13 @@
 // 以独占模式打开文件探测占用，用于迁移前预检
 
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use rayon::prelude::*;
-use walkdir::WalkDir;
+
+use super::copy_engine::CopyPlan;
 
 /// 检测目录内文件是否被其他进程独占持有
 ///
@@ -24,33 +24,29 @@ use walkdir::WalkDir;
 /// 注意：此方法检测不到应用本体——exe 被内存映射时不阻塞独占打开，
 /// 应用本体需用进程 exe 路径匹配检测，两者互补使用。
 ///
+/// 文件清单直接复用复制计划（`CopyPlan`）：早前这里会再整棵遍历一次磁盘，
+/// 大目录（Yarn/npm 缓存、node_modules）冷缓存下等于把同一份数据读两遍。
+///
 /// 返回：被占用文件的相对路径列表，最多 10 条；空列表表示无占用。
 /// 取消时返回占位列表 ["检测已取消"]，由调用方按取消处理。
 ///
 /// 实现说明：文件打开探测为独立系统调用，用 rayon 并行执行，
 /// 大目录（数万文件）下可显著缩短预检耗时。
 #[cfg(windows)]
-pub(crate) fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBool>) -> Vec<String> {
+pub(crate) fn check_file_locks(plan: &CopyPlan, cancel_flag: &Arc<AtomicBool>) -> Vec<String> {
     use std::os::windows::fs::OpenOptionsExt;
 
-    // 一次性收集文件路径，随后并行探测（文件列表内存开销对预检可接受）
-    // 收集阶段同样响应取消：大目录遍历本身可能耗时数十秒，不能让用户等完才能取消
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        if cancel_flag.load(Ordering::Relaxed) {
-            return vec!["检测已取消".to_string()];
-        }
-        if entry.file_type().is_file() {
-            files.push(entry.path().to_path_buf());
-        }
+    if cancel_flag.load(Ordering::Relaxed) {
+        return vec!["检测已取消".to_string()];
     }
 
+    let source_root = &plan.source_root;
     let locked_files: Mutex<Vec<String>> = Mutex::new(Vec::new());
     // 已收集满上限或用户取消时置位，其余线程立即退出
     let done = AtomicBool::new(false);
     let checked_count = AtomicU64::new(0);
 
-    files.par_iter().for_each(|path| {
+    plan.file_list.par_iter().for_each(|(relative_path, _)| {
         if done.load(Ordering::Relaxed) || cancel_flag.load(Ordering::Relaxed) {
             return;
         }
@@ -60,24 +56,21 @@ pub(crate) fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBoo
             return;
         }
 
+        let path = source_root.join(relative_path);
         // FILE_SHARE_NONE = 0，独占打开。若其他进程持有该文件句柄则失败。
         let result = fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
-            .open(path);
+            .open(&path);
 
         if let Err(e) = result {
             let os_err = e.raw_os_error().unwrap_or(0);
             // 32 = ERROR_SHARING_VIOLATION（文件被其他进程打开且不允许共享）
             // 5  = ERROR_ACCESS_DENIED（无访问权限，通常也意味着被占用）
             if os_err == 32 || os_err == 5 {
-                let rel = path
-                    .strip_prefix(dir)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
                 let mut list = locked_files.lock().unwrap();
                 if list.len() < 10 {
-                    list.push(rel);
+                    list.push(relative_path.to_string_lossy().to_string());
                     if list.len() >= 10 {
                         list.push("...（更多文件被占用）".to_string());
                         done.store(true, Ordering::Relaxed);
@@ -99,9 +92,6 @@ pub(crate) fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBoo
 
 /// 非 Windows 平台回退：无占用检测，返回空列表
 #[cfg(not(windows))]
-pub(crate) fn check_directory_file_locks(
-    _dir: &Path,
-    _cancel_flag: &Arc<AtomicBool>,
-) -> Vec<String> {
+pub(crate) fn check_file_locks(_plan: &CopyPlan, _cancel_flag: &Arc<AtomicBool>) -> Vec<String> {
     Vec::new()
 }
