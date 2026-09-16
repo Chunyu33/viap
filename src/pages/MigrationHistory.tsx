@@ -653,7 +653,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
 
   return (
     <div className="h-full overflow-hidden flex flex-col"
-      style={{ padding: '12px 16px', width: '100%' }}>
+      style={{ padding: '12px var(--spacing-8)', width: '100%' }}>
       {/* search / filter / sort + stats + refresh — 固定在顶部，不参与滚动 */}
       <div className="flex items-center gap-2 flex-wrap flex-shrink-0"
         style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
