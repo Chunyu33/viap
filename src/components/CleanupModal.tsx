@@ -3,7 +3,7 @@
 
 import { useMemo } from 'react';
 import { AlertTriangle, Check, LoaderCircle, ScanSearch, Trash2, X } from 'lucide-react';
-import { LeftoverItem } from '../types';
+import { AppProcessInfo, LeftoverItem } from '../types';
 
 interface CleanupModalProps {
   isOpen: boolean;
@@ -14,6 +14,10 @@ interface CleanupModalProps {
   onClose: () => void;
   onToggleItem: (path: string) => void;
   onConfirm: () => void;
+  /** 正在运行的相关进程：删除前提示用户先结束它们，否则文件会删不掉 */
+  appProcesses?: AppProcessInfo[];
+  onKillProcesses?: () => void;
+  killingProcesses?: boolean;
 }
 
 function formatItemSize(sizeMb: number): string {
@@ -31,6 +35,9 @@ export default function CleanupModal({
   onClose,
   onToggleItem,
   onConfirm,
+  appProcesses = [],
+  onKillProcesses,
+  killingProcesses = false,
 }: CleanupModalProps) {
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
 
@@ -76,6 +83,29 @@ export default function CleanupModal({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* 相关进程：仍在运行的程序会导致删除失败，先让用户处理掉 */}
+        {appProcesses.length > 0 && (
+          <div className="mx-5 mt-3 rounded-lg px-3 py-2.5" style={{ background: 'var(--color-warning-light)' }}>
+            <p className="text-[12px] font-medium" style={{ color: 'var(--color-warning)' }}>
+              <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+              检测到 {appProcesses.length} 个相关进程正在运行，删除会失败
+            </p>
+            <p className="mt-1 text-[11px] truncate" style={{ color: 'var(--text-secondary)' }} title={appProcesses.map(p => `${p.name} (${p.pid})`).join('、')}>
+              {appProcesses.map(p => `${p.name} (${p.pid})`).join('、')}
+            </p>
+            {onKillProcesses && (
+              <button
+                onClick={onKillProcesses}
+                disabled={killingProcesses || loading}
+                className="btn h-7 text-[11px] mt-2"
+              >
+                {killingProcesses ? <LoaderCircle className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                {killingProcesses ? '结束中...' : '结束这些进程'}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* 体部 */}
         <div className="overflow-y-auto px-5 py-3" style={{ maxHeight: 'min(360px, 50vh)' }}>

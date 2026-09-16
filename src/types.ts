@@ -55,6 +55,10 @@ export interface UninstallResult {
   command: string | null;
   // 扫描出的残留项目
   leftovers: LeftoverItem[];
+  // 本次实际释放的字节数
+  freed_bytes?: number;
+  // 因文件被占用而安排到重启后自动删除的项目
+  scheduled_for_reboot?: string[];
 }
 
 /**
@@ -78,6 +82,23 @@ export interface CleanupResult {
   cleaned_count: number;
   // 清理失败项
   failed_items: string[];
+  // 本次实际释放的字节数
+  freed_bytes?: number;
+  // 因文件被占用而安排到重启后自动删除的项目
+  scheduled_for_reboot?: string[];
+}
+
+/** 应用相关进程（强力删除前提示用户先结束它们） */
+export interface AppProcessInfo {
+  pid: number;
+  name: string;
+  exe_path: string;
+}
+
+/** 结束进程结果 */
+export interface ProcessKillResult {
+  killed: number;
+  failed: string[];
 }
 
 /** 幽灵链接预览条目 */

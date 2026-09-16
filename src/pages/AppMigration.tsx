@@ -20,6 +20,7 @@ import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import { useViapStore } from '../store';
 import { readLocalUserSettings } from '../utils/userSettings';
 import {
+  AppProcessInfo,
   CleanupResult,
   InstalledApp,
   LeftoverItem,
@@ -27,6 +28,7 @@ import {
   MigrationRecord,
   MigrationResult,
   MigrationStep,
+  ProcessKillResult,
   ProcessLockResult,
   TabType,
   UninstallPreview,
@@ -210,6 +212,11 @@ export default function AppMigration({ visible }: { visible: boolean }) {
 
   // 已迁移的路径列表
   const [migratedPaths, setMigratedPaths] = useState<string[]>([]);
+  // 强制删除前的相关进程提示
+  const [forceRmProcesses, setForceRmProcesses] = useState<AppProcessInfo[]>([]);
+  const [killingProcesses, setKillingProcesses] = useState(false);
+  // 记录当前展示进程提示的应用（残留清理弹窗没有 forceRmPreviewApp）
+  const [processTargetApp, setProcessTargetApp] = useState<InstalledApp | null>(null);
   // Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮
   const [viapInstallPath, setViapInstallPath] = useState<string>('');
   // 应用迁移记录（用于还原时获取 historyId）
@@ -318,6 +325,8 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     setLeftoverItems([]);
     setScanningResidue(true);
     setCleanupModalOpen(true);
+    // 残留文件多半就是因为应用还在运行才删不掉，先把进程列出来
+    refreshAppProcesses(app);
 
     try {
       const leftovers = await invoke<LeftoverItem[]>('scan_app_residue', {
@@ -845,16 +854,58 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         }
         return false;
       }
-      // 第二步：打开预览弹窗等待用户确认
+      // 第二步：打开预览弹窗等待用户确认（顺便看看应用是否还在运行）
       setForceRmUseRecycleBin(useRecycleBin);
       setForceRmPreviewApp(app);
       setForceRmPreviewItems(items);
       setForceRmPreviewOpen(true);
+      refreshAppProcesses(app);
       // 预览弹窗仍属于卸载流程，直到用户取消或确认删除前都保持全局操作锁。
       return true;
     } catch (error) {
       showToast(`预览安装目录失败: ${error}`, 'error');
       return false;
+    }
+  }
+
+  /** 刷新"相关进程"列表：删除前提示用户先结束它们，否则文件删不掉 */
+  function refreshAppProcesses(app: InstalledApp) {
+    setProcessTargetApp(app);
+    setForceRmProcesses([]);
+    invoke<AppProcessInfo[]>('list_app_processes', {
+      installLocation: app.install_location,
+      appName: app.display_name,
+    })
+      .then(setForceRmProcesses)
+      .catch(() => setForceRmProcesses([]));
+  }
+
+  /** 结束应用相关进程：结束后刷新进程列表，让用户看到是否清干净 */
+  async function handleKillAppProcesses() {
+    const app = forceRmPreviewApp ?? processTargetApp;
+    if (!app || forceRmProcesses.length === 0) return;
+    setKillingProcesses(true);
+    try {
+      const result = await invoke<ProcessKillResult>('kill_app_processes', {
+        pids: forceRmProcesses.map(process => process.pid),
+        installLocation: app.install_location,
+        appName: app.display_name,
+      });
+      if (result.killed > 0) {
+        showToast(`已结束 ${result.killed} 个进程`, 'success');
+      }
+      if (result.failed.length > 0) {
+        showToast(`部分进程未能结束：${result.failed.join('、')}`, 'error');
+      }
+      const remaining = await invoke<AppProcessInfo[]>('list_app_processes', {
+        installLocation: app.install_location,
+        appName: app.display_name,
+      });
+      setForceRmProcesses(remaining);
+    } catch (error) {
+      showToast(`结束进程失败: ${error}`, 'error');
+    } finally {
+      setKillingProcesses(false);
     }
   }
 
@@ -1698,6 +1749,9 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         items={leftoverItems}
         loading={cleanupLoading}
         scanning={scanningResidue}
+        appProcesses={forceRmProcesses}
+        onKillProcesses={handleKillAppProcesses}
+        killingProcesses={killingProcesses}
         onClose={handleCloseCleanupModal}
         onToggleItem={handleToggleLeftover}
         onConfirm={handleConfirmCleanup}
@@ -1710,6 +1764,9 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         items={forceRmPreviewItems}
         loading={forceRmLoading}
         scanning={false}
+        appProcesses={forceRmProcesses}
+        onKillProcesses={handleKillAppProcesses}
+        killingProcesses={killingProcesses}
         onClose={() => {
           if (!forceRmLoading) {
             setForceRmPreviewOpen(false);

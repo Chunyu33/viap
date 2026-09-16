@@ -400,6 +400,12 @@ pub fn migrate_app(
         let source_size = copy_plan.total_size;
         // 深度 5 内存在 exe 说明是应用目录，需要额外做进程占用预检
         let has_exe_in_source = copy_plan.has_executable;
+        // 同盘迁移走 rename 快路径：既不需要额外空间，也不需要逐文件占用预检
+        let same_drive = {
+            let source_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
+            let target_drive = target_path_str.chars().next().map(|c| c.to_ascii_uppercase());
+            source_drive.is_some() && source_drive == target_drive
+        };
 
         // 检测自动更新组件：应用更新会重建安装目录导致链接失效，
         // 命中后成功消息附加「重新迁移」引导提示
@@ -446,7 +452,17 @@ pub fn migrate_app(
         // FileSyncShell64.dll 是 shell extension，explorer 启动即加载，进程
         // exe 前缀匹配检测不到）。这类文件不阻塞复制（读共享），但会导致
         // 迁移后的备份目录清理失败，必须在迁移前拦截。
-        let locked_files = check_file_locks(&copy_plan, cancel_flag);
+        // 同盘迁移走 rename：不打开任何文件，因此逐文件独占预检没有意义
+        // （rename 被占用阻塞时会由 rename 自身报错，提示同样明确）。
+        // 跨盘复制才需要提前发现"复制到一半才失败"的情况。
+        let cross_drive_copy = !same_drive;
+        let locked_files = if cross_drive_copy
+            && !crate::storage::user_settings::load_current_settings().skip_lock_check
+        {
+            check_file_locks(&copy_plan, cancel_flag, &reporter)
+        } else {
+            Vec::new()
+        };
         // 锁探测被取消时其返回值为占位"检测已取消"，此处优先按取消处理，
         // 避免把取消误报成"文件被占用"
         if cancel_flag.load(Ordering::Relaxed) {
@@ -482,20 +498,23 @@ pub fn migrate_app(
         }
 
         // 步骤 1.5: 空间检查（复用计划里的总大小）
-        let available_space = get_available_space(target_parent_path);
-        // 1.2× 源大小 + 100MB 最小预留，避免目标盘被填满
-        let required_space = (source_size as f64 * 1.2) as u64 + 100 * 1024 * 1024;
+        // 同盘是 rename：数据不复制、不占额外空间，因此不能因为"剩余空间不足"而拒绝
+        if !same_drive {
+            let available_space = get_available_space(target_parent_path);
+            // 1.2× 源大小 + 100MB 最小预留，避免目标盘被填满
+            let required_space = (source_size as f64 * 1.2) as u64 + 100 * 1024 * 1024;
 
-        if available_space < required_space {
-            return Ok(MigrationResult {
-                success: false,
-                message: format!(
-                    "目标磁盘空间不足。需要: {:.2} GB，可用: {:.2} GB",
-                    required_space as f64 / 1024.0 / 1024.0 / 1024.0,
-                    available_space as f64 / 1024.0 / 1024.0 / 1024.0
-                ),
-                new_path: None,
-            });
+            if available_space < required_space {
+                return Ok(MigrationResult {
+                    success: false,
+                    message: format!(
+                        "目标磁盘空间不足。需要: {:.2} GB，可用: {:.2} GB",
+                        required_space as f64 / 1024.0 / 1024.0 / 1024.0,
+                        available_space as f64 / 1024.0 / 1024.0 / 1024.0
+                    ),
+                    new_path: None,
+                });
+            }
         }
 
         // 步骤 1.1：及时响应取消（get_dir_size_safe 对大目录可能耗时较长）
@@ -503,10 +522,8 @@ pub fn migrate_app(
             return Err("用户取消了迁移".to_string());
         }
 
-        // 步骤 1.5：同盘迁移走 rename 快路径（原子操作，毫秒级，零数据风险）
-        let source_drive = source.chars().next().map(|c| c.to_ascii_uppercase());
-        let target_drive = target_path_str.chars().next().map(|c| c.to_ascii_uppercase());
-        if source_drive == target_drive && source_drive.is_some() {
+        // 步骤 2：同盘迁移走 rename 快路径（原子操作，毫秒级，零数据风险）
+        if same_drive {
             emit_progress(app_handle, &source, 50.0, "copying",
                 "同盘迁移，正在移动目录...", source_size, source_size);
 

@@ -7,7 +7,8 @@
 - Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.
 - Safer migrations: drive roots, the user profile root, Program Files roots and other system locations are refused, a folder that is already a link is refused instead of copying the data twice, nested directory links are recreated on the target drive (links pointing inside the folder are rewritten), and an interrupted migration is rolled back on the next launch.
 - Records can be deleted from a right-click menu after a second confirmation (the copy in the automatic backup is kept unless you tick the option), and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
-- Migrations are faster and lighter (scanning and lock checking share a single pass), and the pages use wider side margins so content no longer hugs the window edges.
+- Migrations are faster and lighter: one pass feeds the plan, the lock check and the size accounting, the lock check reports progress and checks executable files first, same-drive moves skip the pointless pre-checks, and the per-file lock check can be turned off in Settings. Pages use wider side margins so content no longer hugs the window edges.
+- Stronger uninstall: running processes of the app are listed and can be closed with one click, files that stay locked are queued for deletion on the next reboot, the freed space is reported after uninstalling or cleaning, and leftover scanning now covers Start Menu shortcuts, LocalLow and Program Files leftovers.
 
 ## v1.2.0
 

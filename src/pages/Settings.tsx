@@ -635,6 +635,22 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
               </div>
               <Toggle active={settings.useRecycleBin} onChange={() => updateSetting('useRecycleBin', !settings.useRecycleBin)} />
             </div>
+
+            <div className="setting-item" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+                  <ShieldCheck className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div>
+                  <p className="setting-label">迁移前检测文件占用</p>
+                  <p className="setting-desc">
+                    关闭后可跳过逐文件检测，超大目录（如 Yarn、npm 缓存）开始迁移更快；
+                    代价是文件被占用时要复制到一半才会发现。
+                  </p>
+                </div>
+              </div>
+              <Toggle active={!settings.skipLockCheck} onChange={() => updateSetting('skipLockCheck', !settings.skipLockCheck)} />
+            </div>
           </div>
         </section>
 

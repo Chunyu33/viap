@@ -21,6 +21,8 @@ use walkdir::WalkDir;
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
 #[cfg(windows)]
 use winreg::{HKEY, RegKey};
+#[cfg(windows)]
+use sysinfo::System;
 
 #[cfg(windows)]
 const BLACKLIST: &[&str] = &["microsoft", "windows", "common files", "tauri", "webview2"];
@@ -334,6 +336,12 @@ pub struct UninstallResult {
     pub message: String,
     pub command: Option<String>,
     pub leftovers: Vec<LeftoverItem>,
+    /// 本次实际释放的字节数（被占用/未删除的项目不计入）
+    #[serde(default)]
+    pub freed_bytes: u64,
+    /// 因文件被占用而安排到重启后自动删除的项目
+    #[serde(default)]
+    pub scheduled_for_reboot: Vec<String>,
 }
 
 /// 清理执行结果
@@ -343,6 +351,180 @@ pub struct CleanupResult {
     pub message: String,
     pub cleaned_count: usize,
     pub failed_items: Vec<String>,
+    /// 本次实际释放的字节数
+    #[serde(default)]
+    pub freed_bytes: u64,
+    /// 因文件被占用而安排到重启后自动删除的项目
+    #[serde(default)]
+    pub scheduled_for_reboot: Vec<String>,
+}
+
+/// 应用相关进程（强制删除 / 残留清理前提示用户先结束它们）
+#[derive(Debug, Serialize)]
+pub struct AppProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub exe_path: String,
+}
+
+/// 结束进程的结果
+#[derive(Debug, Serialize)]
+pub struct ProcessKillResult {
+    /// 成功结束的进程数
+    pub killed: u32,
+    /// 结束失败的原因（含进程名）
+    pub failed: Vec<String>,
+}
+
+/// 判断进程是否属于目标应用
+///
+/// 两条判据（任一成立即可，且都必须排除系统目录里的同名进程）：
+/// 1. 进程可执行文件位于安装目录内 —— 最强证据
+/// 2. 进程名与应用名一致（忽略大小写与 .exe）
+///
+/// 单独抽出便于单测：结束进程是不可逆操作，判定逻辑必须可验证。
+#[cfg(windows)]
+fn is_related_process(
+    exe_path: Option<&Path>,
+    process_name: &str,
+    install_location: Option<&Path>,
+    app_name: &str,
+) -> bool {
+    // 系统目录里的进程永不结束：即使名字撞上也不能动（如 explorer、svchost）
+    if let Some(exe) = exe_path {
+        let exe_lower = exe.to_string_lossy().to_lowercase();
+        if exe_lower.contains(r"\windows\") || exe_lower.contains(r"\windows\system32") {
+            return false;
+        }
+    }
+
+    if let (Some(exe), Some(location)) = (exe_path, install_location) {
+        let exe_lower = exe.to_string_lossy().to_lowercase();
+        let location_lower = location.to_string_lossy().trim_end_matches('\\').to_lowercase();
+        if !location_lower.is_empty()
+            && (exe_lower == location_lower || exe_lower.starts_with(&format!("{}\\", location_lower)))
+        {
+            return true;
+        }
+    }
+
+    let app_lower = app_name.trim().to_lowercase();
+    if app_lower.is_empty() {
+        return false;
+    }
+    let name_lower = process_name.trim().to_lowercase();
+    let name_without_ext = name_lower.strip_suffix(".exe").unwrap_or(&name_lower);
+    name_lower == app_lower
+        || name_without_ext == app_lower
+        || name_without_ext == app_lower.strip_suffix(".exe").unwrap_or(&app_lower)
+}
+
+/// 列出目标应用正在运行的进程
+#[tauri::command]
+pub fn list_app_processes(
+    install_location: Option<String>,
+    app_name: Option<String>,
+) -> Result<Vec<AppProcessInfo>, String> {
+    #[cfg(windows)]
+    {
+        let location = install_location
+            .as_deref()
+            .map(sanitize_search_text)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let name = app_name.unwrap_or_default();
+
+        let mut system = System::new_all();
+        system.refresh_all();
+        let current_pid = std::process::id();
+
+        let mut processes: Vec<AppProcessInfo> = system
+            .processes()
+            .iter()
+            .filter(|(pid, process)| {
+                // 绝不把 Viap 自己列进来
+                pid.as_u32() != current_pid
+                    && is_related_process(
+                        process.exe(),
+                        &process.name().to_string_lossy(),
+                        location.as_deref(),
+                        &name,
+                    )
+            })
+            .map(|(pid, process)| AppProcessInfo {
+                pid: pid.as_u32(),
+                name: process.name().to_string_lossy().to_string(),
+                exe_path: process
+                    .exe()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            })
+            .collect();
+
+        processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(processes)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (install_location, app_name);
+        Ok(Vec::new())
+    }
+}
+
+/// 结束目标应用的进程
+///
+/// 不信任前端传来的 PID 列表：逐个重新校验（仍属于该应用）后才结束，
+/// 避免过期/伪造的 PID 误杀无关进程。
+#[tauri::command]
+pub fn kill_app_processes(
+    pids: Vec<u32>,
+    install_location: Option<String>,
+    app_name: Option<String>,
+) -> Result<ProcessKillResult, String> {
+    #[cfg(windows)]
+    {
+        let location = install_location
+            .as_deref()
+            .map(sanitize_search_text)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let name = app_name.unwrap_or_default();
+        let current_pid = std::process::id();
+
+        let mut system = System::new_all();
+        system.refresh_all();
+
+        let mut killed = 0u32;
+        let mut failed: Vec<String> = Vec::new();
+
+        for pid_value in pids {
+            if pid_value == current_pid {
+                continue;
+            }
+            let Some(process) = system.process(sysinfo::Pid::from_u32(pid_value)) else {
+                continue;
+            };
+            let process_name = process.name().to_string_lossy().to_string();
+            if !is_related_process(process.exe(), &process_name, location.as_deref(), &name) {
+                failed.push(format!("{}（已跳过：不再属于该应用）", process_name));
+                continue;
+            }
+            if process.kill() {
+                killed += 1;
+            } else {
+                failed.push(format!("{}（PID {}）", process_name, pid_value));
+            }
+        }
+
+        Ok(ProcessKillResult { killed, failed })
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (pids, install_location, app_name);
+        Ok(ProcessKillResult { killed: 0, failed: Vec::new() })
+    }
 }
 
 /// 卸载命令预览结果
@@ -380,8 +562,15 @@ pub fn force_remove_application(input: UninstallInput) -> Result<UninstallResult
             .to_string();
         let use_recycle = input.use_recycle_bin.unwrap_or(true);
 
-        let result = execute_force_remove(&input, use_recycle)?;
-        let (deleted_files, deleted_registry, install_location, application_removed) = result;
+        let outcome = execute_force_remove(&input, use_recycle)?;
+        let ForceRemoveOutcome {
+            deleted_files,
+            deleted_registry,
+            install_location,
+            application_removed,
+            freed_bytes,
+            scheduled_for_reboot,
+        } = outcome;
 
         // 写入操作日志（审计追溯）
         crate::storage::operation_log::add_operation_log(
@@ -408,22 +597,40 @@ pub fn force_remove_application(input: UninstallInput) -> Result<UninstallResult
         .collect();
 
         let method_label = if use_recycle { "（已移入回收站）" } else { "" };
+        // 释放量与"重启后自动删除"都直接写进消息：用户最关心的就是这两点
+        let freed_label = if freed_bytes > 0 {
+            format!("，已释放 {}", crate::migration::format_bytes(freed_bytes))
+        } else {
+            String::new()
+        };
+        let reboot_label = if scheduled_for_reboot.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n其中 {} 项正被占用，已安排在下次重启时自动删除。",
+                scheduled_for_reboot.len()
+            )
+        };
 
         Ok(UninstallResult {
             success: true,
             application_removed,
             message: format!(
-                "强制删除完成：{}。{}{}",
+                "强制删除完成：{}{}{}。{}{}",
                 parts.join("，"),
+                freed_label,
+                method_label,
                 if application_removed {
                     "建议运行残留扫描彻底清理。"
                 } else {
                     "安装目录仍保留未选项目，请继续处理剩余内容。"
                 },
-                method_label,
+                reboot_label,
             ),
             command: Some("force_remove".to_string()),
             leftovers: Vec::new(),
+            freed_bytes,
+            scheduled_for_reboot,
         })
     }
 
@@ -491,12 +698,24 @@ pub fn preview_force_remove(input: UninstallInput) -> Result<Vec<LeftoverItem>, 
 }
 
 #[cfg(windows)]
+struct ForceRemoveOutcome {
+    deleted_files: bool,
+    deleted_registry: bool,
+    install_location: Option<String>,
+    application_removed: bool,
+    freed_bytes: u64,
+    scheduled_for_reboot: Vec<String>,
+}
+
+#[cfg(windows)]
 fn execute_force_remove(
     input: &UninstallInput,
     use_recycle_bin: bool,
-) -> Result<(bool, bool, Option<String>, bool), String> {
+) -> Result<ForceRemoveOutcome, String> {
     let mut deleted_files = false;
     let mut deleted_registry = false;
+    let mut freed_bytes: u64 = 0;
+    let mut scheduled_for_reboot: Vec<String> = Vec::new();
 
     let app_id = input
         .app_id
@@ -581,7 +800,14 @@ fn execute_force_remove(
                 if !path.exists() {
                     continue;
                 }
-                delete_path_with_policy(&path, use_recycle_bin)?;
+                // 先量体积再删除：删除后就没法统计本次释放了多少空间
+                let size = path_size_bytes(&path);
+                match delete_path_with_policy(&path, use_recycle_bin)? {
+                    DeleteOutcome::Deleted => freed_bytes += size,
+                    DeleteOutcome::ScheduledOnReboot => {
+                        scheduled_for_reboot.push(path.to_string_lossy().to_string())
+                    }
+                }
                 deleted_files = true;
             }
 
@@ -590,7 +816,12 @@ fn execute_force_remove(
                 && install_path.is_dir()
                 && is_directory_empty(install_path)
             {
-                delete_path_with_policy(install_path, use_recycle_bin)?;
+                match delete_path_with_policy(install_path, use_recycle_bin)? {
+                    DeleteOutcome::Deleted => {}
+                    DeleteOutcome::ScheduledOnReboot => {
+                        scheduled_for_reboot.push(install_path.to_string_lossy().to_string())
+                    }
+                }
                 deleted_files = true;
             }
         }
@@ -620,7 +851,14 @@ fn execute_force_remove(
         return Err("未找到可清理的文件或注册表项。应用可能已被完全卸载。".to_string());
     }
 
-    Ok((deleted_files, deleted_registry, install_location, application_removed))
+    Ok(ForceRemoveOutcome {
+        deleted_files,
+        deleted_registry,
+        install_location,
+        application_removed,
+        freed_bytes,
+        scheduled_for_reboot,
+    })
 }
 
 /// 删除目标安全校验：确保不会误删无关目录
@@ -811,13 +1049,24 @@ fn resolve_force_delete_targets(
 }
 
 #[cfg(windows)]
-fn delete_path_with_policy(path: &Path, use_recycle_bin: bool) -> Result<(), String> {
+fn delete_path_with_policy(path: &Path, use_recycle_bin: bool) -> Result<DeleteOutcome, String> {
     if use_recycle_bin {
         // 默认使用回收站，保留用户撤销误删的机会；永久删除由设置显式控制。
         trash::delete(path)
+            .map(|_| DeleteOutcome::Deleted)
             .map_err(|e| format!("移入回收站失败: {}。已拒绝直接删除以确保安全。", e))
     } else {
         force_delete_path(path)
+    }
+}
+
+/// 统计路径占用空间（删除前调用，用于汇报实际释放量）
+#[cfg(windows)]
+fn path_size_bytes(path: &Path) -> u64 {
+    if path.is_dir() {
+        compute_dir_size(path)
+    } else {
+        path.metadata().map(|m| m.len()).unwrap_or(0)
     }
 }
 
@@ -873,6 +1122,8 @@ pub async fn uninstall_application(input: UninstallInput) -> Result<UninstallRes
                         message: "卸载流程已完成。请在前端手动确认后再触发残留扫描。".to_string(),
                         command: Some(uninstall_cmd),
                         leftovers: Vec::new(),
+                        freed_bytes: 0,
+                        scheduled_for_reboot: Vec::new(),
                     });
                 }
                 Err(err) => {
@@ -929,6 +1180,8 @@ pub async fn uninstall_application(input: UninstallInput) -> Result<UninstallRes
             message: "卸载功能仅支持 Windows 系统".to_string(),
             command: None,
             leftovers: Vec::new(),
+            freed_bytes: 0,
+            scheduled_for_reboot: Vec::new(),
         })
     }
 }
@@ -977,11 +1230,15 @@ pub fn execute_cleanup(
                 message: "没有需要清理的项目".to_string(),
                 cleaned_count: 0,
                 failed_items: Vec::new(),
+                freed_bytes: 0,
+                scheduled_for_reboot: Vec::new(),
             });
         }
 
         let mut cleaned_count = 0usize;
         let mut failed_items: Vec<String> = Vec::new();
+        let mut freed_bytes: u64 = 0;
+        let mut scheduled_for_reboot: Vec<String> = Vec::new();
 
         for item in items {
             if let Some((hkey, sub_path)) = parse_registry_path(&item) {
@@ -1011,8 +1268,17 @@ pub fn execute_cleanup(
                 continue;
             }
 
+            // 先量体积再删除，删除后无法再统计
+            let size = path_size_bytes(&path);
             match force_delete_path(&path) {
-                Ok(()) => cleaned_count += 1,
+                Ok(DeleteOutcome::Deleted) => {
+                    cleaned_count += 1;
+                    freed_bytes += size;
+                }
+                Ok(DeleteOutcome::ScheduledOnReboot) => {
+                    cleaned_count += 1;
+                    scheduled_for_reboot.push(path.to_string_lossy().to_string());
+                }
                 Err(err) => {
                     eprintln!(
                         "[viap][cleanup] 强制删除失败 {} => {}",
@@ -1025,8 +1291,18 @@ pub fn execute_cleanup(
         }
 
         let success = failed_items.is_empty();
+        let freed_label = if freed_bytes > 0 {
+            format!("，释放 {}", crate::migration::format_bytes(freed_bytes))
+        } else {
+            String::new()
+        };
+        let reboot_label = if scheduled_for_reboot.is_empty() {
+            String::new()
+        } else {
+            format!("；{} 项被占用，将在重启后自动删除", scheduled_for_reboot.len())
+        };
         let message = if success {
-            format!("清理完成，共删除 {} 项", cleaned_count)
+            format!("清理完成，共删除 {} 项{}{}", cleaned_count, freed_label, reboot_label)
         } else if cleaned_count == 0 {
             format!(
                 "所有 {} 项清理均失败（可能需管理员权限），请以管理员身份运行后重试",
@@ -1053,6 +1329,8 @@ pub fn execute_cleanup(
             message,
             cleaned_count,
             failed_items,
+            freed_bytes,
+            scheduled_for_reboot,
         })
     }
 
@@ -1064,6 +1342,8 @@ pub fn execute_cleanup(
             message: "清理功能仅支持 Windows 系统".to_string(),
             cleaned_count: 0,
             failed_items: Vec::new(),
+            freed_bytes: 0,
+            scheduled_for_reboot: Vec::new(),
         })
     }
 }
@@ -1495,34 +1775,53 @@ fn is_meaningful_keyword(token: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn build_scan_roots(app_name: &str, install_location: Option<String>) -> Vec<String> {
-    let mut roots = vec![
-        std::env::var("APPDATA").unwrap_or_default(),
-        std::env::var("LOCALAPPDATA").unwrap_or_default(),
-        r"C:\ProgramData".to_string(),
+fn build_scan_roots(app_name: &str, install_location: Option<String>) -> Vec<(String, usize)> {
+    // 每个根目录单独给出遍历深度：用户数据目录层级较深，Program Files 只需要看直接子目录，
+    // 否则光是扫描这两棵大树就会明显拖慢残留扫描。
+    let mut roots: Vec<(String, usize)> = vec![
+        (std::env::var("APPDATA").unwrap_or_default(), 5),
+        (std::env::var("LOCALAPPDATA").unwrap_or_default(), 5),
+        (r"C:\ProgramData".to_string(), 5),
     ];
+
+    // 开始菜单快捷方式：卸载后残留的快捷方式在这里（Geek 之类工具也会清）
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push((
+            format!(r"{}\Microsoft\Windows\Start Menu\Programs", appdata),
+            4,
+        ));
+    }
+    // LocalLow：部分应用（尤其游戏/浏览器插件）把数据放这里
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        roots.push((format!(r"{}\AppData\LocalLow", profile), 4));
+    }
+    // Program Files 根：注册表没写 InstallLocation 时，卸载残留目录只在这里能看到
+    for program_files in [r"C:\Program Files", r"C:\Program Files (x86)"] {
+        roots.push((program_files.to_string(), 1));
+    }
 
     if let Some(path) = install_location {
         if !path.trim().is_empty() {
-            roots.push(path);
+            roots.push((path, 5));
         }
     }
 
     for path in find_install_locations_by_app_name(app_name) {
-        roots.push(path);
+        roots.push((path, 5));
     }
 
-    roots.into_iter().filter(|p| !p.trim().is_empty()).collect()
+    roots.retain(|(path, _)| !path.trim().is_empty());
+    roots
 }
 
 #[cfg(windows)]
 fn scan_filesystem_residue(
-    roots: &[String],
+    roots: &[(String, usize)],
     context: &StrictScanContext,
     output: &mut Vec<LeftoverItem>,
     seen: &mut HashSet<String>,
 ) {
-    for root in roots {
+    for (root, max_depth) in roots {
         let root_path = Path::new(root);
         if !root_path.exists() || !root_path.is_dir() || is_blacklisted_path(root_path) {
             continue;
@@ -1530,7 +1829,7 @@ fn scan_filesystem_residue(
 
         // 命中应用目录后直接收敛为一个可清理条目，避免继续遍历子项并重复计算体积。
         let mut entries = WalkDir::new(root_path)
-            .max_depth(5)
+            .max_depth(*max_depth)
             .into_iter();
         while let Some(result) = entries.next() {
             let Ok(entry) = result else { continue };
@@ -2005,10 +2304,19 @@ fn is_blacklisted_path(path: &Path) -> bool {
 /// 3. 调用 Windows 的 takeown / icacls 夺回所有权与完全控制权限后再次重试
 ///    —— 覆盖 "Access Denied / 拒绝访问" 场景
 #[cfg(windows)]
-fn force_delete_path(path: &Path) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DeleteOutcome {
+    /// 已经删除
+    Deleted,
+    /// 文件仍被占用，已安排重启后由系统删除
+    ScheduledOnReboot,
+}
+
+#[cfg(windows)]
+fn force_delete_path(path: &Path) -> Result<DeleteOutcome, String> {
     // 第 1 步：直接尝试
     if try_remove(path).is_ok() {
-        return Ok(());
+        return Ok(DeleteOutcome::Deleted);
     }
 
     // 第 2 步：清除只读属性后重试
@@ -2033,6 +2341,11 @@ fn force_delete_path(path: &Path) -> Result<(), String> {
         let _ = clear_readonly_recursively(path);
 
         if let Err(final_err) = try_remove(path) {
+            // 第 4 步：文件被占用（多为进程还在跑）→ 交给系统在重启后删除，
+            // 比直接报"权限不足"更接近用户预期（Geek 等工具也是这个做法）
+            if crate::migration::schedule_remove_on_reboot(path) {
+                return Ok(DeleteOutcome::ScheduledOnReboot);
+            }
             return Err(format!(
                 "删除失败：{}；权限回退后仍失败：{}",
                 err, final_err
@@ -2040,7 +2353,7 @@ fn force_delete_path(path: &Path) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(DeleteOutcome::Deleted)
 }
 
 #[cfg(windows)]
@@ -2501,5 +2814,61 @@ mod tests {
         // 目录名是 SystemTools，但实际 exe 明确属于 geek，应该允许继续安全校验。
         assert!(directory_contains_matching_executable(&test_root, "geek"));
         let _ = std::fs::remove_dir_all(test_root);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod process_tests {
+    use super::*;
+
+    #[test]
+    fn related_process_matching_covers_both_rules() {
+        let install = Path::new(r"C:\Program Files\SomeApp");
+
+        // 规则 1：安装目录内的进程
+        assert!(is_related_process(
+            Some(Path::new(r"C:\Program Files\SomeApp\SomeApp.exe")),
+            "SomeApp.exe",
+            Some(install),
+            "SomeApp"
+        ));
+        assert!(is_related_process(
+            Some(Path::new(r"C:\Program Files\SomeApp\bin\helper.exe")),
+            "helper.exe",
+            Some(install),
+            "SomeApp"
+        ));
+
+        // 规则 2：进程名与应用名一致（忽略 .exe 与大小写）
+        assert!(is_related_process(
+            Some(Path::new(r"D:\other\place\someapp.exe")),
+            "SomeApp.exe",
+            None,
+            "SomeApp"
+        ));
+
+        // 系统目录里的进程永远不动
+        assert!(!is_related_process(
+            Some(Path::new(r"C:\Windows\explorer.exe")),
+            "explorer.exe",
+            None,
+            "explorer"
+        ));
+        assert!(!is_related_process(
+            Some(Path::new(r"C:\Windows\System32\svchost.exe")),
+            "svchost.exe",
+            None,
+            "svchost"
+        ));
+
+        // 无关进程
+        assert!(!is_related_process(
+            Some(Path::new(r"D:\software\other\Clash.exe")),
+            "Clash.exe",
+            Some(install),
+            "SomeApp"
+        ));
+        // 没有应用名也没有安装目录：不做任何匹配
+        assert!(!is_related_process(None, "anything.exe", None, ""));
     }
 }

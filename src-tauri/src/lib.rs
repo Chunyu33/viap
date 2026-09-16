@@ -481,6 +481,8 @@ pub fn run() {
             uninstall_application,
             scan_app_residue,
             execute_cleanup,
+            uninstaller::list_app_processes,
+            uninstaller::kill_app_processes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

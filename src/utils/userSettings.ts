@@ -15,6 +15,8 @@ export interface UserSettings {
   theme: UserThemeMode;
   /** 自动备份迁移数据（历史、自定义文件夹、应用兜底数据） */
   autoBackupEnabled: boolean;
+  /** 跳过迁移前的逐文件占用检测（大目录迁移更快） */
+  skipLockCheck: boolean;
 }
 
 interface UserSettingsLoadResult {
@@ -33,6 +35,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   fontSizePx: 13,
   theme: 'system',
   autoBackupEnabled: true,
+  skipLockCheck: false,
 };
 
 function isThemeMode(value: unknown): value is UserThemeMode {
@@ -60,6 +63,7 @@ export function normalizeUserSettings(input: Partial<UserSettings>): UserSetting
     fontSizePx: normalizeFontSizePx(input.fontSizePx),
     theme: isThemeMode(input.theme) ? input.theme : DEFAULT_USER_SETTINGS.theme,
     autoBackupEnabled: input.autoBackupEnabled !== false,
+    skipLockCheck: input.skipLockCheck === true,
   };
 }
 
