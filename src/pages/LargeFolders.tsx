@@ -15,7 +15,6 @@ import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
 import MigrationModal from '../components/MigrationModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
-import LinkRecoveryModal from '../components/LinkRecoveryModal';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import { useViapStore } from '../store';
@@ -327,8 +326,6 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
   const appDataScanTokenRef = useRef<string | null>(null);
   const [restoringFolderId, setRestoringFolderId] = useState<string | null>(null);
   const [restoreProgressMap, setRestoreProgressMap] = useState<Record<string, number>>({});
-  // 迁移记录重建弹窗（用户手动触发，不做自动检查）
-  const [linkRecoveryOpen, setLinkRecoveryOpen] = useState(false);
 
   // 迁移进度弹窗状态
   const [migrationModalOpen, setMigrationModalOpen] = useState(false);
@@ -1010,10 +1007,6 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setLinkRecoveryOpen(true)} className="btn h-7 text-[12px]" title="扫描目录联接并重建丢失的迁移记录">
-              <Link2 className="w-3.5 h-3.5" />
-              恢复迁移记录
-            </button>
             <button onClick={handleAddCustomFolder} className="btn h-7 text-[12px]">
               <Plus className="w-3.5 h-3.5" />
               添加文件夹
@@ -1173,17 +1166,6 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
           ? async () => { handleStopBatchMigrate(); }
           : handleRequestCloseDuringMigration
         }
-      />
-
-      {/* 迁移记录重建弹窗：数据目录被误删后从原路径联接反推记录 */}
-      <LinkRecoveryModal
-        isOpen={linkRecoveryOpen}
-        onClose={() => setLinkRecoveryOpen(false)}
-        onImported={() => {
-          // 重建出的自定义文件夹需要重新拉取列表才能显示为已迁移
-          fetchFolders();
-          showToast('迁移记录已重建', 'success');
-        }}
       />
 
       {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}

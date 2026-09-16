@@ -142,11 +142,13 @@ pub struct DataDirConfig {
     pub portable_default: bool,
 }
 
-/// 指针配置文件信息（安装版 %APPDATA%\viap.json，便携版 <程序目录>\viap.json）
+/// 配置文件条目（供设置页展示并一键打开所在目录）
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConfigFileInfo {
+pub struct ConfigFileEntry {
+    /// 稳定标识：pointer（数据目录指针）/ ui_settings（界面设置）
+    pub id: String,
     pub path: String,
-    /// 文件是否已生成；未生成时程序使用默认数据目录
+    /// 文件是否已生成；未生成时程序使用默认值
     pub exists: bool,
 }
 

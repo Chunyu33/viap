@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::models::{ConfigFileInfo, DataDirConfig, CustomFolderEntry};
+use crate::models::{ConfigFileEntry, DataDirConfig, CustomFolderEntry};
 
 #[derive(Debug, serde::Serialize)]
 pub struct StorageInitializationResult {
@@ -138,14 +138,26 @@ pub fn get_data_dir_info() -> Result<DataDirConfig, String> {
     })
 }
 
-/// 获取指针配置文件信息（供设置页展示并打开所在目录）
+/// 列出可展示的配置文件：数据目录指针文件与界面设置文件
+///
+/// 前端按 id 映射展示文案，这里只给出路径与存在性，避免把界面文案写进后端。
 #[tauri::command]
-pub fn get_config_file_info() -> Result<ConfigFileInfo, String> {
-    let path = get_config_path();
-    Ok(ConfigFileInfo {
-        exists: path.exists(),
-        path: path.to_string_lossy().to_string(),
-    })
+pub fn get_config_files() -> Result<Vec<ConfigFileEntry>, String> {
+    let pointer_path = get_config_path();
+    let settings_path = crate::storage::user_settings::settings_path();
+
+    Ok(vec![
+        ConfigFileEntry {
+            id: "pointer".to_string(),
+            exists: pointer_path.exists(),
+            path: pointer_path.to_string_lossy().to_string(),
+        },
+        ConfigFileEntry {
+            id: "ui_settings".to_string(),
+            exists: settings_path.exists(),
+            path: settings_path.to_string_lossy().to_string(),
+        },
+    ])
 }
 
 fn comparable_path(path: &Path) -> PathBuf {

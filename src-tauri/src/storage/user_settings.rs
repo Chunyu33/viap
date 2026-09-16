@@ -76,7 +76,8 @@ impl UserSettings {
     }
 }
 
-fn settings_path() -> PathBuf {
+/// 界面设置文件路径（设置页「数据管理」也据此展示位置）
+pub(crate) fn settings_path() -> PathBuf {
     ensure_data_dir().join(SETTINGS_FILE_NAME)
 }
 

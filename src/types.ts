@@ -177,13 +177,15 @@ export interface DataDirConfig {
 }
 
 /**
- * 指针配置文件信息
- * 对应 Rust 后端的 ConfigFileInfo 结构体
+ * 配置文件条目
+ * 对应 Rust 后端的 ConfigFileEntry 结构体
  */
-export interface ConfigFileInfo {
-  // 配置文件完整路径
+export interface ConfigFileEntry {
+  // 稳定标识：pointer（数据目录指针）/ ui_settings（界面设置）
+  id: string;
+  // 文件完整路径
   path: string;
-  // 是否已生成；未生成时程序使用默认数据目录
+  // 是否已生成；未生成时程序使用默认值
   exists: boolean;
 }
 

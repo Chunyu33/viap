@@ -321,7 +321,7 @@ pub fn run() {
             // 存储层 — 数据目录
             storage::data_dir::initialize_storage,
             storage::data_dir::get_data_dir_info,
-            storage::data_dir::get_config_file_info,
+            storage::data_dir::get_config_files,
             storage::data_dir::set_data_dir,
             storage::user_settings::get_user_settings,
             storage::user_settings::save_user_settings,
