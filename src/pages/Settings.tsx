@@ -1,7 +1,7 @@
 // 设置页面 — 桌面工具风格
 // 克制配色，紧凑布局
 
-import { useState, useEffect, type CSSProperties } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, confirm } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -23,6 +23,7 @@ import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
+import FilterSelect from '../components/FilterSelect';
 import type { ConfigFileEntry, DataDirConfig, DataDirSwitchResult, GhostLinkPreview, MirrorBackupInfo } from '../types';
 import {
   applyFontSize,
@@ -102,6 +103,9 @@ const FONT_SIZE_PRESETS = [
   { label: '较大', value: 15 },
   { label: '大屏', value: 18 },
 ];
+
+/** 字号下拉里的「自定义」项：选中后才允许逐像素编辑 */
+const CUSTOM_FONT_SIZE_VALUE = 'custom';
 
 function Toggle({ active, onChange }: { active: boolean; onChange: () => void }) {
   return (
@@ -251,6 +255,11 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
   const [configFiles, setConfigFiles] = useState<ConfigFileEntry[]>([]);
+  // 字号当前是否处于「自定义」：初值由已保存字号是否命中预设决定
+  const [customFontSizeMode, setCustomFontSizeMode] = useState(
+    () => !FONT_SIZE_PRESETS.some(preset => preset.value === loadSettings().fontSizePx),
+  );
+  const [customFontSizeDraft, setCustomFontSizeDraft] = useState(() => String(loadSettings().fontSizePx));
   const [backupInfo, setBackupInfo] = useState<MirrorBackupInfo | null>(null);
   const [backupRunning, setBackupRunning] = useState(false);
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
@@ -272,6 +281,12 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     status: updateStatus, updateInfo, downloadProgress,
     isPortable, checkForUpdate, downloadAndInstall,
   } = useUpdater();
+
+  // 字号可能在别处被改（例如导入旧配置），输入框与预设状态需要跟着同步
+  useEffect(() => {
+    setCustomFontSizeDraft(String(settings.fontSizePx));
+    setCustomFontSizeMode(!FONT_SIZE_PRESETS.some(preset => preset.value === settings.fontSizePx));
+  }, [settings.fontSizePx]);
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -421,8 +436,25 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     if (k === 'fontSizePx') applyFontSize(nextValue);
   };
 
-  const fontPresetIndex = FONT_SIZE_PRESETS.findIndex(preset => preset.value === settings.fontSizePx);
-  const fontRangeProgress = ((settings.fontSizePx - MIN_FONT_SIZE_PX) / (MAX_FONT_SIZE_PX - MIN_FONT_SIZE_PX)) * 100;
+  /** 字号下拉切换：选预设立即生效，选「自定义」只切换编辑态 */
+  function handleFontSizeSelect(value: string) {
+    if (value === CUSTOM_FONT_SIZE_VALUE) {
+      setCustomFontSizeMode(true);
+      setCustomFontSizeDraft(String(settings.fontSizePx));
+      return;
+    }
+    setCustomFontSizeMode(false);
+    updateSetting('fontSizePx', Number(value));
+  }
+
+  /** 提交自定义字号：非法或越界输入回退到合法值，避免把界面撑破 */
+  function commitCustomFontSize() {
+    const normalized = normalizeFontSizePx(Number(customFontSizeDraft));
+    setCustomFontSizeDraft(String(normalized));
+    if (normalized !== settings.fontSizePx) {
+      updateSetting('fontSizePx', normalized);
+    }
+  }
 
   /** 选择默认应用迁移目录（C 盘以外的目录） */
   const handleSelectAppTargetPath = async () => {
@@ -509,57 +541,37 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <div
-                  className="relative flex h-7 w-[132px] items-center overflow-hidden rounded p-0.5"
-                  style={{ background: 'var(--bg-row-hover)' }}
-                >
-                  <span
-                    className="absolute inset-y-0.5 left-0.5 rounded transition-all duration-200 ease-out"
+                <FilterSelect
+                  className="w-[110px]"
+                  value={customFontSizeMode ? CUSTOM_FONT_SIZE_VALUE : String(settings.fontSizePx)}
+                  onChange={handleFontSizeSelect}
+                  options={[
+                    ...FONT_SIZE_PRESETS.map(preset => ({
+                      value: String(preset.value),
+                      label: `${preset.label} ${preset.value}`,
+                    })),
+                    { value: CUSTOM_FONT_SIZE_VALUE, label: '自定义' },
+                  ]}
+                />
+                {/* 只有选了「自定义」才允许逐像素编辑，避免预设与输入框同时抢焦点 */}
+                {customFontSizeMode && (
+                  <input
+                    type="number"
+                    min={MIN_FONT_SIZE_PX}
+                    max={MAX_FONT_SIZE_PX}
+                    value={customFontSizeDraft}
+                    onChange={(e) => setCustomFontSizeDraft(e.target.value)}
+                    onBlur={commitCustomFontSize}
+                    onKeyDown={(e) => { if (e.key === 'Enter') commitCustomFontSize(); }}
+                    className="h-8 w-16 rounded-md border px-2 text-[12px] outline-none"
                     style={{
-                      width: 'calc((100% - 4px) / 3)',
-                      opacity: fontPresetIndex >= 0 ? 1 : 0,
-                      transform: `translateX(${fontPresetIndex * 100}%)`,
-                      background: 'var(--color-primary)',
+                      borderColor: 'var(--border-color)',
+                      background: 'var(--bg-input)',
+                      color: 'var(--text-primary)',
                     }}
+                    title={`自定义字号（${MIN_FONT_SIZE_PX}-${MAX_FONT_SIZE_PX}px）`}
                   />
-                  {FONT_SIZE_PRESETS.map(preset => (
-                    <button
-                      key={preset.value}
-                      type="button"
-                      onClick={() => updateSetting('fontSizePx', preset.value)}
-                      className="relative z-10 h-full flex-1 rounded text-[11px] transition-colors"
-                      style={{
-                        color: settings.fontSizePx === preset.value ? 'var(--text-inverse)' : 'var(--text-tertiary)',
-                      }}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="range"
-                  min={MIN_FONT_SIZE_PX}
-                  max={MAX_FONT_SIZE_PX}
-                  step={1}
-                  value={settings.fontSizePx}
-                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
-                  className="theme-range w-24"
-                  style={{ '--range-progress': `${fontRangeProgress}%` } as CSSProperties}
-                  title="调整字体大小"
-                />
-                <input
-                  type="number"
-                  min={MIN_FONT_SIZE_PX}
-                  max={MAX_FONT_SIZE_PX}
-                  value={settings.fontSizePx}
-                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
-                  className="h-7 w-14 rounded border px-2 text-[12px] outline-none"
-                  style={{
-                    borderColor: 'var(--border-color)',
-                    background: 'var(--bg-input)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
+                )}
               </div>
             </div>
           </div>
