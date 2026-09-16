@@ -403,6 +403,35 @@ const WARNING_DISCLAIMER = `迁移此类目录存在以下风险：
 
 Viap 作者对因迁移此类目录导致的数据损失不承担责任。`;
 
+/** 结构性危险路径：不含危险关键词但绝不允许迁移，规则与后端 check_structural_block 保持一致 */
+function checkStructuralBlock(normalized: string): { category: string; label: string } | null {
+  const segments = normalized.replace(/\\+$/, '').split('\\').filter(Boolean);
+  const isDriveLetter = (segment: string) => /^[a-z]:$/.test(segment);
+
+  if (segments.length === 0) return null;
+  // 盘符根：迁移整个卷既不可能成功也没意义
+  if (segments.length === 1 && isDriveLetter(segments[0])) {
+    return { category: '系统目录', label: '磁盘根目录' };
+  }
+  // 用户配置根：C:\Users\<用户名>，锁定它会导致 ProfSvc 失效、无法登录桌面
+  if (segments.length === 3 && isDriveLetter(segments[0]) && segments[1] === 'users') {
+    return { category: '系统目录', label: '用户配置根目录' };
+  }
+  // Program Files 系列根目录（子目录仍然允许迁移）
+  const lastSegment = segments[segments.length - 1];
+  if (segments.length >= 2 && ['program files', 'program files (x86)', 'program files (arm)'].includes(lastSegment)) {
+    return { category: '系统目录', label: 'Program Files 根目录' };
+  }
+  // 盘符根下由系统独占的目录（任意盘符）
+  if (segments.length === 2 && [
+    '$recycle.bin', 'system volume information', 'recovery', 'boot',
+    'config.msi', 'perflogs', 'msocache', '$windows.~bt', '$windows.~ws',
+  ].includes(segments[1])) {
+    return { category: '系统目录', label: '系统保留目录' };
+  }
+  return null;
+}
+
 /**
  * 危险路径检测 Hook
  * 返回两级检测函数：checkBlocked 直接终止，checkWarning 弹窗确认后放行
@@ -424,6 +453,14 @@ export function useDangerousPathCheck(): {
 
   const checkBlocked = useCallback((sourcePath: string): string | null => {
     const normalized = sourcePath.toLowerCase().replace(/\//g, '\\');
+
+    // 结构性危险路径优先：它不含关键词，必须先拦，避免被 WARNING 规则放行
+    const structural = checkStructuralBlock(normalized);
+    if (structural) {
+      const tip = BLOCKED_CATEGORY_TIPS[structural.category]
+        ?? '该目录包含系统级组件，不支持迁移。';
+      return `🚫 无法迁移：${structural.label} 属于「${structural.category}」，不支持迁移。\n\n${tip}`;
+    }
 
     for (const rule of DANGER_RULES) {
       if (rule.level !== 'BLOCKED') continue;
@@ -456,6 +493,7 @@ export function useDangerousPathCheck(): {
   /** 仅判断路径是否为 BLOCKED 级别（不生成错误消息），用于列表过滤 */
   const isBlockedPath = useCallback((sourcePath: string): boolean => {
     const normalized = sourcePath.toLowerCase().replace(/\//g, '\\');
+    if (checkStructuralBlock(normalized)) return true;
     for (const rule of DANGER_RULES) {
       if (rule.level !== 'BLOCKED') continue;
       if (matchPath(normalized, rule.pattern)) return true;
