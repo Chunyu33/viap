@@ -34,12 +34,16 @@ pub(crate) fn check_directory_file_locks(dir: &Path, cancel_flag: &Arc<AtomicBoo
     use std::os::windows::fs::OpenOptionsExt;
 
     // 一次性收集文件路径，随后并行探测（文件列表内存开销对预检可接受）
-    let files: Vec<PathBuf> = WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
+    // 收集阶段同样响应取消：大目录遍历本身可能耗时数十秒，不能让用户等完才能取消
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return vec!["检测已取消".to_string()];
+        }
+        if entry.file_type().is_file() {
+            files.push(entry.path().to_path_buf());
+        }
+    }
 
     let locked_files: Mutex<Vec<String>> = Mutex::new(Vec::new());
     // 已收集满上限或用户取消时置位，其余线程立即退出

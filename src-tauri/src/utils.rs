@@ -109,30 +109,46 @@ pub fn expand_env_vars(path_str: &str) -> String {
 /// 返回 (可用空间, 所需空间) 或错误
 pub fn check_disk_space_for_restore(target_dir: &Path, required_bytes: u64) -> Result<(u64, u64), String> {
     let required_with_buffer = (required_bytes as f64 * 1.1) as u64;
+    let available = available_space_for_path(target_dir)
+        .ok_or_else(|| format!("未找到目标磁盘: {}", target_dir.display()))?;
 
-    let target_str = target_dir.to_string_lossy();
-    let drive_prefix = if target_str.len() >= 2 && target_str.as_bytes()[1] == b':' {
-        format!("{}\\", &target_str[..2])
-    } else {
-        return Err("无法确定目标盘符".to_string());
-    };
-
-    let disks = Disks::new_with_refreshed_list();
-    for disk in disks.list() {
-        let mount = disk.mount_point().to_string_lossy().to_string();
-        if mount.starts_with(&drive_prefix[..1]) || mount.eq_ignore_ascii_case(&drive_prefix) {
-            let available = disk.available_space();
-            if available < required_with_buffer {
-                return Err(format!(
-                    "目标磁盘空间不足：需要 {} 字节（含 10% 缓冲），可用 {} 字节",
-                    required_with_buffer, available
-                ));
-            }
-            return Ok((available, required_with_buffer));
-        }
+    if available < required_with_buffer {
+        return Err(format!(
+            "目标磁盘空间不足：需要 {} 字节（含 10% 缓冲），可用 {} 字节",
+            required_with_buffer, available
+        ));
     }
+    Ok((available, required_with_buffer))
+}
 
-    Err(format!("未找到目标磁盘: {}", drive_prefix))
+/// 查询路径所在卷的可用空间
+///
+/// 挂载点必须按"完整路径分隔边界"匹配，否则以盘符首字母比较会把 `C:\` 误判成
+/// 任何以 C 开头的挂载点（如 CD-ROM 或自定义挂载目录），从而读到错误的可用空间。
+pub fn available_space_for_path(path: &Path) -> Option<u64> {
+    let path_upper = path.to_string_lossy().to_uppercase();
+    Disks::new_with_refreshed_list()
+        .list()
+        .iter()
+        .filter_map(|disk| {
+            let mount = disk.mount_point().to_string_lossy().to_uppercase();
+            let mount_clean = mount.trim_end_matches('\\');
+            if mount_clean.is_empty() {
+                return None;
+            }
+            // 匹配完整路径分隔边界，避免 C: 误匹配 CD: 或 C:\Mount\Disk2
+            let is_match = path_upper == mount_clean
+                || (path_upper.starts_with(mount_clean)
+                    && path_upper.as_bytes().get(mount_clean.len()) == Some(&b'\\'));
+            if is_match {
+                Some((mount_clean.len(), disk.available_space()))
+            } else {
+                None
+            }
+        })
+        // 多个挂载点匹配时选最长（最具体）的那个
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, space)| space)
 }
 
 /// 获取实际的 app_data_templates.json 路径
@@ -221,5 +237,14 @@ mod tests {
         // 相对路径和含 . / .. 的路径必须保持原样，否则会变成非法路径
         assert_eq!(to_text(r"a\b"), r"a\b");
         assert_eq!(to_text(r"C:\a\..\b"), r"C:\a\..\b");
+    }
+    #[test]
+    fn available_space_lookup_matches_volume_boundaries() {
+        // 临时目录所在卷必须能查到可用空间
+        let available = available_space_for_path(&std::env::temp_dir());
+        assert!(available.map(|value| value > 0).unwrap_or(false));
+
+        // 不存在的盘符不能匹配到别的卷（旧实现按首字母匹配会误判）
+        assert!(available_space_for_path(Path::new(r"Z:\not-exist")).is_none());
     }
 }
