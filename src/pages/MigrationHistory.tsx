@@ -8,9 +8,9 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2, HardDrive,
 } from 'lucide-react';
-import { MigrationProgressEvent, MigrationRecord, MigrationResult } from '../types';
+import { MigrationProgressEvent, MigrationRecord, MigrationRecordSizeEvent, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
@@ -314,6 +314,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   const [sortBy, setSortBy] = useState<SortBy>('date_desc');
   // 迁移记录重建弹窗：仅在用户点击时打开（不做自动检查）
   const [linkRecoveryOpen, setLinkRecoveryOpen] = useState(false);
+  const [sizeScanRunning, setSizeScanRunning] = useState(false);
 
   /** 列头点击排序：同 key 三态切换 asc → desc → 清除（回到 date_desc） */
   function handleColumnSort(key: SortKey) {
@@ -529,7 +530,50 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
     loadHistory();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 后台补全体积：重建的记录先按 -- 展示，算完逐条推送并就地刷新
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+
+    (async () => {
+      const stop = await listen<MigrationRecordSizeEvent>('migration-record-size', (event) => {
+        const { record_id, size } = event.payload;
+        setRecords((previous) => previous.map((record) => (
+          record.id === record_id ? { ...record, size } : record
+        )));
+        // 同步全局缓存，避免切换页面后回退成旧体积
+        storeApi.setState({
+          historyRecords: storeApi.getState().historyRecords.map((record) => (
+            record.id === record_id ? { ...record, size } : record
+          )),
+        });
+      });
+      if (disposed) stop();
+      else unlisten = stop;
+    })();
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** 手动触发体积补全：只处理体积为 0 的活跃记录 */
+  async function handleFillSizes() {
+    setSizeScanRunning(true);
+    try {
+      const queued = await invoke<number>('start_recovered_size_scan');
+      showToast(queued > 0 ? `正在后台统计 ${queued} 条记录的大小` : '没有需要补全的记录', queued > 0 ? 'success' : 'info');
+    } catch (error) {
+      showToast(`补全大小失败: ${error}`, 'error');
+    } finally {
+      setSizeScanRunning(false);
+    }
+  }
+
   const totalSize = records.reduce((sum, r) => sum + r.size, 0);
+  // 体积为 0 的活跃记录只可能来自重建，据此提供「补全大小」入口
+  const missingSizeCount = records.filter(record => record.status === 'active' && record.size === 0).length;
   const brokenCount = Object.values(linkStatuses).filter(s => s === 'broken_fixable' || s === 'broken_lost').length;
 
   const filteredRecords = useMemo(() => {
@@ -630,6 +674,25 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
               )}
             </div>
           )}
+          {missingSizeCount > 0 && (
+            <button
+              onClick={handleFillSizes}
+              disabled={sizeScanRunning}
+              className="btn h-8 text-[12px] flex-shrink-0"
+              title="重新遍历目标目录，补全体积显示为 -- 的记录"
+            >
+              {sizeScanRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <HardDrive className="w-3.5 h-3.5" />}
+              补全大小 ({missingSizeCount})
+            </button>
+          )}
+          <button
+            onClick={() => setLinkRecoveryOpen(true)}
+            className="btn h-8 text-[12px] flex-shrink-0"
+            title="记录被误删后，扫描目录联接重建迁移记录"
+          >
+            <Link2 className="w-3.5 h-3.5" />
+            恢复记录
+          </button>
           <button onClick={loadHistory} disabled={loading} className="btn h-8 text-[12px] flex-shrink-0 ml-auto">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>

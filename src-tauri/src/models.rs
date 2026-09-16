@@ -142,6 +142,14 @@ pub struct DataDirConfig {
     pub portable_default: bool,
 }
 
+/// 指针配置文件信息（安装版 %APPDATA%\viap.json，便携版 <程序目录>\viap.json）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigFileInfo {
+    pub path: String,
+    /// 文件是否已生成；未生成时程序使用默认数据目录
+    pub exists: bool,
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -373,6 +381,13 @@ pub struct LinkRecoveryImportResult {
     pub custom_folders_added: u32,
     /// 跳过原因（含路径，便于用户定位）
     pub failed: Vec<String>,
+}
+
+/// 迁移记录大小补全事件（重建的记录体积只能重新遍历目标目录得到）
+#[derive(Debug, Clone, Serialize)]
+pub struct MigrationRecordSizeEvent {
+    pub record_id: String,
+    pub size: u64,
 }
 
 // ============================================================================

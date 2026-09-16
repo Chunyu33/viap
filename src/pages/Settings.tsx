@@ -14,7 +14,7 @@ import {
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
   Video, Users, MessageSquare, Activity,
-  ShieldCheck,
+  ShieldCheck, FileCog,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -23,7 +23,7 @@ import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
-import type { DataDirConfig, GhostLinkPreview } from '../types';
+import type { ConfigFileInfo, DataDirConfig, GhostLinkPreview } from '../types';
 import {
   applyFontSize,
   MAX_FONT_SIZE_PX,
@@ -235,6 +235,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [appVersion, setAppVersion] = useState('...');
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
+  const [configFile, setConfigFile] = useState<ConfigFileInfo | null>(null);
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const [integrityChecking, setIntegrityChecking] = useState(false);
   const currentYear = new Date().getFullYear();
@@ -259,6 +260,9 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     setSettings(loadSettings());
     loadStats();
     loadDataDir();
+    invoke<ConfigFileInfo>('get_config_file_info')
+      .then(setConfigFile)
+      .catch(() => setConfigFile(null));
     getVersion().then(setAppVersion).catch(() => setAppVersion('1.0.0'));
   }, []);
 
@@ -280,6 +284,19 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   async function loadDataDir() {
     try { const info = await invoke<DataDirConfig>('get_data_dir_info'); setDataDir(info.data_dir); }
     catch { /* ignore */ }
+  }
+
+  /** 打开配置文件所在目录：文件存在时在资源管理器中选中它，未生成时退回到父目录 */
+  async function handleOpenConfigFile() {
+    if (!configFile) return;
+    try {
+      const targetPath = configFile.exists
+        ? configFile.path
+        : configFile.path.replace(/[\\/][^\\/]+$/, '');
+      await invoke('open_folder', { path: targetPath || configFile.path });
+    } catch (error) {
+      showToast(`打开配置文件失败: ${error}`, 'error');
+    }
   }
 
   async function handleVerifyFileIntegrity() {
@@ -577,6 +594,34 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 <button onClick={handleOpenDataDir} className="btn h-7 text-[11px]">
                   <FolderArchive className="w-3 h-3" />
                   前往
+                </button>
+              </div>
+            </div>
+
+            {/* 指针配置文件：记录数据目录位置，位置隐蔽且容易被误删，单独提供打开入口 */}
+            <div className="setting-item" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                  <FileCog className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="setting-label">配置文件</p>
+                  <p className="setting-desc">
+                    {configFile
+                      ? (configFile.exists ? '记录数据存储目录的位置，丢失后程序会回到默认目录' : '尚未生成，当前使用默认数据存储目录')
+                      : '正在读取...'}
+                  </p>
+                  {configFile && (
+                    <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={configFile.path}>
+                      {configFile.path}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button onClick={handleOpenConfigFile} disabled={!configFile} className="btn h-7 text-[11px]">
+                  <FolderArchive className="w-3 h-3" />
+                  打开所在目录
                 </button>
               </div>
             </div>

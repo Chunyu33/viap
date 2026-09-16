@@ -4,8 +4,10 @@
 
 ## v1.2.0
 
-- Lost migration records can be rebuilt: pick the original folder on the Data Migration or Migration Records page, review the detected migrated folders, and confirm to regenerate the records.
-- Migration history, custom folders, and related data are now backed up automatically on every save, and can be restored from that backup in the same dialog.
+- Lost migration records can be rebuilt: pick the original folder on the Migration Records page, review the detected migrated folders, and confirm to regenerate the records.
+- Rebuilt records fill in their size automatically, or on demand from the Migration Records page.
+- Migration history, custom folders, and related data are backed up automatically on every save, and can be restored from that backup in the same dialog.
+- Settings now shows the config file with a shortcut to open its folder.
 
 ## v1.1.11
 

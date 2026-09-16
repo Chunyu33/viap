@@ -177,6 +177,17 @@ export interface DataDirConfig {
 }
 
 /**
+ * 指针配置文件信息
+ * 对应 Rust 后端的 ConfigFileInfo 结构体
+ */
+export interface ConfigFileInfo {
+  // 配置文件完整路径
+  path: string;
+  // 是否已生成；未生成时程序使用默认数据目录
+  exists: boolean;
+}
+
+/**
  * 应用数据模板条目
  * 对应 Rust 后端的 AppDataTemplate 结构体
  */
@@ -293,6 +304,12 @@ export interface LinkRecoveryImportResult {
   skipped: number;
   custom_folders_added: number;
   failed: string[];
+}
+
+/** 迁移记录大小补全事件（事件名：migration-record-size） */
+export interface MigrationRecordSizeEvent {
+  record_id: string;
+  size: number;
 }
 
 /** 镜像备份信息 */

@@ -229,6 +229,65 @@ pub fn add_recovered_records(entries: &[RecoveredLinkImport]) -> Result<(u32, u3
     Ok((added, skipped))
 }
 
+/// 补全体积为 0 的活跃记录大小，返回本次待处理的记录数
+///
+/// 重建出来的记录无法从联接本身得知真实体积，只能重新遍历目标目录；遍历可能较慢，
+/// 因此放到后台线程逐条计算并推送事件，界面先按 0 展示、算完即刷新。
+#[tauri::command]
+pub fn start_recovered_size_scan(app_handle: tauri::AppHandle) -> Result<u32, String> {
+    use tauri::Emitter;
+
+    let pending: Vec<MigrationRecord> = load_history()
+        .records
+        .into_iter()
+        .filter(|record| record.status == "active" && record.size == 0)
+        .collect();
+
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let queued = pending.len() as u32;
+
+    std::thread::spawn(move || {
+        for record in pending {
+            // 以联接当前指向的位置为准：记录里的 target_path 只作兜底
+            let data_path = utils::get_junction_target(Path::new(&record.original_path))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&record.target_path));
+
+            let size = utils::get_dir_size_safe(&data_path);
+            // 目标不可读或为空时保持原值，避免把「读取失败」写成 0 体积以外的错误数据
+            if size == 0 {
+                continue;
+            }
+
+            match update_record_size(&record.id, size) {
+                Ok(()) => {
+                    let _ = app_handle.emit(
+                        "migration-record-size",
+                        MigrationRecordSizeEvent { record_id: record.id.clone(), size },
+                    );
+                }
+                Err(error) => log_warn!("history", "补全迁移记录大小失败 {}: {}", record.id, error),
+            }
+        }
+    });
+
+    Ok(queued)
+}
+
+/// 更新单条记录体积并落盘
+fn update_record_size(id: &str, size: u64) -> Result<(), String> {
+    let mut storage = load_history();
+    let record = storage
+        .records
+        .iter_mut()
+        .find(|record| record.id == id)
+        .ok_or_else(|| format!("未找到 ID 为 {} 的迁移记录", id))?;
+    record.size = size;
+    save_history(&storage)
+}
+
 /// 更新迁移记录状态（按 original_path 大小写不敏感匹配）
 pub fn update_migration_record_status(original_path: &str, new_status: &str) -> Result<(), String> {
     let mut storage = load_history();

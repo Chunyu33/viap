@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::models::{DataDirConfig, CustomFolderEntry};
+use crate::models::{ConfigFileInfo, DataDirConfig, CustomFolderEntry};
 
 #[derive(Debug, serde::Serialize)]
 pub struct StorageInitializationResult {
@@ -135,6 +135,16 @@ pub fn get_data_dir_info() -> Result<DataDirConfig, String> {
     Ok(DataDirConfig {
         data_dir: dir.to_string_lossy().to_string(),
         portable_default: cfg!(feature = "portable") && dir == default_data_dir(),
+    })
+}
+
+/// 获取指针配置文件信息（供设置页展示并打开所在目录）
+#[tauri::command]
+pub fn get_config_file_info() -> Result<ConfigFileInfo, String> {
+    let path = get_config_path();
+    Ok(ConfigFileInfo {
+        exists: path.exists(),
+        path: path.to_string_lossy().to_string(),
     })
 }
 

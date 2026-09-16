@@ -243,6 +243,12 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
           + (result.custom_folders_added > 0 ? `，登记 ${result.custom_folders_added} 个自定义文件夹` : ''),
       });
       if (result.imported > 0 || result.custom_folders_added > 0) onImported();
+      // 重建的记录无法从联接得知体积，交给后端在后台补全并通过事件刷新界面
+      if (result.imported > 0) {
+        invoke<number>('start_recovered_size_scan').catch((error) => {
+          logger.error('启动记录大小补全失败:', error);
+        });
+      }
       loadMirrorInfo();
     } catch (error) {
       setFeedback({ tone: 'error', text: `导入失败：${String(error)}` });
