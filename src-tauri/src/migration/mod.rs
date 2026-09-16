@@ -26,8 +26,8 @@ use crate::models::{MigrationRecordType, MigrationResult};
 use crate::utils;
 
 // 子模块能力导入（父模块经 use 引入，保持 migrate_app 调用处简洁）
-use cleanup::{remove_directory_robust, schedule_remove_on_reboot};
-use copy_engine::{build_copy_plan_with_progress, copy_dir_with_progress};
+pub(crate) use cleanup::{remove_directory_robust, schedule_remove_on_reboot};
+use copy_engine::{build_copy_plan, copy_dir};
 use danger_rules::{check_dangerous_path, DangerLevel};
 use links::{
     create_directory_link, create_migration_backup_path, preflight_directory_link,
@@ -143,6 +143,41 @@ fn detect_updater(source: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 迁移前的源路径冲突类型
+pub(crate) enum SourceConflict {
+    /// 源路径已经是目录链接，附带它当前指向的位置
+    AlreadyLink(String),
+}
+
+impl SourceConflict {
+    /// 用户可见的拒绝消息；`source` 只用于提示原文路径
+    fn into_message(self, source: &str) -> String {
+        match self {
+            // 前缀协议：前端据此给出中文引导，避免用户看到裸错误
+            SourceConflict::AlreadyLink(existing_target) => format!(
+                "SOURCE_IS_LINK:{existing_target}\n\n\
+                 路径 {source} 已经是指向 {existing_target} 的目录链接，说明它此前已经迁移过。\n\n\
+                 再次迁移会把目标盘的数据重复复制一份到新位置，旧副本仍留在原处占用空间。\n\
+                 如需改变位置，请先在「迁移记录」中还原该项目，然后再重新迁移。",
+                existing_target = existing_target,
+                source = source,
+            ),
+        }
+    }
+}
+
+/// 检测源路径是否与迁移操作冲突（当前只有"已经是链接"一种）
+///
+/// 单独抽出以便单测：判断只依赖文件系统状态，不需要 Tauri 运行时。
+pub(crate) fn detect_source_conflict(source: &Path) -> Option<SourceConflict> {
+    if !crate::utils::is_junction(source) {
+        return None;
+    }
+    let existing_target = crate::utils::get_junction_target(source)
+        .unwrap_or_else(|| "未知位置".to_string());
+    Some(SourceConflict::AlreadyLink(existing_target))
+}
+
 /// 构造迁移成功消息，按需附加更新器提示与备份清理警告
 fn migration_success_message(
     source: &str,
@@ -193,6 +228,17 @@ pub fn migrate_app(
             return Ok(MigrationResult {
                 success: false,
                 message: "源路径必须是一个目录".to_string(),
+                new_path: None,
+            });
+        }
+
+        // 步骤 0.2: 源路径不能已经是目录链接
+        // 否则 WalkDir 会读穿链接，把旧目标的数据再复制一份到新目标，旧副本原地残留
+        // （同一份数据占两份空间），并写入第二条同路径的迁移记录
+        if let Some(conflict) = detect_source_conflict(source_path) {
+            return Ok(MigrationResult {
+                success: false,
+                message: conflict.into_message(&source),
                 new_path: None,
             });
         }
@@ -413,13 +459,11 @@ pub fn migrate_app(
 
         // 步骤 1: 构建复制计划 + 空间检查
         // 复制前必须知道总大小；这里直接产出复制计划，避免后续复制阶段再次遍历整棵目录。
-        let copy_plan = match build_copy_plan_with_progress(
-            source_path,
-            &target_path,
-            &source,
-            cancel_flag,
-            app_handle,
-        ) {
+        // 进度回调与 Tauri 解耦：闭包内部负责把事件发给前端
+        let reporter = |step: &str, percent: f64, message: &str, copied: u64, total: u64| {
+            emit_progress(app_handle, &source, percent, step, message, copied, total);
+        };
+        let copy_plan = match build_copy_plan(source_path, &target_path, cancel_flag, &reporter) {
             Ok(plan) => plan,
             Err(e) => {
                 let _ = remove_directory_robust(&target_path);
@@ -552,9 +596,7 @@ pub fn migrate_app(
         fs::create_dir_all(&target_path)
             .map_err(|e| format!("创建目标目录失败: {}", e))?;
 
-        let (total_size, skipped_size) = match copy_dir_with_progress(
-            copy_plan, &source, cancel_flag, app_handle,
-        ) {
+        let (total_size, skipped_size) = match copy_dir(copy_plan, cancel_flag, &reporter) {
             Ok((total, skipped)) => (total, skipped),
             Err(e) => {
                 // 取消或复制错误：清理已创建的目标目录，避免残留半成品
@@ -664,9 +706,17 @@ pub fn migrate_app(
             }
         };
 
+        // 崩溃兜底：改名之前先记一笔，下次启动时若原路径缺失可据此还原
+        crate::storage::pending_migration::record_pending_migration(
+            source_path,
+            &target_path,
+            &backup_path,
+        );
+
         if let Err(e) = fs::rename(source_path, &backup_path) {
             // 改名失败通常是目录仍被程序占用；此时源目录从未被删除，目标副本可安全清理。
             let _ = remove_directory_robust(&target_path);
+            crate::storage::pending_migration::clear_pending_migration();
             return Ok(MigrationResult {
                 success: false,
                 message: format!(
@@ -692,6 +742,7 @@ pub fn migrate_app(
                     let restore_message = match restore_result {
                         Ok(()) => {
                             let _ = remove_directory_robust(&target_path);
+                            crate::storage::pending_migration::clear_pending_migration();
                             format!("原数据已完整恢复到：{}", source)
                         }
                         Err(restore_error) => format!(
@@ -752,6 +803,9 @@ pub fn migrate_app(
                     );
                 }
 
+                // 链接与历史都已就绪，切换完成，清掉崩溃兜底日志
+                crate::storage::pending_migration::clear_pending_migration();
+
                 emit_progress(app_handle, &source, 100.0, "done", "迁移完成", source_size, source_size);
 
                 let success_msg = migration_success_message(
@@ -769,6 +823,8 @@ pub fn migrate_app(
             }
             Err(symlink_err) => {
                 // 链接创建失败时，源目录仍在临时备份中；先恢复原目录，再清理目标副本。
+                // 两种结局（恢复成功 / 保留副本）都不需要下次启动再兜底，直接清日志
+                crate::storage::pending_migration::clear_pending_migration();
                 match restore_source_from_backup(source_path, &backup_path, &target_path) {
                     Ok(()) => {
                         let _ = remove_directory_robust(&target_path);
@@ -818,5 +874,41 @@ pub fn migrate_app(
             message: "迁移功能仅支持 Windows 系统".to_string(),
             new_path: None,
         })
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// 已经是目录链接的源路径必须被识别为冲突，避免把数据重复复制一份
+    #[test]
+    fn detects_source_that_is_already_a_link() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("viap-source-conflict-{suffix}"));
+        let real_dir = root.join("real");
+        let link_dir = root.join("linked");
+        std::fs::create_dir_all(&real_dir).expect("创建真实目录失败");
+        junction::create(&real_dir, &link_dir).expect("创建目录联接失败");
+
+        // 普通目录：不冲突
+        assert!(detect_source_conflict(&real_dir).is_none());
+
+        // 目录链接：识别为冲突，并给出当前指向
+        match detect_source_conflict(&link_dir) {
+            Some(SourceConflict::AlreadyLink(target)) => {
+                assert_eq!(
+                    target.trim_end_matches('\\').to_lowercase(),
+                    real_dir.to_string_lossy().trim_end_matches('\\').to_lowercase()
+                );
+            }
+            None => panic!("目录链接应当被识别为源路径冲突"),
+        }
+
+        std::fs::remove_dir(&link_dir).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

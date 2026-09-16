@@ -40,6 +40,15 @@ export function formatMigrationFailureMessage(message: string): string {
       : `目标位置已存在同名目录：\n${targetConflict.existingPath}\n\n为避免覆盖已有数据，已停止迁移。请更换迁移目录，或确认该目录可覆盖后重试。`;
   }
 
+  if (safeMessage.startsWith('SOURCE_IS_LINK:')) {
+    const payload = safeMessage.replace('SOURCE_IS_LINK:', '').trim();
+    const [existingTarget = '未知位置', ...detailLines] = payload.split(/\r?\n/);
+    const details = detailLines.join('\n').trim();
+    return `该目录此前已经迁移过（当前指向 ${existingTarget}），不能重复迁移。\n\n`
+      + (details || '再次迁移会把数据重复复制一份，旧副本仍留在原处占用空间。')
+      + '\n\n如需改变位置，请先在「迁移记录」中还原该项目，再重新迁移。';
+  }
+
   if (safeMessage.startsWith('JUNCTION_LOOP:')) {
     const targetPath = safeMessage.replace('JUNCTION_LOOP:', '').trim();
     return `检测到原路径仍是指向目标盘的目录链接，无法覆盖迁移。\n\n请先在「迁移记录」中恢复该项目，再重新迁移。\n\n目标位置：${targetPath}`;
