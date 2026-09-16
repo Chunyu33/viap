@@ -2,6 +2,11 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.2.0
+
+- Lost migration records can be rebuilt: pick the original folder on the Data Migration or Migration Records page, review the detected migrated folders, and confirm to regenerate the records.
+- Migration history, custom folders, and related data are now backed up automatically on every save, and can be restored from that backup in the same dialog.
+
 ## v1.1.11
 
 ### Highlights
