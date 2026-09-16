@@ -323,6 +323,15 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     }
   }
 
+  /** 打开备份目录：目录不存在时由后端先创建 */
+  async function handleOpenBackupDir() {
+    try {
+      await invoke('open_mirror_dir');
+    } catch (error) {
+      showToast(`打开备份目录失败: ${error}`, 'error');
+    }
+  }
+
   /** 切换自动备份开关：与其它界面设置一起落到 ui_settings.json */
   function handleToggleAutoBackup() {
     const enabled = !settings.autoBackupEnabled;
@@ -429,15 +438,12 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
 
   return (
     <div className="h-full overflow-auto" style={{ padding: '16px 20px' }}>
-      {/* 宽窗口自动分栏，窄窗口自动回到单列，不再写死内容最大宽度 */}
-      <div
-        className="grid gap-4 items-start"
-        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))' }}
-      >
+      {/* 单列居中：宽度按窗口比例（并给窄窗口留最小可用宽度），不做分栏 */}
+      <div className="flex flex-col gap-4" style={{ width: 'max(560px, 62%)', margin: '0 auto' }}>
 
         {/* stats summary — 绿色强调分隔线 + 柔和背景 */}
         {stats && stats.active_migrations > 0 && (
-          <div className="relative rounded-lg overflow-hidden" style={{ background: 'var(--color-primary-light)', gridColumn: '1 / -1' }}>
+          <div className="relative rounded-lg overflow-hidden" style={{ background: 'var(--color-primary-light)' }}>
             {/* 左侧强调线 */}
             <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: 'var(--color-primary)' }} />
             <div className="flex items-center gap-6 py-4 px-5 text-[12px]">
@@ -735,6 +741,10 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button onClick={handleOpenBackupDir} className="btn h-7 text-[11px]" title="打开备份目录">
+                  <FolderArchive className="w-3 h-3" />
+                  前往
+                </button>
                 <button
                   onClick={handleToggleAutoBackup}
                   className="btn h-7 text-[11px]"
@@ -1087,7 +1097,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         </section>
 
         {/* copyright */}
-        <div className="text-center py-3 text-[11px]" style={{ color: 'var(--text-tertiary)', gridColumn: '1 / -1' }}>
+        <div className="text-center py-3 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
           &copy; {currentYear} {APP_INFO.name} · All Right reserved.
         </div>
       </div>

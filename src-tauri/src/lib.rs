@@ -439,6 +439,7 @@ pub fn run() {
             storage::mirror::get_mirror_backup_info,
             storage::mirror::import_mirror_backup,
             storage::mirror::backup_now,
+            storage::mirror::open_mirror_dir,
             // 存储层 — 操作日志
             storage::operation_log::get_operation_logs,
             // 应用管理

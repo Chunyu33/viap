@@ -116,6 +116,33 @@ pub fn mirror_migrated_apps(apps: &[MigratedAppEntry]) {
     write_migrated_apps_mirror(apps);
 }
 
+/// 在资源管理器中打开备份目录（不存在时先创建，避免首次点击报错）
+#[tauri::command]
+pub fn open_mirror_dir() -> Result<(), String> {
+    let dir = mirror_dir();
+    if let Err(error) = fs::create_dir_all(&dir) {
+        return Err(format!("无法创建备份目录 {}: {}", dir.display(), error));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(dir.to_string_lossy().as_ref());
+        command
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(dir.to_string_lossy().as_ref());
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开备份目录失败: {}", error))
+}
+
 /// 手动备份入口：不受自动备份开关影响
 #[tauri::command]
 pub fn backup_now() -> Result<MirrorBackupInfo, String> {
