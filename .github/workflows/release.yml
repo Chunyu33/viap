@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, for example v1.1.11'
+        description: 'Release tag, for example v1.2.0'
         required: false
-        default: 'v1.1.11'
+        default: 'v1.2.0'
 
 permissions:
   contents: write
@@ -54,6 +54,51 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 发行说明直接从 CHANGELOG-zh.md 取当前版本段落，避免发版时再手工抄一份更新内容。
+      # 版本号以 package.json 为准（构建用的就是它），找不到对应段落时退回到最新一段并告警。
+      - name: Extract release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          chcp 65001
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
+
+          $version = (Get-Content 'package.json' -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          $lines = @(Get-Content 'CHANGELOG-zh.md' -Encoding UTF8)
+
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^##\s+v?$([regex]::Escape($version))\s*$") { $start = $i; break }
+          }
+          if ($start -lt 0) {
+            Write-Warning "CHANGELOG-zh.md 中没有 v$version 段落，改用最新一段作为发行说明"
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^##\s') { $start = $i; break }
+            }
+          }
+          if ($start -lt 0) { throw 'CHANGELOG-zh.md 中没有找到任何版本段落' }
+
+          # 段落范围：版本标题之后，直到下一个版本标题之前
+          $end = $lines.Count
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^##\s') { $end = $i; break }
+          }
+          if ($end -le $start + 1) { throw "CHANGELOG-zh.md 中 v$version 段落没有内容" }
+
+          $notes = ($lines[($start + 1)..($end - 1)] -join "`n").Trim()
+          if ([string]::IsNullOrWhiteSpace($notes)) { throw "CHANGELOG-zh.md 中 v$version 段落为空" }
+
+          $notes += "`n`n---`n完整更新日志见 [CHANGELOG-zh.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG-zh.md)"
+
+          # 多行输出必须用随机分隔符，否则内容里的换行会截断输出值
+          $delimiter = "EOF_$([guid]::NewGuid().ToString('N'))"
+          $payload = "body<<$delimiter`n$notes`n$delimiter`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, $payload, (New-Object System.Text.UTF8Encoding($false)))
+
+          Write-Output "发行说明取自 CHANGELOG-zh.md 的段落：$($lines[$start])"
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0.5
         env:
@@ -63,16 +108,7 @@ jobs:
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
-          releaseBody: |
-            ## v1.1.11 更新内容
-
-            ### 迁移引擎优化
-
-            - 迁移引擎改用 Windows 原生 CopyFileExW：保留文件时间戳与 NTFS 备用数据流，小文件密集目录的复制速度显著提升。
-            - 迁移并发调优：大文件顺序单流复制保证 SSD 顺序吞吐峰值，小文件 8 线程并行分摊元数据开销。
-
-            ### 完整 Changelog
-            详见 [CHANGELOG.md](https://github.com/Chunyu33/viap/blob/main/CHANGELOG.md)
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           prerelease: false
           args: ${{ matrix.args }}
 
