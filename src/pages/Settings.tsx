@@ -100,6 +100,7 @@ const FONT_SIZE_PRESETS = [
   { label: '标准', value: 13 },
   { label: '适中', value: 14 },
   { label: '较大', value: 15 },
+  { label: '大屏', value: 18 },
 ];
 
 function Toggle({ active, onChange }: { active: boolean; onChange: () => void }) {
