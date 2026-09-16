@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use crate::migration::{emit_progress, format_bytes};
+use super::links::create_directory_link;
+use crate::migration::format_bytes;
 
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -38,21 +39,44 @@ pub(crate) struct CopyPlan {
     pub(crate) file_list: Vec<(PathBuf, PathBuf, u64)>,
     /// 待创建目录列表，保留空目录，避免应用依赖占位目录时异常。
     pub(crate) dir_list: Vec<PathBuf>,
+    /// 待重建的目录链接（源目录内嵌套的联接 / 目录符号链接）
+    pub(crate) link_list: Vec<PlannedLink>,
     /// 计划复制的总字节数，用于空间检查和复制进度计算。
     pub(crate) total_size: u64,
 }
 
-pub(crate) fn build_copy_plan_with_progress(
+/// 待重建的目录链接
+pub(crate) struct PlannedLink {
+    /// 链接在目标盘上的位置
+    pub(crate) dest: PathBuf,
+    /// 链接应指向的位置（原本指向源树内部时会改写到目标树）
+    pub(crate) target: PathBuf,
+}
+
+/// 扫描时对重解析点（联接 / 符号链接）的处理方式
+enum ReparsePlan {
+    /// 目录链接：在目标盘重建链接本身
+    DirectoryLink(PlannedLink),
+    /// 文件链接：直接复制其内容（符号链接需要开发者模式或管理员权限，内容自包含更稳妥）
+    FileContent { dest: PathBuf, size: u64 },
+}
+
+/// 进度上报回调：与 Tauri 解耦，单测可直接跑完整的「扫描 + 复制 + 重建链接」流程
+/// 参数依次为：(步骤, 百分比, 文案, 已处理字节, 总字节)
+/// 带 Sync 约束是因为并行复制分支要在多线程中共享同一个回调。
+pub(crate) type ProgressReporter<'a> = &'a (dyn Fn(&str, f64, &str, u64, u64) + Sync);
+
+pub(crate) fn build_copy_plan(
     source: &Path,
     target: &Path,
-    task_id: &str,
     cancel_flag: &Arc<AtomicBool>,
-    app_handle: &tauri::AppHandle,
+    progress: ProgressReporter<'_>,
 ) -> Result<CopyPlan, String> {
-    emit_progress(app_handle, task_id, 1.0, "counting", "正在扫描文件列表...", 0, 0);
+    progress("counting", 1.0, "正在扫描文件列表...", 0, 0);
 
     let mut file_list: Vec<(PathBuf, PathBuf, u64)> = Vec::new();
     let mut dir_list: Vec<PathBuf> = Vec::new();
+    let mut link_list: Vec<PlannedLink> = Vec::new();
     let mut total_size: u64 = 0;
     let mut scanned_files: u64 = 0;
     let mut last_emit = Instant::now();
@@ -70,7 +94,20 @@ pub(crate) fn build_copy_plan_with_progress(
             continue;
         }
 
-        if entry.file_type().is_dir() {
+        // 重解析点必须单独判断：Windows 下目录联接既不是 is_dir() 也不是 is_file()，
+        // 按普通目录/文件分流会被静默丢弃（迁移后链接消失，且体积校验发现不了）
+        if entry.file_type().is_symlink() {
+            match plan_reparse_point(entry.path(), source, target) {
+                Some(ReparsePlan::DirectoryLink(link)) => link_list.push(link),
+                Some(ReparsePlan::FileContent { dest, size }) => {
+                    total_size += size;
+                    scanned_files += 1;
+                    file_list.push((entry.path().to_path_buf(), dest, size));
+                }
+                // 悬空链接没有可复制的内容，跳过（已在 plan_reparse_point 中记录日志）
+                None => {}
+            }
+        } else if entry.file_type().is_dir() {
             dir_list.push(target.join(rel_path));
         } else if entry.file_type().is_file() {
             let dest = target.join(rel_path);
@@ -85,11 +122,9 @@ pub(crate) fn build_copy_plan_with_progress(
         if last_emit.elapsed() >= Duration::from_millis(250) {
             // 扫描阶段没有总文件数，百分比只表示整体迁移已进入准备区间，真实进展放在文案里。
             let percent = (1.0 + (scanned_files as f64 / 500.0)).min(8.0);
-            emit_progress(
-                app_handle,
-                task_id,
-                percent,
+            progress(
                 "counting",
+                percent,
                 &format!("已扫描 {} 个文件，{}", scanned_files, format_bytes(total_size)),
                 total_size,
                 0,
@@ -98,17 +133,63 @@ pub(crate) fn build_copy_plan_with_progress(
         }
     }
 
-    emit_progress(
-        app_handle,
-        task_id,
-        9.0,
+    progress(
         "counting",
+        9.0,
         &format!("扫描完成：{} 个文件，{}", scanned_files, format_bytes(total_size)),
         total_size,
         total_size,
     );
 
-    Ok(CopyPlan { file_list, dir_list, total_size })
+    Ok(CopyPlan { file_list, dir_list, link_list, total_size })
+}
+
+/// 规划单个重解析点的处理方式；返回 None 表示该链接被跳过（悬空）
+fn plan_reparse_point(link_path: &Path, source: &Path, target: &Path) -> Option<ReparsePlan> {
+    let rel_path = link_path.strip_prefix(source).ok()?;
+    let dest = target.join(rel_path);
+
+    // fs::metadata 跟随链接：据此判断链接指向目录还是文件；悬空链接在此报错
+    let Ok(metadata) = fs::metadata(link_path) else {
+        log_warn!(
+            "migration",
+            "跳过悬空目录链接（目标不存在）: {}",
+            link_path.display()
+        );
+        return None;
+    };
+
+    if !metadata.is_dir() {
+        return Some(ReparsePlan::FileContent { dest, size: metadata.len() });
+    }
+
+    // 读取链接目标：junction 读出来可能带 \\?\ 前缀，必须走带归一化的工具函数，
+    // 否则 strip_prefix(source) 会失配，指向源树内部的链接不会被改写
+    let raw_target = crate::utils::get_junction_target(link_path)
+        .map(PathBuf::from)
+        .or_else(|| fs::read_link(link_path).ok())?;
+    let resolved_target = resolve_link_target(link_path, &raw_target);
+    // 指向源树内部时必须改写到目标树，否则迁移后链接会指向已被删除的旧位置
+    let rewritten_target = match resolved_target.strip_prefix(source) {
+        Ok(inner) => target.join(inner),
+        Err(_) => resolved_target,
+    };
+
+    Some(ReparsePlan::DirectoryLink(PlannedLink {
+        dest,
+        target: rewritten_target,
+    }))
+}
+
+/// 链接目标可能是相对路径，按链接自身所在目录解析为绝对路径
+fn resolve_link_target(link_path: &Path, link_target: &Path) -> PathBuf {
+    if link_target.is_absolute() {
+        return link_target.to_path_buf();
+    }
+    match link_path.parent() {
+        Some(parent) => parent.join(link_target),
+        None => link_target.to_path_buf(),
+    }
 }
 
 /// 单个文件的复制进度上下文（栈上分配，CopyFileExW 进度回调与调用线程同线程）
@@ -125,16 +206,13 @@ struct CopyProgressContext<'a> {
     cancel_flag: Arc<AtomicBool>,
     /// 内部取消标志（首个错误出现后通知其余线程停止）
     internal_cancel: Arc<AtomicBool>,
-    /// 进度事件发送句柄
-    app_handle: &'a tauri::AppHandle,
-    /// 任务标识（源路径）
-    task_id: &'a str,
+    /// 进度上报回调（并行复制要求 Sync，故类型上带 Sync 约束）
+    progress: ProgressReporter<'a>,
 }
 
 /// 按全局已复制字节数计算进度并 CAS 节流上报（复制回调与复制完成补账共用）。
 fn try_report_progress(
-    app_handle: &tauri::AppHandle,
-    task_id: &str,
+    progress: ProgressReporter<'_>,
     last_report_pct: &AtomicU64,
     new_copied: u64,
     total_size: u64,
@@ -146,11 +224,9 @@ fn try_report_progress(
             .compare_exchange(prev, current_pct, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
     {
-        emit_progress(
-            app_handle,
-            task_id,
-            current_pct as f64,
+        progress(
             "copying",
+            current_pct as f64,
             &format!(
                 "已复制 {} / {}",
                 format_bytes(new_copied),
@@ -192,8 +268,7 @@ unsafe extern "system" fn copy_progress_routine(
     if delta > 0 {
         let new_copied = ctx.copied_size.fetch_add(delta, Ordering::Relaxed) + delta;
         try_report_progress(
-            ctx.app_handle,
-            ctx.task_id,
+            ctx.progress,
             &ctx.last_report_pct,
             new_copied,
             ctx.total_size,
@@ -245,8 +320,7 @@ fn copy_file_with_cancel(
     copied_size: &Arc<AtomicU64>,
     last_report_pct: &Arc<AtomicU64>,
     total_size: u64,
-    app_handle: &tauri::AppHandle,
-    task_id: &str,
+    progress: ProgressReporter<'_>,
 ) -> Result<u64, String> {
     // 被锁文件：步骤 0.5 已做预检，此处出现说明文件在复制过程中被新进程锁定，直接中断
     let file_size = match fs::metadata(src) {
@@ -276,8 +350,7 @@ fn copy_file_with_cancel(
         last_transferred: Cell::new(0),
         cancel_flag: cancel_flag.clone(),
         internal_cancel: internal_cancel.clone(),
-        app_handle,
-        task_id,
+        progress,
     };
 
     // 最多两次尝试：无缓冲复制失败（部分卷/文件系统不支持）时降级重试
@@ -322,7 +395,7 @@ fn copy_file_with_cancel(
     if counted < file_size {
         let new_copied =
             ctx.copied_size.fetch_add(file_size - counted, Ordering::Relaxed) + file_size;
-        try_report_progress(app_handle, task_id, last_report_pct, new_copied, total_size);
+        try_report_progress(progress, last_report_pct, new_copied, total_size);
     }
 
     Ok(file_size)
@@ -338,8 +411,7 @@ fn copy_file_with_cancel(
     _copied_size: &Arc<AtomicU64>,
     _last_report_pct: &Arc<AtomicU64>,
     _total_size: u64,
-    _app_handle: &tauri::AppHandle,
-    _task_id: &str,
+    _progress: ProgressReporter<'_>,
 ) -> Result<u64, String> {
     fs::copy(src, dest).map_err(|e| format!("复制文件失败 {}: {}", src.display(), e))
 }
@@ -352,15 +424,14 @@ fn copy_file_with_cancel(
 /// 3. 大文件顺序复制、小文件 8 线程并行，兼顾吞吐与元数据开销
 ///
 /// 返回 (总文件大小, 因权限拒绝跳过的字节数)
-pub(crate) fn copy_dir_with_progress(
+pub(crate) fn copy_dir(
     plan: CopyPlan,
-    task_id: &str,
     cancel_flag: &Arc<AtomicBool>,
-    app_handle: &tauri::AppHandle,
+    progress: ProgressReporter<'_>,
 ) -> Result<(u64, u64), String> {
-    let CopyPlan { file_list, dir_list, total_size } = plan;
+    let CopyPlan { file_list, dir_list, link_list, total_size } = plan;
 
-    // 阶段 1.5：预建所有目标目录；空目录也必须迁移，否则部分应用会因缺少占位目录异常。
+    // 阶段 1：预建所有目标目录；空目录也必须迁移，否则部分应用会因缺少占位目录异常。
     {
         let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
         for dir in dir_list {
@@ -371,14 +442,20 @@ pub(crate) fn copy_dir_with_progress(
                 dirs.insert(parent.to_path_buf());
             }
         }
+        // 链接自身不能在目标盘建成真实目录，否则重建链接时会因路径已存在而失败
+        for link in &link_list {
+            if let Some(parent) = link.dest.parent() {
+                dirs.insert(parent.to_path_buf());
+            }
+        }
         for dir in dirs {
             fs::create_dir_all(&dir)
                 .map_err(|e| format!("创建目录失败 {}: {}", dir.display(), e))?;
         }
     }
 
-    if total_size == 0 {
-        emit_progress(app_handle, task_id, 88.0, "copying", "源目录为空，已复制目录结构", 0, 0);
+    if total_size == 0 && link_list.is_empty() {
+        progress("copying", 88.0, "源目录为空，已复制目录结构", 0, 0);
         return Ok((0, 0));
     }
 
@@ -391,7 +468,9 @@ pub(crate) fn copy_dir_with_progress(
     // 大文件按体积降序，优先搬走最大的文件
     large_files.sort_by(|a, b| b.2.cmp(&a.2));
 
-    emit_progress(app_handle, task_id, 10.0, "copying", "开始复制文件...", 0, total_size);
+    if total_size > 0 {
+        progress("copying", 10.0, "开始复制文件...", 0, total_size);
+    }
 
     let internal_cancel = Arc::new(AtomicBool::new(false));
     let copied_size = Arc::new(AtomicU64::new(0));
@@ -416,8 +495,7 @@ pub(crate) fn copy_dir_with_progress(
             &copied_size,
             &last_report_pct,
             total_size,
-            app_handle,
-            task_id,
+            progress,
         ) {
             Ok(actually_copied) => {
                 if actually_copied == 0 && *size > 0 {
@@ -461,8 +539,7 @@ pub(crate) fn copy_dir_with_progress(
                     &copied_size,
                     &last_report_pct,
                     total_size,
-                    app_handle,
-                    task_id,
+                    progress,
                 ) {
                     Ok(actually_copied) => {
                         if actually_copied == 0 && *size > 0 {
@@ -487,6 +564,26 @@ pub(crate) fn copy_dir_with_progress(
     }
     if cancel_flag.load(Ordering::Relaxed) {
         return Err("用户取消了迁移".to_string());
+    }
+
+    // 阶段 3：重建源目录内的目录链接（放在文件之后，保证链接指向的位置已就绪）
+    if !link_list.is_empty() {
+        progress("linking", 89.0, "正在重建目录链接...", total_size, total_size);
+        for link in &link_list {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err("用户取消了迁移".to_string());
+            }
+            // 链接创建失败必须让整个迁移失败：目标树缺链接等于结构不完整，
+            // 此时源目录尚未删除，中止后数据仍然安全
+            create_directory_link(&link.target, &link.dest).map_err(|e| {
+                format!(
+                    "重建目录链接失败 {} -> {}: {}",
+                    link.dest.display(),
+                    link.target.display(),
+                    e
+                )
+            })?;
+        }
     }
 
     let skipped_size = skipped_size.load(Ordering::Relaxed);
@@ -557,5 +654,123 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(Path::new(&format!(r"\\?\{}", root.display())));
+    }
+}
+
+/// 端到端验证迁移引擎：一次遍历产出计划 → 复制文件 → 重建目录链接
+#[cfg(all(test, windows))]
+mod engine_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn same_path(left: &Path, right: &Path) -> bool {
+        let normalize = |path: &Path| {
+            path.to_string_lossy().trim_start_matches(r"\\?\").trim_end_matches('\\').to_lowercase()
+        };
+        normalize(left) == normalize(right)
+    }
+
+    fn read_text(path: &Path) -> String {
+        std::fs::read_to_string(path).expect("读取文件失败")
+    }
+
+    /// 构造超过 260 字符的深层目录并写入文件，返回（普通路径, 扩展长度路径）
+    fn create_deep_directory(root: &Path, segments: usize, file_name: &str, content: &str) -> PathBuf {
+        let leaf = "y".repeat(30);
+        let mut plain = root.to_path_buf();
+        for index in 0..segments {
+            plain.push(format!("deep-{}-{}", index, leaf));
+        }
+        let extended = crate::utils::to_extended_length_wide(&plain);
+        let extended_text = String::from_utf16_lossy(&extended[..extended.len() - 1]);
+        std::fs::create_dir_all(Path::new(&extended_text)).expect("创建深层目录失败");
+        std::fs::write(
+            Path::new(&format!(r"{}\{}", extended_text, file_name)),
+            content,
+        )
+        .expect("写入深层文件失败");
+        plain.join(file_name)
+    }
+
+    #[test]
+    fn copies_tree_and_recreates_nested_directory_links() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("viap-engine-{suffix}"));
+        let source = root.join("source");
+        let target = root.join("target");
+        let external = root.join("external-data");
+
+        // 外部数据目录（被联接引用，位于源树之外）
+        std::fs::create_dir_all(&external).expect("创建外部目录失败");
+        std::fs::write(external.join("external.bin"), "external").expect("写入外部文件失败");
+
+        // 源树：普通文件 + 空目录 + 内部联接 + 外部联接 + 超长路径文件
+        std::fs::create_dir_all(source.join("inner").join("keep")).expect("创建源目录失败");
+        std::fs::write(source.join("plain.bin"), "plain").expect("写入普通文件失败");
+        std::fs::write(source.join("inner").join("keep").join("a.bin"), "aaa").expect("写入嵌套文件失败");
+        std::fs::create_dir_all(source.join("empty-dir")).expect("创建空目录失败");
+        junction::create(&external, &source.join("outer-link")).expect("创建外部联接失败");
+        junction::create(&source.join("inner"), &source.join("inner-link")).expect("创建内部联接失败");
+        let long_file = create_deep_directory(&source.join("deep"), 5, "payload.bin", "long-path");
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let reported_steps: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let reporter = |step: &str, _percent: f64, _message: &str, _copied: u64, _total: u64| {
+            reported_steps.lock().unwrap().push(step.to_string());
+        };
+
+        let plan = build_copy_plan(&source, &target, &cancel_flag, &reporter).expect("扫描失败");
+        assert_eq!(plan.link_list.len(), 2, "两个嵌套联接都必须进入计划");
+        assert!(plan.total_size > 0);
+
+        // 指向源树内部的联接必须改写到目标树，否则迁移后会指向已删除的旧位置
+        let inner_link = plan.link_list.iter()
+            .find(|link| link.dest.ends_with("inner-link"))
+            .expect("内部联接缺失");
+        assert!(same_path(&inner_link.target, &target.join("inner")));
+        let outer_link = plan.link_list.iter()
+            .find(|link| link.dest.ends_with("outer-link"))
+            .expect("外部联接缺失");
+        assert!(same_path(&outer_link.target, &external));
+
+        let (copied_total, skipped) = copy_dir(plan, &cancel_flag, &reporter).expect("复制失败");
+        assert!(skipped == 0);
+        assert!(copied_total > 0);
+
+        // 普通文件、嵌套文件、空目录都必须在目标盘出现
+        assert_eq!(read_text(&target.join("plain.bin")), "plain");
+        assert_eq!(read_text(&target.join("inner").join("keep").join("a.bin")), "aaa");
+        assert!(target.join("empty-dir").is_dir(), "空目录必须保留");
+        // 超长路径文件（>260 字符）也要复制成功
+        let long_relative = long_file.strip_prefix(&source).expect("长路径解析失败");
+        assert_eq!(read_text(&target.join(long_relative)), "long-path");
+
+        // 两个联接都必须是「联接」，并且可以真正读到数据
+        assert!(crate::utils::is_junction(&target.join("outer-link")));
+        assert!(crate::utils::is_junction(&target.join("inner-link")));
+        assert_eq!(read_text(&target.join("outer-link").join("external.bin")), "external");
+        assert_eq!(read_text(&target.join("inner-link").join("keep").join("a.bin")), "aaa");
+        // 内部联接改写后不能还指向老位置
+        let inner_target = crate::utils::get_junction_target(&target.join("inner-link")).unwrap_or_default();
+        assert!(
+            !same_path(Path::new(&inner_target), &source.join("inner")),
+            "内部联接仍指向旧的源位置：{}",
+            inner_target
+        );
+
+        assert!(
+            reported_steps.lock().unwrap().iter().any(|step| step == "linking"),
+            "重建链接阶段应当上报进度"
+        );
+
+        // 清理：先删链接再删目录，避免踩到联接目标
+        std::fs::remove_dir(target.join("outer-link")).ok();
+        std::fs::remove_dir(target.join("inner-link")).ok();
+        std::fs::remove_dir(source.join("outer-link")).ok();
+        std::fs::remove_dir(source.join("inner-link")).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 }
