@@ -5,9 +5,9 @@
 ## v1.2.1
 
 - Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.
-- Safer migrations: drive roots, the user profile root, Program Files roots and other system locations can no longer be migrated, and a folder that is already a link is refused instead of copying the data a second time.
-- Nested directory links inside the migrated folder are recreated on the target drive (links pointing inside the folder are rewritten to the new location), and an interrupted migration is rolled back automatically on the next launch.
-- The app list, data migration, and migration records pages keep wider side margins, so content no longer hugs the window edges.
+- Safer migrations: drive roots, the user profile root, Program Files roots and other system locations are refused, a folder that is already a link is refused instead of copying the data twice, nested directory links are recreated on the target drive (links pointing inside the folder are rewritten), and an interrupted migration is rolled back on the next launch.
+- Records can be deleted from a right-click menu after a second confirmation (the copy in the automatic backup is kept unless you tick the option), and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
+- Migrations are faster and lighter (scanning and lock checking share a single pass), and the pages use wider side margins so content no longer hugs the window edges.
 
 ## v1.2.0
 
