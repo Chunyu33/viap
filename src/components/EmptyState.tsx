@@ -7,9 +7,11 @@ interface EmptyStateProps {
   icon: ReactNode;
   title: string;
   description?: string;
+  /** 可选的空态操作入口（如「恢复迁移记录」），由调用方提供按钮 */
+  action?: ReactNode;
 }
 
-export default function EmptyState({ icon, title, description }: EmptyStateProps) {
+export default function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 select-none">
       <div
@@ -30,6 +32,7 @@ export default function EmptyState({ icon, title, description }: EmptyStateProps
           </p>
         )}
       </div>
+      {action}
     </div>
   );
 }

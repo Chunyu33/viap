@@ -8,12 +8,13 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2, HardDrive, FolderOpen,
 } from 'lucide-react';
-import { MigrationProgressEvent, MigrationRecord, MigrationResult } from '../types';
+import { MigrationProgressEvent, MigrationRecord, MigrationRecordSizeEvent, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
+import LinkRecoveryModal from '../components/LinkRecoveryModal';
 import { useViapStore } from '../store';
 
 // no_data: 原路径已消失且目标为空/不存在，通常表示应用已被外部卸载。
@@ -101,7 +102,7 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate,
+  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate, onOpenPath,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
@@ -110,6 +111,8 @@ function HistoryRow({
   linkStatus: LinkStatus;
   onCleanup?: (id: string) => void;
   onRemigrate?: (id: string) => void;
+  /** 打开路径所在文件夹 */
+  onOpenPath: (path: string) => void;
 }) {
   const isLargeFolder = record.record_type === 'LargeFolder';
   const [expanded, setExpanded] = useState(false);
@@ -156,11 +159,27 @@ function HistoryRow({
           <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{formatDate(record.migrated_at)}</p>
         </div>
 
-        {/* path */}
+        {/* path — 两段路径都可点击打开所在文件夹 */}
         <div className="flex-1 min-w-0 flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-          <span className="truncate" style={{ maxWidth: '40%' }} title={record.original_path}>{shortenPath(record.original_path)}</span>
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onOpenPath(record.original_path); }}
+            className="truncate cursor-pointer hover:underline"
+            style={{ maxWidth: '40%', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'inherit' }}
+            title={`打开所在文件夹：${record.original_path}`}
+          >
+            {shortenPath(record.original_path)}
+          </button>
           <ArrowRight className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--text-tertiary)' }} />
-          <span className="truncate" style={{ maxWidth: '40%', color: 'var(--color-success)' }} title={record.target_path}>{shortenPath(record.target_path)}</span>
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onOpenPath(record.target_path); }}
+            className="truncate cursor-pointer hover:underline"
+            style={{ maxWidth: '40%', background: 'none', border: 'none', padding: 0, textAlign: 'left', color: 'var(--color-success)' }}
+            title={`打开所在文件夹：${record.target_path}`}
+          >
+            {shortenPath(record.target_path)}
+          </button>
         </div>
 
         {/* status */}
@@ -260,11 +279,29 @@ function HistoryRow({
         <div className="px-5 py-3 grid grid-cols-2 gap-x-8 gap-y-2 text-[11px]">
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>原始路径</span>
-            <p className="break-all mt-0.5" style={{ color: 'var(--text-primary)' }}>{record.original_path}</p>
+            <button
+              type="button"
+              onClick={() => onOpenPath(record.original_path)}
+              className="break-all mt-0.5 flex items-start gap-1 text-left cursor-pointer hover:underline"
+              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-primary)' }}
+              title="打开所在文件夹"
+            >
+              <FolderOpen className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
+              {record.original_path}
+            </button>
           </div>
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>目标路径</span>
-            <p className="break-all mt-0.5" style={{ color: 'var(--text-primary)' }}>{record.target_path}</p>
+            <button
+              type="button"
+              onClick={() => onOpenPath(record.target_path)}
+              className="break-all mt-0.5 flex items-start gap-1 text-left cursor-pointer hover:underline"
+              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-primary)' }}
+              title="打开所在文件夹"
+            >
+              <FolderOpen className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: 'var(--color-primary)' }} />
+              {record.target_path}
+            </button>
           </div>
           <div>
             <span style={{ color: 'var(--text-tertiary)' }}>迁移时间</span>
@@ -311,6 +348,9 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'App' | 'LargeFolder'>('all');
   const [sortBy, setSortBy] = useState<SortBy>('date_desc');
+  // 迁移记录重建弹窗：仅在用户点击时打开（不做自动检查）
+  const [linkRecoveryOpen, setLinkRecoveryOpen] = useState(false);
+  const [sizeScanRunning, setSizeScanRunning] = useState(false);
 
   /** 列头点击排序：同 key 三态切换 asc → desc → 清除（回到 date_desc） */
   function handleColumnSort(key: SortKey) {
@@ -526,7 +566,60 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
     loadHistory();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 后台补全体积：重建的记录先按 -- 展示，算完逐条推送并就地刷新
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+
+    (async () => {
+      const stop = await listen<MigrationRecordSizeEvent>('migration-record-size', (event) => {
+        const { record_id, size } = event.payload;
+        setRecords((previous) => previous.map((record) => (
+          record.id === record_id ? { ...record, size } : record
+        )));
+        // 同步全局缓存，避免切换页面后回退成旧体积
+        storeApi.setState({
+          historyRecords: storeApi.getState().historyRecords.map((record) => (
+            record.id === record_id ? { ...record, size } : record
+          )),
+        });
+      });
+      if (disposed) stop();
+      else unlisten = stop;
+    })();
+
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** 打开路径所在文件夹：原始/目标路径都可能已不存在，失败时给出提示 */
+  async function handleOpenPath(path: string) {
+    const parent = path.replace(/[\\/][^\\/]+$/, '');
+    try {
+      await invoke('open_folder', { path: parent || path });
+    } catch (error) {
+      showToast(`无法打开该位置：${error}`, 'error');
+    }
+  }
+
+  /** 手动触发体积补全：只处理体积为 0 的活跃记录 */
+  async function handleFillSizes() {
+    setSizeScanRunning(true);
+    try {
+      const queued = await invoke<number>('start_recovered_size_scan');
+      showToast(queued > 0 ? `正在后台统计 ${queued} 条记录的大小` : '没有需要补全的记录', queued > 0 ? 'success' : 'info');
+    } catch (error) {
+      showToast(`补全大小失败: ${error}`, 'error');
+    } finally {
+      setSizeScanRunning(false);
+    }
+  }
+
   const totalSize = records.reduce((sum, r) => sum + r.size, 0);
+  // 体积为 0 的活跃记录只可能来自重建，据此提供「补全大小」入口
+  const missingSizeCount = records.filter(record => record.status === 'active' && record.size === 0).length;
   const brokenCount = Object.values(linkStatuses).filter(s => s === 'broken_fixable' || s === 'broken_lost').length;
 
   const filteredRecords = useMemo(() => {
@@ -559,9 +652,10 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   useEffect(() => { setCurrentPage(1); }, [searchQuery, filterType]);
 
   return (
-    <div className="h-full overflow-hidden flex flex-col" style={{ padding: '12px 16px' }}>
+    <div className="h-full overflow-hidden flex flex-col"
+      style={{ padding: '12px 16px', width: '100%' }}>
       {/* search / filter / sort + stats + refresh — 固定在顶部，不参与滚动 */}
-      <div className="flex items-center gap-2 flex-shrink-0"
+      <div className="flex items-center gap-2 flex-wrap flex-shrink-0"
         style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
           <div className="relative flex-1 max-w-xs">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
@@ -627,6 +721,25 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
               )}
             </div>
           )}
+          {missingSizeCount > 0 && (
+            <button
+              onClick={handleFillSizes}
+              disabled={sizeScanRunning}
+              className="btn h-8 text-[12px] flex-shrink-0"
+              title="重新遍历目标目录，补全体积显示为 -- 的记录"
+            >
+              {sizeScanRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <HardDrive className="w-3.5 h-3.5" />}
+              补全大小 ({missingSizeCount})
+            </button>
+          )}
+          <button
+            onClick={() => setLinkRecoveryOpen(true)}
+            className="btn h-8 text-[12px] flex-shrink-0"
+            title="记录被误删后，扫描目录联接重建迁移记录"
+          >
+            <Link2 className="w-3.5 h-3.5" />
+            恢复记录
+          </button>
           <button onClick={loadHistory} disabled={loading} className="btn h-8 text-[12px] flex-shrink-0 ml-auto">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -638,7 +751,17 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--color-primary)' }} />
         </div>
       ) : records.length === 0 ? (
-        <EmptyState icon={<History />} title="暂无迁移记录" description="迁移应用或文件夹后将在此显示" />
+        <EmptyState
+          icon={<History />}
+          title="暂无迁移记录"
+          description="迁移应用或文件夹后将在此显示；若记录被误删可从目录联接重建"
+          action={
+            <button onClick={() => setLinkRecoveryOpen(true)} className="btn h-7 text-[12px]">
+              <Link2 className="w-3.5 h-3.5" />
+              扫描恢复迁移记录
+            </button>
+          }
+        />
       ) : (
         <>
           {/* column header — 固定，不参与滚动 */}
@@ -668,7 +791,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                     restoreProgress={restoreProgressMap[record.id]}
                     linkStatus={linkStatuses[record.id] || 'unknown'}
                     onCleanup={handleCleanupBroken}
-                    onRemigrate={handleRemigrate} />
+                    onRemigrate={handleRemigrate}
+                    onOpenPath={handleOpenPath} />
                 ))}
 
                 {/* pagination */}
@@ -696,6 +820,13 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           </div>
         </>
       )}
+      {/* 迁移记录重建弹窗：数据目录被误删后从原路径联接反推记录 */}
+      <LinkRecoveryModal
+        isOpen={linkRecoveryOpen}
+        onClose={() => setLinkRecoveryOpen(false)}
+        onImported={() => { loadHistory(); }}
+      />
+
       {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
       <Toast message={toast.message} type={toast.type} visible={toast.visible} duration={toast.duration} onClose={hideToast} />
     </div>

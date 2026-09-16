@@ -273,8 +273,84 @@ fn execute_cleanup(
 // Tauri 应用入口
 // ============================================================================
 
+/// 便携版把 WebView2 的用户数据目录也放到程序目录下
+///
+/// 数据目录与指针文件已经避开系统盘，但 WebView2 默认把浏览器缓存、localStorage
+/// 放在 %LOCALAPPDATA%\<标识>\EBWebView。不重定向的话便携版仍会在 C 盘留下目录。
+/// 必须在创建 WebView2 环境之前设置环境变量，因此放在 run() 的最前面。
+#[cfg(feature = "portable")]
+fn redirect_portable_webview_data_dir() {
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some() {
+        return;
+    }
+
+    let program_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let Some(program_dir) = program_dir else {
+        log_warn!("webview", "无法获取程序目录，WebView2 数据仍写入系统盘");
+        return;
+    };
+
+    let webview_dir = program_dir.join("webview");
+    match std::fs::create_dir_all(&webview_dir) {
+        Ok(()) => std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_dir),
+        // 程序目录不可写（如放在只读位置）时保持系统默认，只记录原因
+        Err(error) => log_warn!(
+            "webview",
+            "无法创建 WebView2 数据目录 {}: {}",
+            webview_dir.display(),
+            error
+        ),
+    }
+}
+
+/// 在窗口显示前套用记忆的窗口尺寸
+///
+/// 窗口创建时用的是配置里的默认尺寸，这里在隐藏状态下调整，避免启动瞬间
+/// 先出现默认尺寸再跳到用户尺寸。换过显示器或降低了分辨率时会按当前显示器收敛，
+/// 防止记忆中的大窗口超出屏幕。
+fn apply_saved_window_size(window: &tauri::WebviewWindow) {
+    let Some((saved_width, saved_height)) = storage::user_settings::saved_window_size() else {
+        return;
+    };
+
+    let mut logical_width = saved_width as f64;
+    let mut logical_height = saved_height as f64;
+
+    match window.current_monitor() {
+        Ok(Some(monitor)) => {
+            let scale = monitor.scale_factor();
+            if scale > 0.0 {
+                // 预留一点高度给任务栏，避免窗口底部被遮住
+                const TASKBAR_ALLOWANCE: f64 = 48.0;
+                logical_width = logical_width.min(monitor.size().width as f64 / scale);
+                logical_height =
+                    logical_height.min(monitor.size().height as f64 / scale - TASKBAR_ALLOWANCE);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => log_warn!("window", "读取当前显示器信息失败: {}", error),
+    }
+
+    // 与 tauri.conf.json 的 minWidth/minHeight 保持一致
+    logical_width = logical_width.max(800.0);
+    logical_height = logical_height.max(540.0);
+
+    if let Err(error) = window.set_size(tauri::LogicalSize::new(logical_width, logical_height)) {
+        log_warn!("window", "恢复记忆窗口尺寸失败: {}", error);
+        return;
+    }
+    if let Err(error) = window.center() {
+        log_warn!("window", "窗口居中失败: {}", error);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(feature = "portable")]
+    redirect_portable_webview_data_dir();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
@@ -286,6 +362,11 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // 窗口尚未显示，此时套用记忆尺寸不会出现尺寸跳动
+            if let Some(window) = app.get_webview_window("main") {
+                apply_saved_window_size(&window);
+            }
+
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -310,6 +391,7 @@ pub fn run() {
             });
         })
         .manage(MigrationState::default())
+        .manage(LinkRecoveryState::default())
         .invoke_handler(tauri::generate_handler![
             // 系统接口
             system::disk_usage::get_disk_usage,
@@ -320,9 +402,11 @@ pub fn run() {
             // 存储层 — 数据目录
             storage::data_dir::initialize_storage,
             storage::data_dir::get_data_dir_info,
+            storage::data_dir::get_config_files,
             storage::data_dir::set_data_dir,
             storage::user_settings::get_user_settings,
             storage::user_settings::save_user_settings,
+            storage::user_settings::save_window_state,
             // 文件夹管理
             folder_manager::get_large_folders,
             folder_manager::start_folder_size_scan,
@@ -343,10 +427,19 @@ pub fn run() {
             storage::history::clean_ghost_links,
             storage::history::preview_ghost_links,
             storage::history::get_migration_stats,
+            storage::history::start_recovered_size_scan,
             storage::history::export_history,
             storage::history::import_history,
             storage::history::open_data_dir,
             storage::history::open_folder,
+            // 存储层 — 迁移记录重建（原路径链接识别）与镜像备份
+            storage::link_recovery::scan_migration_links,
+            storage::link_recovery::import_recovered_links,
+            storage::link_recovery::cancel_link_recovery,
+            storage::mirror::get_mirror_backup_info,
+            storage::mirror::import_mirror_backup,
+            storage::mirror::backup_now,
+            storage::mirror::open_mirror_dir,
             // 存储层 — 操作日志
             storage::operation_log::get_operation_logs,
             // 应用管理

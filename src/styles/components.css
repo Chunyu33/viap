@@ -24,6 +24,8 @@
   border: 1px solid var(--border-color);
   background: transparent;
   color: var(--text-secondary);
+  /* 字号调大时按钮文字必须保持单行，换行会把行高撑破、挤压相邻列 */
+  white-space: nowrap;
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 

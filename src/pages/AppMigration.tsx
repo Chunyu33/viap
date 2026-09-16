@@ -1547,14 +1547,16 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       setScanTotalCount(st.apps.length);
       setAppsLoading(false);
       setSizesLoading(false);
-      return;
+    } else {
+      fetchInstalledApps();
+      // 获取 Viap 自身安装目录，用于禁用自身的迁移/卸载按钮
+      invoke<string>('get_viap_install_path')
+        .then(setViapInstallPath)
+        .catch(() => {});
     }
-    fetchInstalledApps();
+    // 每次进入页面都同步迁移记录：记录可能被「恢复迁移记录」或迁移记录页改动，
+    // 命中应用列表缓存时也必须刷新，否则已迁移角标会一直沿用旧数据
     fetchAppMigrationRecords();
-    // 获取 Viap 自身安装目录，用于禁用自身的迁移/卸载按钮
-    invoke<string>('get_viap_install_path')
-      .then(setViapInstallPath)
-      .catch(() => {});
     // 组件卸载时清理流式扫描事件监听器
     return () => {
       scanUnlistenRef.current?.();
@@ -1563,7 +1565,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
 
   return (
     <div className="relative h-full overflow-hidden flex flex-col" style={{ padding: 'var(--spacing-4) var(--spacing-5)' }}>
-      <div className="flex-1 max-w-5xl mx-auto w-full min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 w-full min-h-0 flex flex-col overflow-hidden">
         {/* debug 浮层使用绝对定位，折叠态只保留左侧小图标，避免抢占主体信息。 */}
         {showScanDebug && (debugMetrics.length > 0 || debugUpdateMessage) && (
           <div

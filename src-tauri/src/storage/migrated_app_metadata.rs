@@ -23,9 +23,9 @@ pub struct MigratedAppEntry {
     pub target_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct MigratedAppStorage {
-    apps: Vec<MigratedAppEntry>,
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub(crate) struct MigratedAppStorage {
+    pub(crate) apps: Vec<MigratedAppEntry>,
 }
 
 fn metadata_file_path() -> PathBuf {
@@ -33,7 +33,7 @@ fn metadata_file_path() -> PathBuf {
 }
 
 /// 加载全部迁移应用元数据
-fn load_all() -> Vec<MigratedAppEntry> {
+pub(crate) fn load_all() -> Vec<MigratedAppEntry> {
     let path = metadata_file_path();
     if !path.exists() {
         return Vec::new();
@@ -46,13 +46,15 @@ fn load_all() -> Vec<MigratedAppEntry> {
 }
 
 /// 原子保存元数据列表
-fn save_all(apps: &[MigratedAppEntry]) -> Result<(), String> {
+pub(crate) fn save_all(apps: &[MigratedAppEntry]) -> Result<(), String> {
     let path = metadata_file_path();
     let storage = MigratedAppStorage { apps: apps.to_vec() };
     let json = serde_json::to_string_pretty(&storage)
         .map_err(|e| format!("序列化元数据失败: {}", e))?;
     fs::write(&path, &json)
         .map_err(|e| format!("写入元数据文件失败: {}", e))?;
+    // 数据目录被误删时兜底元数据同样会丢，落盘后同步镜像一份
+    crate::storage::mirror::mirror_migrated_apps(apps);
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 // 设置页面 — 桌面工具风格
 // 克制配色，紧凑布局
 
-import { useState, useEffect, type CSSProperties } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, confirm } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -14,7 +14,7 @@ import {
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
   Video, Users, MessageSquare, Activity,
-  ShieldCheck,
+  ShieldCheck, FileCog, DatabaseBackup,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -23,7 +23,8 @@ import UserManual from '../components/UserManual';
 import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
-import type { DataDirConfig, GhostLinkPreview } from '../types';
+import FilterSelect from '../components/FilterSelect';
+import type { ConfigFileEntry, DataDirConfig, DataDirSwitchResult, GhostLinkPreview, MirrorBackupInfo } from '../types';
 import {
   applyFontSize,
   MAX_FONT_SIZE_PX,
@@ -56,6 +57,20 @@ interface IntegrityCheckResult {
   asset_name: string | null;
 }
 
+/** 配置文件展示文案：与后端返回的 id 一一对应，界面文案不写进后端 */
+const CONFIG_FILE_COPY: Record<string, { label: string; description: string; missingDescription: string }> = {
+  pointer: {
+    label: '配置文件',
+    description: '指向数据存储目录；必须放在数据目录之外，删掉后程序会回到默认目录',
+    missingDescription: '尚未生成，当前使用默认数据存储目录',
+  },
+  ui_settings: {
+    label: '界面设置',
+    description: '主题、字号、默认迁移目录等偏好；位于数据目录内，随数据目录一起迁移',
+    missingDescription: '尚未生成，当前使用默认界面设置',
+  },
+};
+
 function formatSize(bytes: number): string {
   if (bytes === 0) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
@@ -86,7 +101,11 @@ const FONT_SIZE_PRESETS = [
   { label: '标准', value: 13 },
   { label: '适中', value: 14 },
   { label: '较大', value: 15 },
+  { label: '大屏', value: 18 },
 ];
+
+/** 字号下拉里的「自定义」项：选中后才允许逐像素编辑 */
+const CUSTOM_FONT_SIZE_VALUE = 'custom';
 
 function Toggle({ active, onChange }: { active: boolean; onChange: () => void }) {
   return (
@@ -235,6 +254,14 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   const [appVersion, setAppVersion] = useState('...');
   const [dataDir, setDataDir] = useState('');
   const [dataDirLoading, setDataDirLoading] = useState(false);
+  const [configFiles, setConfigFiles] = useState<ConfigFileEntry[]>([]);
+  // 字号当前是否处于「自定义」：初值由已保存字号是否命中预设决定
+  const [customFontSizeMode, setCustomFontSizeMode] = useState(
+    () => !FONT_SIZE_PRESETS.some(preset => preset.value === loadSettings().fontSizePx),
+  );
+  const [customFontSizeDraft, setCustomFontSizeDraft] = useState(() => String(loadSettings().fontSizePx));
+  const [backupInfo, setBackupInfo] = useState<MirrorBackupInfo | null>(null);
+  const [backupRunning, setBackupRunning] = useState(false);
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   const [integrityChecking, setIntegrityChecking] = useState(false);
   const currentYear = new Date().getFullYear();
@@ -255,10 +282,20 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     isPortable, checkForUpdate, downloadAndInstall,
   } = useUpdater();
 
+  // 字号可能在别处被改（例如导入旧配置），输入框与预设状态需要跟着同步
+  useEffect(() => {
+    setCustomFontSizeDraft(String(settings.fontSizePx));
+    setCustomFontSizeMode(!FONT_SIZE_PRESETS.some(preset => preset.value === settings.fontSizePx));
+  }, [settings.fontSizePx]);
+
   useEffect(() => {
     setSettings(loadSettings());
     loadStats();
     loadDataDir();
+    invoke<ConfigFileEntry[]>('get_config_files')
+      .then(setConfigFiles)
+      .catch(() => setConfigFiles([]));
+    loadBackupInfo();
     getVersion().then(setAppVersion).catch(() => setAppVersion('1.0.0'));
   }, []);
 
@@ -280,6 +317,51 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
   async function loadDataDir() {
     try { const info = await invoke<DataDirConfig>('get_data_dir_info'); setDataDir(info.data_dir); }
     catch { /* ignore */ }
+  }
+
+  async function loadBackupInfo() {
+    try { setBackupInfo(await invoke<MirrorBackupInfo>('get_mirror_backup_info')); }
+    catch { setBackupInfo(null); }
+  }
+
+  /** 手动备份当前迁移数据（不受自动备份开关影响） */
+  async function handleBackupNow() {
+    setBackupRunning(true);
+    try {
+      const info = await invoke<MirrorBackupInfo>('backup_now');
+      setBackupInfo(info);
+      showToast('迁移数据已备份', 'success');
+    } catch (error) {
+      showToast(`备份失败: ${error}`, 'error');
+    } finally {
+      setBackupRunning(false);
+    }
+  }
+
+  /** 打开备份目录：目录不存在时由后端先创建 */
+  async function handleOpenBackupDir() {
+    try {
+      await invoke('open_mirror_dir');
+    } catch (error) {
+      showToast(`打开备份目录失败: ${error}`, 'error');
+    }
+  }
+
+  /** 切换自动备份开关：与其它界面设置一起落到 ui_settings.json */
+  function handleToggleAutoBackup() {
+    const enabled = !settings.autoBackupEnabled;
+    updateSetting('autoBackupEnabled', enabled);
+    showToast(enabled ? '已开启自动备份' : '已关闭自动备份，仅保留手动备份', 'info');
+  }
+
+  /** 打开配置文件所在目录：文件存在时在资源管理器中选中它，未生成时退回到父目录 */
+  async function handleOpenConfigFile(entry: ConfigFileEntry) {
+    try {
+      const targetPath = entry.exists ? entry.path : entry.path.replace(/[\\/][^\\/]+$/, '');
+      await invoke('open_folder', { path: targetPath || entry.path });
+    } catch (error) {
+      showToast(`打开配置文件失败: ${error}`, 'error');
+    }
   }
 
   async function handleVerifyFileIntegrity() {
@@ -307,9 +389,13 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     if (!confirmed) return;
     setDataDirLoading(true);
     try {
-      await invoke('set_data_dir', { newPath: selected });
-      setDataDir(selected);
-      showToast('数据目录已成功迁移', 'success');
+      const result = await invoke<DataDirSwitchResult>('set_data_dir', { newPath: selected });
+      setDataDir(result.data_dir);
+      const summary = `数据目录已切换（复制 ${result.copied_files} 个文件，清理旧目录 ${result.removed_entries} 项）`;
+      if (result.warning) showToast(`${summary}\n${result.warning}`, 'info', 8000);
+      else showToast(summary, 'success');
+      loadBackupInfo();
+      invoke<ConfigFileEntry[]>('get_config_files').then(setConfigFiles).catch(() => setConfigFiles([]));
     } catch (e) { showToast(`迁移失败: ${e}`, 'error'); }
     finally { setDataDirLoading(false); }
   }
@@ -350,8 +436,25 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     if (k === 'fontSizePx') applyFontSize(nextValue);
   };
 
-  const fontPresetIndex = FONT_SIZE_PRESETS.findIndex(preset => preset.value === settings.fontSizePx);
-  const fontRangeProgress = ((settings.fontSizePx - MIN_FONT_SIZE_PX) / (MAX_FONT_SIZE_PX - MIN_FONT_SIZE_PX)) * 100;
+  /** 字号下拉切换：选预设立即生效，选「自定义」只切换编辑态 */
+  function handleFontSizeSelect(value: string) {
+    if (value === CUSTOM_FONT_SIZE_VALUE) {
+      setCustomFontSizeMode(true);
+      setCustomFontSizeDraft(String(settings.fontSizePx));
+      return;
+    }
+    setCustomFontSizeMode(false);
+    updateSetting('fontSizePx', Number(value));
+  }
+
+  /** 提交自定义字号：非法或越界输入回退到合法值，避免把界面撑破 */
+  function commitCustomFontSize() {
+    const normalized = normalizeFontSizePx(Number(customFontSizeDraft));
+    setCustomFontSizeDraft(String(normalized));
+    if (normalized !== settings.fontSizePx) {
+      updateSetting('fontSizePx', normalized);
+    }
+  }
 
   /** 选择默认应用迁移目录（C 盘以外的目录） */
   const handleSelectAppTargetPath = async () => {
@@ -367,7 +470,8 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
 
   return (
     <div className="h-full overflow-auto" style={{ padding: '16px 20px' }}>
-      <div className="flex flex-col gap-4" style={{ maxWidth: '640px', margin: '0 auto' }}>
+      {/* 单列居中：宽度按窗口比例（并给窄窗口留最小可用宽度），不做分栏 */}
+      <div className="flex flex-col gap-4" style={{ width: 'max(560px, 62%)', margin: '0 auto' }}>
 
         {/* stats summary — 绿色强调分隔线 + 柔和背景 */}
         {stats && stats.active_migrations > 0 && (
@@ -437,57 +541,37 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <div
-                  className="relative flex h-7 w-[132px] items-center overflow-hidden rounded p-0.5"
-                  style={{ background: 'var(--bg-row-hover)' }}
-                >
-                  <span
-                    className="absolute inset-y-0.5 left-0.5 rounded transition-all duration-200 ease-out"
+                <FilterSelect
+                  className="w-[110px]"
+                  value={customFontSizeMode ? CUSTOM_FONT_SIZE_VALUE : String(settings.fontSizePx)}
+                  onChange={handleFontSizeSelect}
+                  options={[
+                    ...FONT_SIZE_PRESETS.map(preset => ({
+                      value: String(preset.value),
+                      label: `${preset.label} ${preset.value}`,
+                    })),
+                    { value: CUSTOM_FONT_SIZE_VALUE, label: '自定义' },
+                  ]}
+                />
+                {/* 只有选了「自定义」才允许逐像素编辑，避免预设与输入框同时抢焦点 */}
+                {customFontSizeMode && (
+                  <input
+                    type="number"
+                    min={MIN_FONT_SIZE_PX}
+                    max={MAX_FONT_SIZE_PX}
+                    value={customFontSizeDraft}
+                    onChange={(e) => setCustomFontSizeDraft(e.target.value)}
+                    onBlur={commitCustomFontSize}
+                    onKeyDown={(e) => { if (e.key === 'Enter') commitCustomFontSize(); }}
+                    className="h-8 w-16 rounded-md border px-2 text-[12px] outline-none"
                     style={{
-                      width: 'calc((100% - 4px) / 3)',
-                      opacity: fontPresetIndex >= 0 ? 1 : 0,
-                      transform: `translateX(${fontPresetIndex * 100}%)`,
-                      background: 'var(--color-primary)',
+                      borderColor: 'var(--border-color)',
+                      background: 'var(--bg-input)',
+                      color: 'var(--text-primary)',
                     }}
+                    title={`自定义字号（${MIN_FONT_SIZE_PX}-${MAX_FONT_SIZE_PX}px）`}
                   />
-                  {FONT_SIZE_PRESETS.map(preset => (
-                    <button
-                      key={preset.value}
-                      type="button"
-                      onClick={() => updateSetting('fontSizePx', preset.value)}
-                      className="relative z-10 h-full flex-1 rounded text-[11px] transition-colors"
-                      style={{
-                        color: settings.fontSizePx === preset.value ? 'var(--text-inverse)' : 'var(--text-tertiary)',
-                      }}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="range"
-                  min={MIN_FONT_SIZE_PX}
-                  max={MAX_FONT_SIZE_PX}
-                  step={1}
-                  value={settings.fontSizePx}
-                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
-                  className="theme-range w-24"
-                  style={{ '--range-progress': `${fontRangeProgress}%` } as CSSProperties}
-                  title="调整字体大小"
-                />
-                <input
-                  type="number"
-                  min={MIN_FONT_SIZE_PX}
-                  max={MAX_FONT_SIZE_PX}
-                  value={settings.fontSizePx}
-                  onChange={(e) => updateSetting('fontSizePx', Number(e.target.value))}
-                  className="h-7 w-14 rounded border px-2 text-[12px] outline-none"
-                  style={{
-                    borderColor: 'var(--border-color)',
-                    background: 'var(--bg-input)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
+                )}
               </div>
             </div>
           </div>
@@ -580,6 +664,37 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </button>
               </div>
             </div>
+
+            {/* 配置文件：位置隐蔽且容易被误删，单独提供打开入口（后端只给路径，文案在前端） */}
+            {configFiles.map((entry) => {
+              const copy = CONFIG_FILE_COPY[entry.id] ?? { label: entry.id, description: '', missingDescription: '尚未生成' };
+              return (
+                <div
+                  key={entry.id}
+                  className="setting-item"
+                  style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}
+                >
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                      <FileCog className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="setting-label">{copy.label}</p>
+                      <p className="setting-desc">{entry.exists ? copy.description : copy.missingDescription}</p>
+                      <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={entry.path}>
+                        {entry.path}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button onClick={() => handleOpenConfigFile(entry)} className="btn h-7 text-[11px]">
+                      <FolderArchive className="w-3 h-3" />
+                      打开所在目录
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
 
@@ -605,14 +720,59 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* maintenance */}
         <section>
           <SectionHeader label="存储维护" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)', padding: '12px 14px' }}>
-            <div className="flex items-start gap-3">
+          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+            {/* 自动备份：数据目录被误删时的兜底；动作按钮统一放在右侧，信息按行堆叠在左侧 */}
+            <div className="setting-item" style={{ padding: '10px 14px' }}>
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                  <DatabaseBackup className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="setting-label">自动备份</p>
+                  <p className="setting-desc">
+                    {settings.autoBackupEnabled
+                      ? '每次改动迁移数据后自动备份一份到数据目录之外，误删数据目录时可一键导回。'
+                      : '已关闭：仅在手动点击「立即备份」时备份。'}
+                  </p>
+                  {backupInfo?.exists && (
+                    <p className="text-[11px] truncate" style={{ color: 'var(--text-tertiary)' }}>
+                      {backupInfo.history_count} 条记录 · 最近备份{' '}
+                      {backupInfo.saved_at > 0 ? new Date(backupInfo.saved_at).toLocaleString('zh-CN') : '未知'}
+                    </p>
+                  )}
+                  {backupInfo && (
+                    <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={backupInfo.path}>
+                      {backupInfo.path}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button onClick={handleBackupNow} disabled={backupRunning} className="btn h-7 text-[11px]">
+                  {backupRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <DatabaseBackup className="w-3 h-3" />}
+                  {backupRunning ? '备份中...' : '立即备份'}
+                </button>
+                <button onClick={handleOpenBackupDir} className="btn h-7 text-[11px]" title="打开备份目录">
+                  <FolderArchive className="w-3 h-3" />
+                  前往
+                </button>
+                <button
+                  onClick={handleToggleAutoBackup}
+                  className="btn h-7 text-[11px]"
+                  title={settings.autoBackupEnabled ? '关闭后不再自动备份' : '开启自动备份'}
+                >
+                  {settings.autoBackupEnabled ? '关闭自动备份' : '开启自动备份'}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
               <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--color-danger-light)' }}>
                 <Trash2 className="w-4 h-4" style={{ color: 'var(--color-danger)' }} />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="setting-label mb-1">清理无效记录</p>
-                <p className="setting-desc" style={{ marginBottom: '20px' }}>
+                <p className="setting-label">清理无效记录</p>
+                <p className="setting-desc" style={{ marginBottom: '12px' }}>
                   扫描并清理目标丢失、链接断裂或已消失的无效记录。先预览，再确认清理。
                 </p>
 

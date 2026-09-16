@@ -13,6 +13,8 @@ export interface UserSettings {
   showScanDebug: boolean;
   fontSizePx: number;
   theme: UserThemeMode;
+  /** 自动备份迁移数据（历史、自定义文件夹、应用兜底数据） */
+  autoBackupEnabled: boolean;
 }
 
 interface UserSettingsLoadResult {
@@ -30,6 +32,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   showScanDebug: false,
   fontSizePx: 13,
   theme: 'system',
+  autoBackupEnabled: true,
 };
 
 function isThemeMode(value: unknown): value is UserThemeMode {
@@ -56,6 +59,7 @@ export function normalizeUserSettings(input: Partial<UserSettings>): UserSetting
     showScanDebug: input.showScanDebug === true,
     fontSizePx: normalizeFontSizePx(input.fontSizePx),
     theme: isThemeMode(input.theme) ? input.theme : DEFAULT_USER_SETTINGS.theme,
+    autoBackupEnabled: input.autoBackupEnabled !== false,
   };
 }
 

@@ -71,6 +71,9 @@ pub fn save_history(storage: &HistoryStorage) -> Result<(), String> {
     fs::rename(&temp_path, &path)
         .map_err(|e| format!("重命名历史文件失败: {}", e))?;
 
+    // 4. 镜像兜底：数据目录被误删时仍能从镜像恢复迁移记录（失败不阻塞主流程）
+    crate::storage::mirror::mirror_history(storage);
+
     Ok(())
 }
 
@@ -172,6 +175,117 @@ pub fn add_migration_record(
 
     save_history(&storage)?;
     Ok(id)
+}
+
+/// 批量追加「链接识别」重建的迁移记录，返回（新增数, 跳过数）
+///
+/// 单次加载 → 批量追加 → 单次落盘，避免逐条保存时后写入的快照覆盖先写入的记录。
+/// 跳过条件：已存在同原路径（大小写不敏感）的活跃记录，保证重复导入幂等。
+pub fn add_recovered_records(entries: &[RecoveredLinkImport]) -> Result<(u32, u32), String> {
+    let mut storage = load_history();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut added = 0u32;
+    let mut skipped = 0u32;
+
+    for (index, entry) in entries.iter().enumerate() {
+        let duplicated = storage.records.iter().any(|record| {
+            record.status == "active" && record.original_path.eq_ignore_ascii_case(&entry.original_path)
+        });
+        if duplicated {
+            skipped += 1;
+            continue;
+        }
+
+        // 用联接创建时间作为记录时间戳；ID 追加 _r 后缀区分于真实迁移产生的 mig_<ts>，
+        // 避免与同一毫秒内的真实记录撞 ID；重复重建同一路径时再加序号兜底，保证 ID 唯一
+        let timestamp = if entry.migrated_at > 0 { entry.migrated_at } else { now };
+        let mut id = format!("mig_{}_r{}", timestamp, index);
+        let mut salt = 0u32;
+        while storage.records.iter().any(|record| record.id == id) {
+            salt += 1;
+            id = format!("mig_{}_r{}_{}", timestamp, index, salt);
+        }
+
+        storage.records.push(MigrationRecord {
+            id,
+            app_name: entry.app_name.clone(),
+            original_path: entry.original_path.clone(),
+            target_path: entry.target_path.clone(),
+            size: entry.size,
+            migrated_at: timestamp,
+            status: "active".to_string(),
+            record_type: entry.record_type.clone(),
+        });
+        added += 1;
+    }
+
+    if added > 0 {
+        save_history(&storage)?;
+    }
+    Ok((added, skipped))
+}
+
+/// 补全体积为 0 的活跃记录大小，返回本次待处理的记录数
+///
+/// 重建出来的记录无法从联接本身得知真实体积，只能重新遍历目标目录；遍历可能较慢，
+/// 因此放到后台线程逐条计算并推送事件，界面先按 0 展示、算完即刷新。
+#[tauri::command]
+pub fn start_recovered_size_scan(app_handle: tauri::AppHandle) -> Result<u32, String> {
+    use tauri::Emitter;
+
+    let pending: Vec<MigrationRecord> = load_history()
+        .records
+        .into_iter()
+        .filter(|record| record.status == "active" && record.size == 0)
+        .collect();
+
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let queued = pending.len() as u32;
+
+    std::thread::spawn(move || {
+        for record in pending {
+            // 以联接当前指向的位置为准：记录里的 target_path 只作兜底
+            let data_path = utils::get_junction_target(Path::new(&record.original_path))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&record.target_path));
+
+            let size = utils::get_dir_size_safe(&data_path);
+            // 目标不可读或为空时保持原值，避免把「读取失败」写成 0 体积以外的错误数据
+            if size == 0 {
+                continue;
+            }
+
+            match update_record_size(&record.id, size) {
+                Ok(()) => {
+                    let _ = app_handle.emit(
+                        "migration-record-size",
+                        MigrationRecordSizeEvent { record_id: record.id.clone(), size },
+                    );
+                }
+                Err(error) => log_warn!("history", "补全迁移记录大小失败 {}: {}", record.id, error),
+            }
+        }
+    });
+
+    Ok(queued)
+}
+
+/// 更新单条记录体积并落盘
+fn update_record_size(id: &str, size: u64) -> Result<(), String> {
+    let mut storage = load_history();
+    let record = storage
+        .records
+        .iter_mut()
+        .find(|record| record.id == id)
+        .ok_or_else(|| format!("未找到 ID 为 {} 的迁移记录", id))?;
+    record.size = size;
+    save_history(&storage)
 }
 
 /// 更新迁移记录状态（按 original_path 大小写不敏感匹配）

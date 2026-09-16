@@ -244,6 +244,21 @@ pub async fn migrate_large_folder(
     result
 }
 
+/// 基于路径 + 时间戳生成自定义文件夹唯一 ID
+///
+/// 抽出为公共函数，供链接识别重建时复用同一套 ID 规则，避免两处实现漂移。
+pub(crate) fn build_custom_folder_id(path: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut hasher);
+    format!("custom_{:x}", hasher.finish())
+}
+
 /// 添加自定义文件夹
 #[tauri::command]
 pub fn add_custom_folder(path: String) -> Result<(), String> {
@@ -257,16 +272,7 @@ pub fn add_custom_folder(path: String) -> Result<(), String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
 
-    // 基于路径 + 时间戳生成唯一 ID，使用标准库 DefaultHasher 避免碰撞
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .hash(&mut hasher);
-    let id = format!("custom_{:x}", hasher.finish());
+    let id = build_custom_folder_id(&path);
 
     let storage_path = utils::custom_folders_path(&ensure_data_dir());
     let mut custom = data_dir::load_custom_folders(&storage_path);

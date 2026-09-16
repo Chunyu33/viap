@@ -225,8 +225,8 @@ const AppRow = memo(function AppRow({
         {formatSize(appSize ?? 0)}
       </span>
 
-      {/* actions */}
-      <div className="flex items-center gap-1 flex-shrink-0" style={{ width: '150px', justifyContent: 'flex-end' }}>
+      {/* actions — 用最小宽度而非固定宽度：字号调大时按钮可以变宽，避免文字换行 */}
+      <div className="flex items-center gap-1 flex-shrink-0" style={{ minWidth: '150px', justifyContent: 'flex-end' }}>
         <button
           onClick={() => onOpenFolder(app)}
           disabled={operationsLocked}
@@ -265,7 +265,7 @@ const AppRow = memo(function AppRow({
         <button
           onClick={() => onUninstall(app)}
           disabled={operationsLocked || isUninstalling || isViap}
-          className="btn btn-link btn-link-danger h-6 w-9 justify-center text-[11px]"
+          className="btn btn-link btn-link-danger h-6 min-w-9 px-1.5 justify-center text-[11px]"
           title={isViap ? 'Viap 是当前运行的应用，不可卸载自身' : undefined}
         >
           {isUninstalling ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" /> : '卸载'}
@@ -488,9 +488,9 @@ export default function AppList({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* toolbar */}
-      <div className="flex items-center gap-2 flex-shrink-0 mb-1" style={{ padding: '2px 8px' }}>
-        <div className="relative flex-1 max-w-xs">
+      {/* toolbar — 允许换行：窗口变窄或字号调大时筛选器不挤压搜索框 */}
+      <div className="flex items-center gap-2 flex-wrap flex-shrink-0 mb-1" style={{ padding: '2px 8px' }}>
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search
             className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
             style={{ color: 'var(--text-tertiary)' }}
@@ -650,7 +650,8 @@ export default function AppList({
             <ArrowUpDown className="h-3 w-3 opacity-30" />
           )}
         </button>
-        <span className="flex-shrink-0" style={{ width: '150px', textAlign: 'right' }}>操作</span>
+        {/* 与行内操作列保持一致：最小宽度，让字号调大时表头与行同步变宽 */}
+        <span className="flex-shrink-0" style={{ minWidth: '150px', textAlign: 'right' }}>操作</span>
       </div>
 
       {/* 扫描/刷新进度提示：仅在进行中显示，不遮挡已加载的应用 */}

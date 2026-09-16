@@ -2,6 +2,13 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.2.0
+
+- Lost migration records can be rebuilt: pick the original folder on the Migration Records page, confirm, and the records are regenerated. Recovering the same folder twice is detected and skipped, and rebuilt records fill in their size automatically.
+- Original and target paths in the migration records can be clicked to open their folder.
+- You control the migration-data backup: turn automatic backup off or back up on demand, and import the backup with one click if the data folder is deleted; Settings also shows where the backup and config files live.
+- Other improvements: changing the data folder moves only the application's own data and cleans up the leftovers, portable builds no longer leave a cache on the system drive, the layout follows the window width instead of a fixed content width, the window size is remembered, and the font size can go up to 20px.
+
 ## v1.1.11
 
 ### Highlights

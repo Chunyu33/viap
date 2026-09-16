@@ -3,7 +3,9 @@
 
 pub mod data_dir;
 pub mod history;
+pub mod link_recovery;
 pub mod migrated_app_metadata;
+pub mod mirror;
 pub mod operation_log;
 pub mod size_cache;
 pub mod user_settings;

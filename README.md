@@ -18,6 +18,7 @@ Viap is a Windows desktop application built with Tauri, React, TypeScript, and R
 - Check running processes and file locks before migration or restore.
 - Verify copied data before switching the original path to a junction or link.
 - Keep migration history with restore, link health checks, import, and export.
+- Mirror migration data to a separate folder and rebuild lost history by scanning directory junctions.
 - Uninstall applications and scan or clean related leftovers.
 - Show disk usage, application snapshots, lazy-loaded icons, and background scan progress.
 - Detect HDD cold-start cases and let users manually load slow application-data directories.

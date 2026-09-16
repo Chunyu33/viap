@@ -177,6 +177,19 @@ export interface DataDirConfig {
 }
 
 /**
+ * 配置文件条目
+ * 对应 Rust 后端的 ConfigFileEntry 结构体
+ */
+export interface ConfigFileEntry {
+  // 稳定标识：pointer（数据目录指针）/ ui_settings（界面设置）
+  id: string;
+  // 文件完整路径
+  path: string;
+  // 是否已生成；未生成时程序使用默认值
+  exists: boolean;
+}
+
+/**
  * 应用数据模板条目
  * 对应 Rust 后端的 AppDataTemplate 结构体
  */
@@ -243,6 +256,94 @@ export interface MigrationProgressEvent {
  * 迁移记录类型枚举
  */
 export type MigrationRecordType = 'App' | 'LargeFolder';
+
+/** 链接识别的置信度：high 可直接导入 / medium 需确认 / low 默认不勾选 */
+export type LinkConfidence = 'high' | 'medium' | 'low';
+
+/**
+ * 链接识别结果条目
+ * 对应 Rust 后端的 RecoveredLinkEntry 结构体
+ */
+export interface RecoveredLinkEntry {
+  app_name: string;
+  /** 原路径（现为目录联接） */
+  original_path: string;
+  /** 联接指向的目标路径 */
+  target_path: string;
+  record_type: MigrationRecordType;
+  /** 联接创建时间（近似迁移时间，Unix 毫秒） */
+  migrated_at: number;
+  /** 目标目录大小（字节），未统计时为 0 */
+  size: number;
+  confidence: LinkConfidence;
+  target_exists: boolean;
+  target_empty: boolean;
+  cross_drive: boolean;
+  already_recorded: boolean;
+  warnings: string[];
+}
+
+/** 链接识别扫描结果 */
+export interface LinkRecoveryScanResult {
+  entries: RecoveredLinkEntry[];
+  scanned_dirs: number;
+  skipped_dirs: number;
+  /** 达到扫描上限被提前截断 */
+  truncated: boolean;
+  elapsed_ms: number;
+}
+
+/** 链接识别进度事件（事件名：link-recovery-progress） */
+export interface LinkRecoveryProgressEvent {
+  scanned_dirs: number;
+  found_links: number;
+  current_path: string;
+}
+
+/** 链接识别导入结果 */
+export interface LinkRecoveryImportResult {
+  imported: number;
+  /** 已存在同原路径的活跃记录而被跳过（重复恢复） */
+  duplicated: number;
+  /** 校验未通过被拒绝的条目数 */
+  rejected: number;
+  custom_folders_added: number;
+  failed: string[];
+}
+
+/** 数据目录切换结果（对应 Rust 后端的 DataDirSwitchResult） */
+export interface DataDirSwitchResult {
+  data_dir: string;
+  copied_files: number;
+  removed_entries: number;
+  warning: string | null;
+}
+
+/** 迁移记录大小补全事件（事件名：migration-record-size） */
+export interface MigrationRecordSizeEvent {
+  record_id: string;
+  size: number;
+}
+
+/** 镜像备份信息 */
+export interface MirrorBackupInfo {
+  exists: boolean;
+  /** 自动备份开关是否开启 */
+  auto_backup_enabled: boolean;
+  path: string;
+  history_count: number;
+  custom_folder_count: number;
+  migrated_app_count: number;
+  saved_at: number;
+}
+
+/** 镜像备份导入结果 */
+export interface MirrorImportResult {
+  history_added: number;
+  history_skipped: number;
+  custom_folders_added: number;
+  migrated_apps_added: number;
+}
 
 /**
  * 迁移历史记录接口

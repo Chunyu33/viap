@@ -15,6 +15,8 @@ interface FilterSelectProps<T extends string> {
   menuClassName?: string;
   /** 卸载等不可变更状态下禁用筛选器，避免用户修改列表视图。 */
   disabled?: boolean;
+  /** sm 用于紧凑的表单/参数行，md 为默认尺寸 */
+  size?: 'sm' | 'md';
 }
 
 export default function FilterSelect<T extends string>({
@@ -24,6 +26,7 @@ export default function FilterSelect<T extends string>({
   className = '',
   menuClassName = '',
   disabled = false,
+  size = 'md',
 }: FilterSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -81,6 +84,11 @@ export default function FilterSelect<T extends string>({
     };
   }, []);
 
+  const isSmall = size === 'sm';
+  const triggerClassName = isSmall
+    ? 'h-6 pl-2 pr-6 rounded text-[11px]'
+    : 'h-8 pl-3 pr-8 rounded-md text-[12px]';
+
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <button
@@ -88,7 +96,7 @@ export default function FilterSelect<T extends string>({
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         disabled={disabled}
-        className="h-8 w-full min-w-[88px] pl-3 pr-8 rounded-md text-[12px] text-left bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors border border-[var(--border-color)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30 disabled:cursor-default disabled:opacity-60"
+        className={`w-full min-w-[72px] text-left bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors border border-[var(--border-color)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30 disabled:cursor-default disabled:opacity-60 whitespace-nowrap ${triggerClassName}`}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -96,7 +104,7 @@ export default function FilterSelect<T extends string>({
       </button>
 
       <ChevronDown
-        className={`pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--text-tertiary)] transition-transform ${open ? 'rotate-180' : ''}`}
+        className={`pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 ${isSmall ? 'w-3 h-3' : 'w-3.5 h-3.5'} text-[var(--text-tertiary)] transition-transform ${open ? 'rotate-180' : ''}`}
       />
 
       {open && menuPosition && createPortal(
