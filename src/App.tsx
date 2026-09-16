@@ -13,6 +13,7 @@ import LargeFolders from './pages/LargeFolders';
 import MigrationHistory from './pages/MigrationHistory';
 import Settings from './pages/Settings';
 import StartupScreen from './components/StartupScreen';
+import Toast, { useToast } from './components/Toast';
 import { DiskUsage, TabType } from './types';
 import { useTheme, ThemeMode, ResolvedTheme } from './hooks/useTheme';
 import './App.css';
@@ -73,6 +74,7 @@ function App() {
   const [diskLoading, setDiskLoading] = useState(true);
   const [diskRefreshing, setDiskRefreshing] = useState(false);
   const [startupVisible, setStartupVisible] = useState(true);
+  const { toast, showToast, hideToast } = useToast();
 
   // 初始化主题系统
   const themeState = useTheme();
@@ -112,6 +114,17 @@ function App() {
       invoke('frontend_ready').catch(() => {});
     });
   }, []);
+
+  useEffect(() => {
+    // 启动时后端可能已自动还原了上次中断的迁移，这里取一次提示并展示
+    invoke<string | null>('take_pending_migration_notice')
+      .then((notice) => {
+        if (notice) showToast(notice, 'info', 15000);
+      })
+      .catch(() => {
+        // 旧版本后端没有该命令：忽略即可，不影响启动
+      });
+  }, [showToast]);
 
   useEffect(() => {
     // 非首屏页面按需挂载，避免启动时一次初始化全部模块造成白屏等待。
@@ -173,6 +186,15 @@ function App() {
 
         {/* 标题栏下方：更新通知条 */}
         <UpdateNotification />
+
+        {/* 迁移中断兜底提示：后端启动时已把备份还原回原路径，这里只负责告知 */}
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          visible={toast.visible}
+          duration={toast.duration ?? 10000}
+          onClose={hideToast}
+        />
 
         {/* 页面内容区域 — CSS display 切换，组件实例保持存活，opacity 过渡动画 */}
         <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)', position: 'relative' }}>

@@ -7,5 +7,6 @@ pub mod link_recovery;
 pub mod migrated_app_metadata;
 pub mod mirror;
 pub mod operation_log;
+pub mod pending_migration;
 pub mod size_cache;
 pub mod user_settings;

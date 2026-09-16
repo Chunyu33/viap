@@ -346,6 +346,18 @@ fn apply_saved_window_size(window: &tauri::WebviewWindow) {
     }
 }
 
+/// 上次启动时迁移中断的恢复提示（只提示一次，取走即清空）
+static PENDING_MIGRATION_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 取走启动时的迁移中断提示，供前端弹一次 toast
+#[tauri::command]
+fn take_pending_migration_notice() -> Option<String> {
+    PENDING_MIGRATION_NOTICE
+        .lock()
+        .ok()
+        .and_then(|mut notice| notice.take())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(feature = "portable")]
@@ -365,6 +377,15 @@ pub fn run() {
             // 窗口尚未显示，此时套用记忆尺寸不会出现尺寸跳动
             if let Some(window) = app.get_webview_window("main") {
                 apply_saved_window_size(&window);
+            }
+
+            // 上次迁移在"改名 → 建链接"之间被中断时，先把备份还原回原路径，
+            // 否则原路径缺失会让应用直接不可用；提示交给前端弹一次 toast
+            if let Some(notice) = storage::pending_migration::recover_interrupted_migration() {
+                log_warn!("migration", "{}", notice);
+                if let Ok(mut slot) = PENDING_MIGRATION_NOTICE.lock() {
+                    *slot = Some(notice);
+                }
             }
 
             let app_handle = app.handle().clone();
@@ -396,6 +417,7 @@ pub fn run() {
             // 系统接口
             system::disk_usage::get_disk_usage,
             frontend_ready,
+            take_pending_migration_notice,
             is_portable_build,
             get_viap_install_path,
             verify_file_integrity,
