@@ -306,7 +306,8 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
       <div
         className="relative w-full overflow-hidden rounded-xl shadow-2xl animate-modal-in flex flex-col"
         style={{
-          maxWidth: '780px',
+          // 弹窗宽度跟随窗口（宽屏时给出更多候选空间），仍保留滚动条与最大高度约束
+          maxWidth: 'min(1040px, calc(100vw - 64px))',
           maxHeight: 'min(680px, calc(100vh - 64px))',
           background: 'var(--bg-modal)',
           border: '1px solid var(--border-color)',

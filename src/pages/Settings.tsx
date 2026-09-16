@@ -429,11 +429,15 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
 
   return (
     <div className="h-full overflow-auto" style={{ padding: '16px 20px' }}>
-      <div className="flex flex-col gap-4" style={{ maxWidth: '640px', margin: '0 auto' }}>
+      {/* 宽窗口自动分栏，窄窗口自动回到单列，不再写死内容最大宽度 */}
+      <div
+        className="grid gap-4 items-start"
+        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))' }}
+      >
 
         {/* stats summary — 绿色强调分隔线 + 柔和背景 */}
         {stats && stats.active_migrations > 0 && (
-          <div className="relative rounded-lg overflow-hidden" style={{ background: 'var(--color-primary-light)' }}>
+          <div className="relative rounded-lg overflow-hidden" style={{ background: 'var(--color-primary-light)', gridColumn: '1 / -1' }}>
             {/* 左侧强调线 */}
             <div className="absolute left-0 top-0 bottom-0 w-1" style={{ background: 'var(--color-primary)' }} />
             <div className="flex items-center gap-6 py-4 px-5 text-[12px]">
@@ -1083,7 +1087,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         </section>
 
         {/* copyright */}
-        <div className="text-center py-3 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+        <div className="text-center py-3 text-[11px]" style={{ color: 'var(--text-tertiary)', gridColumn: '1 / -1' }}>
           &copy; {currentYear} {APP_INFO.name} · All Right reserved.
         </div>
       </div>

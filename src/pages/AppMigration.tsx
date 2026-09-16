@@ -1565,7 +1565,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
 
   return (
     <div className="relative h-full overflow-hidden flex flex-col" style={{ padding: 'var(--spacing-4) var(--spacing-5)' }}>
-      <div className="flex-1 max-w-5xl mx-auto w-full min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 w-full min-h-0 flex flex-col overflow-hidden">
         {/* debug 浮层使用绝对定位，折叠态只保留左侧小图标，避免抢占主体信息。 */}
         {showScanDebug && (debugMetrics.length > 0 || debugUpdateMessage) && (
           <div
