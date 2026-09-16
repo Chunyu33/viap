@@ -21,6 +21,21 @@ impl Default for MigrationState {
     }
 }
 
+/// 链接识别任务状态（Tauri 托管状态）
+///
+/// 与迁移/恢复共用取消标志会互相干扰（识别扫描期间取消会误中断迁移），
+/// 因此单独持有一个取消标志。
+pub struct LinkRecoveryState {
+    /// 取消标志：前端调用 cancel_link_recovery 时设置为 true
+    pub cancel_flag: Arc<AtomicBool>,
+}
+
+impl Default for LinkRecoveryState {
+    fn default() -> Self {
+        Self { cancel_flag: Arc::new(AtomicBool::new(false)) }
+    }
+}
+
 // ============================================================================
 // 应用与磁盘信息
 // ============================================================================
@@ -280,4 +295,110 @@ pub struct MigrationStats {
     pub app_migrations: u32,
     /// 文件夹迁移数量
     pub folder_migrations: u32,
+}
+
+// ============================================================================
+// 迁移记录重建（原路径链接识别）
+// ============================================================================
+
+/// 链接识别结果条目
+///
+/// 由原路径侧扫描到的目录联接反推得到，字段全部可从前端展示与人工确认；
+/// 真伪由 confidence + warnings 表达，绝不静默写入历史。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecoveredLinkEntry {
+    /// 应用/文件夹名称（默认取原目录名）
+    pub app_name: String,
+    /// 原路径（现为目录联接）
+    pub original_path: String,
+    /// 联接指向的目标路径
+    pub target_path: String,
+    /// 推测的记录类型，前端可修改
+    pub record_type: MigrationRecordType,
+    /// 联接创建时间（近似迁移时间，Unix 毫秒；读取失败为 0）
+    pub migrated_at: u64,
+    /// 目标目录大小（字节）；未勾选统计时为 0
+    pub size: u64,
+    /// 置信度：high（可直接导入）/ medium（需确认）/ low（默认不勾选）
+    pub confidence: String,
+    /// 目标目录是否存在
+    pub target_exists: bool,
+    /// 目标目录存在但为空，说明没有可恢复数据
+    pub target_empty: bool,
+    /// 目标与原路径不在同一盘符
+    pub cross_drive: bool,
+    /// 现有历史中已存在同原路径的活跃记录
+    pub already_recorded: bool,
+    /// 判定依据与风险提示（前端直接展示，避免前端重复实现规则文案）
+    pub warnings: Vec<String>,
+}
+
+/// 链接识别扫描结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LinkRecoveryScanResult {
+    pub entries: Vec<RecoveredLinkEntry>,
+    /// 实际遍历的目录数
+    pub scanned_dirs: u32,
+    /// 因权限/系统目录被跳过的目录数
+    pub skipped_dirs: u32,
+    /// 达到扫描上限被提前截断
+    pub truncated: bool,
+    pub elapsed_ms: u64,
+}
+
+/// 导入项（前端回传，后端必须逐条重新校验，不信任前端结果）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecoveredLinkImport {
+    pub app_name: String,
+    pub original_path: String,
+    pub target_path: String,
+    pub record_type: MigrationRecordType,
+    /// 联接创建时间，用于还原迁移时间
+    pub migrated_at: u64,
+    /// 目标大小（0 表示未统计）
+    pub size: u64,
+    /// 是否同时登记为自定义文件夹（仅对大文件夹类型有意义）
+    #[serde(default)]
+    pub register_custom_folder: bool,
+}
+
+/// 链接识别导入结果
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct LinkRecoveryImportResult {
+    /// 新增的迁移记录数
+    pub imported: u32,
+    /// 因重复或校验失败被跳过的条目数
+    pub skipped: u32,
+    /// 新登记的自定义文件夹数
+    pub custom_folders_added: u32,
+    /// 跳过原因（含路径，便于用户定位）
+    pub failed: Vec<String>,
+}
+
+// ============================================================================
+// 迁移数据镜像备份
+// ============================================================================
+
+/// 镜像备份信息（供恢复弹窗展示是否可一键导入）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MirrorBackupInfo {
+    /// 镜像文件是否存在
+    pub exists: bool,
+    /// 镜像目录路径
+    pub path: String,
+    /// 镜像中的迁移记录数（含非 active 状态）
+    pub history_count: u32,
+    pub custom_folder_count: u32,
+    pub migrated_app_count: u32,
+    /// 镜像写入时间（Unix 毫秒）
+    pub saved_at: u64,
+}
+
+/// 镜像备份导入结果
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct MirrorImportResult {
+    pub history_added: u32,
+    pub history_skipped: u32,
+    pub custom_folders_added: u32,
+    pub migrated_apps_added: u32,
 }

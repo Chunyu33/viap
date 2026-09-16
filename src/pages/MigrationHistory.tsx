@@ -8,12 +8,13 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import {
   History, RotateCcw, RefreshCw, Loader2,
   FolderArchive, AppWindow, ArrowRight, CheckCircle2, AlertTriangle,
-  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2,
+  Search, X, ChevronDown, ChevronUp, ArrowUpDown, ArrowUp, ArrowDown, Trash2, Link2,
 } from 'lucide-react';
 import { MigrationProgressEvent, MigrationRecord, MigrationResult } from '../types';
 import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
+import LinkRecoveryModal from '../components/LinkRecoveryModal';
 import { useViapStore } from '../store';
 
 // no_data: 原路径已消失且目标为空/不存在，通常表示应用已被外部卸载。
@@ -311,6 +312,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'App' | 'LargeFolder'>('all');
   const [sortBy, setSortBy] = useState<SortBy>('date_desc');
+  // 迁移记录重建弹窗：仅在用户点击时打开（不做自动检查）
+  const [linkRecoveryOpen, setLinkRecoveryOpen] = useState(false);
 
   /** 列头点击排序：同 key 三态切换 asc → desc → 清除（回到 date_desc） */
   function handleColumnSort(key: SortKey) {
@@ -638,7 +641,17 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           <Loader2 className="w-5 h-5 animate-spin" style={{ color: 'var(--color-primary)' }} />
         </div>
       ) : records.length === 0 ? (
-        <EmptyState icon={<History />} title="暂无迁移记录" description="迁移应用或文件夹后将在此显示" />
+        <EmptyState
+          icon={<History />}
+          title="暂无迁移记录"
+          description="迁移应用或文件夹后将在此显示；若记录被误删可从目录联接重建"
+          action={
+            <button onClick={() => setLinkRecoveryOpen(true)} className="btn h-7 text-[12px]">
+              <Link2 className="w-3.5 h-3.5" />
+              扫描恢复迁移记录
+            </button>
+          }
+        />
       ) : (
         <>
           {/* column header — 固定，不参与滚动 */}
@@ -696,6 +709,13 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           </div>
         </>
       )}
+      {/* 迁移记录重建弹窗：数据目录被误删后从原路径联接反推记录 */}
+      <LinkRecoveryModal
+        isOpen={linkRecoveryOpen}
+        onClose={() => setLinkRecoveryOpen(false)}
+        onImported={() => { loadHistory(); }}
+      />
+
       {/* Toast 根据通知类型自动选择停留时间，错误提示默认更久。 */}
       <Toast message={toast.message} type={toast.type} visible={toast.visible} duration={toast.duration} onClose={hideToast} />
     </div>

@@ -71,6 +71,9 @@ pub fn save_history(storage: &HistoryStorage) -> Result<(), String> {
     fs::rename(&temp_path, &path)
         .map_err(|e| format!("重命名历史文件失败: {}", e))?;
 
+    // 4. 镜像兜底：数据目录被误删时仍能从镜像恢复迁移记录（失败不阻塞主流程）
+    crate::storage::mirror::mirror_history(storage);
+
     Ok(())
 }
 
@@ -172,6 +175,58 @@ pub fn add_migration_record(
 
     save_history(&storage)?;
     Ok(id)
+}
+
+/// 批量追加「链接识别」重建的迁移记录，返回（新增数, 跳过数）
+///
+/// 单次加载 → 批量追加 → 单次落盘，避免逐条保存时后写入的快照覆盖先写入的记录。
+/// 跳过条件：已存在同原路径（大小写不敏感）的活跃记录，保证重复导入幂等。
+pub fn add_recovered_records(entries: &[RecoveredLinkImport]) -> Result<(u32, u32), String> {
+    let mut storage = load_history();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut added = 0u32;
+    let mut skipped = 0u32;
+
+    for (index, entry) in entries.iter().enumerate() {
+        let duplicated = storage.records.iter().any(|record| {
+            record.status == "active" && record.original_path.eq_ignore_ascii_case(&entry.original_path)
+        });
+        if duplicated {
+            skipped += 1;
+            continue;
+        }
+
+        // 用联接创建时间作为记录时间戳；ID 追加 _r 后缀区分于真实迁移产生的 mig_<ts>，
+        // 避免与同一毫秒内的真实记录撞 ID；重复重建同一路径时再加序号兜底，保证 ID 唯一
+        let timestamp = if entry.migrated_at > 0 { entry.migrated_at } else { now };
+        let mut id = format!("mig_{}_r{}", timestamp, index);
+        let mut salt = 0u32;
+        while storage.records.iter().any(|record| record.id == id) {
+            salt += 1;
+            id = format!("mig_{}_r{}_{}", timestamp, index, salt);
+        }
+
+        storage.records.push(MigrationRecord {
+            id,
+            app_name: entry.app_name.clone(),
+            original_path: entry.original_path.clone(),
+            target_path: entry.target_path.clone(),
+            size: entry.size,
+            migrated_at: timestamp,
+            status: "active".to_string(),
+            record_type: entry.record_type.clone(),
+        });
+        added += 1;
+    }
+
+    if added > 0 {
+        save_history(&storage)?;
+    }
+    Ok((added, skipped))
 }
 
 /// 更新迁移记录状态（按 original_path 大小写不敏感匹配）

@@ -339,6 +339,8 @@ pub fn save_custom_folders(path: &Path, folders: &[CustomFolderEntry]) -> Result
         .map_err(|e| format!("序列化失败: {}", e))?;
     std::fs::write(path, &json)
         .map_err(|e| format!("写入失败: {}", e))?;
+    // 数据目录被误删时自定义文件夹列表同样会丢，落盘后同步镜像一份
+    crate::storage::mirror::mirror_custom_folders(folders);
     Ok(())
 }
 

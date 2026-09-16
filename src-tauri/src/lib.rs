@@ -310,6 +310,7 @@ pub fn run() {
             });
         })
         .manage(MigrationState::default())
+        .manage(LinkRecoveryState::default())
         .invoke_handler(tauri::generate_handler![
             // 系统接口
             system::disk_usage::get_disk_usage,
@@ -347,6 +348,12 @@ pub fn run() {
             storage::history::import_history,
             storage::history::open_data_dir,
             storage::history::open_folder,
+            // 存储层 — 迁移记录重建（原路径链接识别）与镜像备份
+            storage::link_recovery::scan_migration_links,
+            storage::link_recovery::import_recovered_links,
+            storage::link_recovery::cancel_link_recovery,
+            storage::mirror::get_mirror_backup_info,
+            storage::mirror::import_mirror_backup,
             // 存储层 — 操作日志
             storage::operation_log::get_operation_logs,
             // 应用管理
