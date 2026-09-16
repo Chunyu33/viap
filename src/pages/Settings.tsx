@@ -708,31 +708,26 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* maintenance */}
         <section>
           <SectionHeader label="存储维护" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)', padding: '12px 14px' }}>
-            {/* 自动备份：数据目录被误删时的兜底，用户可关闭或立即手动备份 */}
-            <div className="setting-item" style={{ padding: 0 }}>
+          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+            {/* 自动备份：数据目录被误删时的兜底；动作按钮统一放在右侧，信息按行堆叠在左侧 */}
+            <div className="setting-item" style={{ padding: '10px 14px' }}>
               <div className="flex items-start gap-3 flex-1 min-w-0">
                 <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
                   <DatabaseBackup className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="setting-label mb-1">自动备份</p>
-                  <p className="setting-desc" style={{ marginBottom: '12px' }}>
+                <div className="min-w-0 flex-1">
+                  <p className="setting-label">自动备份</p>
+                  <p className="setting-desc">
                     {settings.autoBackupEnabled
                       ? '每次改动迁移数据后自动备份一份到数据目录之外，误删数据目录时可一键导回。'
                       : '已关闭：仅在手动点击「立即备份」时备份。'}
                   </p>
-                  <div className="flex items-center gap-2 mb-2">
-                    <button onClick={handleBackupNow} disabled={backupRunning} className="btn h-7 text-[12px]">
-                      {backupRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DatabaseBackup className="w-3.5 h-3.5" />}
-                      {backupRunning ? '备份中...' : '立即备份'}
-                    </button>
-                    {backupInfo?.exists && (
-                      <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                        {backupInfo.history_count} 条记录 · 最近备份 {backupInfo.saved_at > 0 ? new Date(backupInfo.saved_at).toLocaleString('zh-CN') : '未知'}
-                      </span>
-                    )}
-                  </div>
+                  {backupInfo?.exists && (
+                    <p className="text-[11px] truncate" style={{ color: 'var(--text-tertiary)' }}>
+                      {backupInfo.history_count} 条记录 · 最近备份{' '}
+                      {backupInfo.saved_at > 0 ? new Date(backupInfo.saved_at).toLocaleString('zh-CN') : '未知'}
+                    </p>
+                  )}
                   {backupInfo && (
                     <p className="text-[11px] truncate font-mono" style={{ color: 'var(--text-tertiary)' }} title={backupInfo.path}>
                       {backupInfo.path}
@@ -741,6 +736,10 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button onClick={handleBackupNow} disabled={backupRunning} className="btn h-7 text-[11px]">
+                  {backupRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <DatabaseBackup className="w-3 h-3" />}
+                  {backupRunning ? '备份中...' : '立即备份'}
+                </button>
                 <button onClick={handleOpenBackupDir} className="btn h-7 text-[11px]" title="打开备份目录">
                   <FolderArchive className="w-3 h-3" />
                   前往
@@ -755,13 +754,13 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
               </div>
             </div>
 
-            <div className="flex items-start gap-3 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-color)' }}>
+            <div className="flex items-start gap-3" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
               <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--color-danger-light)' }}>
                 <Trash2 className="w-4 h-4" style={{ color: 'var(--color-danger)' }} />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="setting-label mb-1">清理无效记录</p>
-                <p className="setting-desc" style={{ marginBottom: '20px' }}>
+                <p className="setting-label">清理无效记录</p>
+                <p className="setting-desc" style={{ marginBottom: '12px' }}>
                   扫描并清理目标丢失、链接断裂或已消失的无效记录。先预览，再确认清理。
                 </p>
 
