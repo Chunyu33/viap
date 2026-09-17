@@ -32,16 +32,45 @@ function summarizeTraces(traces: SystemTrace[]) {
   return groups;
 }
 
+/**
+ * 安装目录的真实体积变化
+ *
+ * 官方卸载器自己删除文件时我们拿不到"删了多少"，因此用卸载前后的体积差表示；
+ * 没有快照（或安装目录不可用）时返回 null，由界面回退到列表中的估算值。
+ */
+function resolveDirectoryFootprint(data: UninstallReportData) {
+  const diff = data.snapshotDiff;
+  if (!diff?.has_snapshot || diff.install_dir_bytes_before <= 0) {
+    return null;
+  }
+  const before = diff.install_dir_bytes_before;
+  const after = diff.install_dir_bytes_after;
+  return { before, after, released: Math.max(0, before - after) };
+}
+
 /** 组装可复制的纯文本报告 */
 function buildReportText(data: UninstallReportData): string {
+  const footprint = resolveDirectoryFootprint(data);
   const lines: string[] = [
     `Viap 卸载报告`,
     `应用：${data.appName}`,
     `安装目录：${data.installLocation || '未知'}`,
-    `预计释放（安装目录）：${formatBytes(data.estimatedBytes)}`,
-    `实际释放：${formatBytes(data.uninstallFreedBytes + data.cleanupFreedBytes)}`
-      + `（卸载 ${formatBytes(data.uninstallFreedBytes)} + 残留清理 ${formatBytes(data.cleanupFreedBytes)}）`,
   ];
+
+  if (footprint) {
+    lines.push(
+      `安装目录：卸载前 ${formatBytes(footprint.before)} → 现在 ${formatBytes(footprint.after)}`
+        + `（已释放 ${formatBytes(footprint.released)}）`,
+    );
+  } else {
+    lines.push(`预计释放（安装目录）：${formatBytes(data.estimatedBytes)}`);
+  }
+  if (data.cleanupFreedBytes > 0) {
+    lines.push(
+      `残留清理另删除：${formatBytes(data.cleanupFreedBytes)}`
+        + `（位于安装目录内的部分已计入上面的差值，不重复累加）`,
+    );
+  }
 
   if (data.storePackage) {
     lines.push(`MS Store 包：${data.storePackage.package_full_name}`);
@@ -95,6 +124,7 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
   const reportText = useMemo(() => (data ? buildReportText(data) : ''), [data]);
   const groups = useMemo(() => summarizeTraces(data?.systemTraces ?? []), [data]);
   const diff = data?.snapshotDiff ?? null;
+  const footprint = data ? resolveDirectoryFootprint(data) : null;
 
   /** 保存报告：把快照与差异一并写入数据目录，便于留档或反馈时附上 */
   async function handleSave() {
@@ -140,22 +170,35 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
             <p className="mt-1 break-all" style={{ color: 'var(--text-tertiary)' }}>{data.installLocation || '未知安装目录'}</p>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
               <p className="flex items-center gap-1" style={{ color: 'var(--text-tertiary)' }}>
-                <HardDrive className="w-3 h-3" />预计释放
+                <HardDrive className="w-3 h-3" />卸载前占用
               </p>
               <p className="mt-1 text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                {formatBytes(data.estimatedBytes)}
+                {formatBytes(footprint ? footprint.before : data.estimatedBytes)}
               </p>
             </div>
             <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
-              <p style={{ color: 'var(--text-tertiary)' }}>本次实际释放</p>
+              <p style={{ color: 'var(--text-tertiary)' }}>现在占用</p>
+              <p className="mt-1 text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {footprint ? formatBytes(footprint.after) : '未知'}
+              </p>
+            </div>
+            <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
+              <p style={{ color: 'var(--text-tertiary)' }}>已释放</p>
               <p className="mt-1 text-[14px] font-semibold" style={{ color: 'var(--color-success)' }}>
-                {formatBytes(data.uninstallFreedBytes + data.cleanupFreedBytes)}
+                {formatBytes(footprint ? footprint.released : data.uninstallFreedBytes + data.cleanupFreedBytes)}
               </p>
             </div>
           </div>
+
+          {/* 清理删除量单独说明：安装目录内的部分已经体现在上面的差值里，不能重复相加 */}
+          {data.cleanupFreedBytes > 0 && (
+            <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+              残留清理另删除 {formatBytes(data.cleanupFreedBytes)}（位于安装目录内的部分已计入差值）
+            </p>
+          )}
 
           {data.storePackage && (
             <p className="rounded px-3 py-2" style={{ background: 'var(--color-primary-light)', color: 'var(--text-secondary)' }}>

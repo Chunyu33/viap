@@ -147,6 +147,10 @@ export interface UninstallSnapshotDiff {
   appeared: SnapshotDiffEntry[];
   disappeared: SnapshotDiffEntry[];
   remaining: SnapshotDiffEntry[];
+  /** 卸载前安装目录体积（字节） */
+  install_dir_bytes_before: number;
+  /** 生成报告时安装目录体积（字节） */
+  install_dir_bytes_after: number;
 }
 
 /** 保存卸载报告结果 */

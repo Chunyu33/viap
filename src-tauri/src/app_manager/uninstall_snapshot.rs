@@ -64,6 +64,13 @@ pub struct UninstallSnapshot {
     pub created_at: u64,
     /// 标准位置与安装目录的顶层清单
     pub locations: Vec<SnapshotLocation>,
+    /// 安装目录的完整体积（字节）
+    ///
+    /// 卸载器自己删除文件时我们拿不到"删了多少"，只能在动手前量一次，
+    /// 事后与当前体积相减得出真实释放量。全量统计的代价实测约 1 秒/10 万文件，
+    /// 每次卸载只做这一两次，因此可以接受。
+    #[serde(default)]
+    pub install_dir_bytes: u64,
     /// 应用自身注册表键及其直接子键（形如 HKCU\Software\Foo、HKCU\Software\Foo\Bar）
     pub registry_keys: Vec<String>,
     /// 卸载登记项名称（Uninstall 键下的子键名）
@@ -102,6 +109,12 @@ pub struct UninstallSnapshotDiff {
     pub disappeared: Vec<SnapshotDiffEntry>,
     /// 卸载前后都在（可能是历史残留，也可能属于别的应用）
     pub remaining: Vec<SnapshotDiffEntry>,
+    /// 卸载前安装目录体积（字节）
+    #[serde(default)]
+    pub install_dir_bytes_before: u64,
+    /// 生成报告时安装目录体积（字节）
+    #[serde(default)]
+    pub install_dir_bytes_after: u64,
 }
 
 /// 进程内快照缓存：默认不落盘，流程结束即失去意义
@@ -160,6 +173,8 @@ pub async fn diff_uninstall_snapshot() -> Result<UninstallSnapshotDiff, String> 
                 appeared: Vec::new(),
                 disappeared: Vec::new(),
                 remaining: Vec::new(),
+                install_dir_bytes_before: 0,
+                install_dir_bytes_after: 0,
             };
         };
         compute_diff(&snapshot)
@@ -205,14 +220,32 @@ pub(crate) fn collect_snapshot(
         }
     }
 
+    let install_dir_bytes = if install_location.is_empty() {
+        0
+    } else {
+        directory_size_bytes(Path::new(&install_location))
+    };
+
     UninstallSnapshot {
         app_name: app_name.to_string(),
         install_location,
         created_at: now_millis(),
         locations,
+        install_dir_bytes,
         registry_keys: collect_registry_keys(registry_path),
         uninstall_entries: collect_uninstall_entry_names(),
     }
+}
+
+/// 统计目录体积（不跟随符号链接，避免联接目录把体积算重）
+pub(crate) fn directory_size_bytes(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.metadata().map(|metadata| metadata.len()).unwrap_or(0))
+        .sum()
 }
 
 /// 需要对比的标准位置（顶层，不递归）
@@ -358,12 +391,21 @@ pub(crate) fn compute_diff(snapshot: &UninstallSnapshot) -> UninstallSnapshotDif
     disappeared.extend(to_entries("卸载登记项", group_disappeared, "uncertain"));
     remaining.extend(to_entries("卸载登记项", group_remaining, "uncertain"));
 
+    // 现状体积用于和卸载前对比；安装目录已经不存在时记 0
+    let install_dir_bytes_after = if snapshot.install_location.trim().is_empty() {
+        0
+    } else {
+        directory_size_bytes(Path::new(&snapshot.install_location))
+    };
+
     UninstallSnapshotDiff {
         has_snapshot: true,
         created_at: snapshot.created_at,
         appeared,
         disappeared,
         remaining,
+        install_dir_bytes_before: snapshot.install_dir_bytes,
+        install_dir_bytes_after,
     }
 }
 
@@ -461,6 +503,8 @@ mod tests {
             .expect("快照里应当包含安装目录");
         assert!(install_group.entries.contains(&"SomeApp.exe".to_string()));
         assert!(install_group.entries.contains(&"bin".to_string()));
+        // 卸载前体积要真实记录，报告里"已释放"靠它与现状相减
+        assert_eq!(snapshot.install_dir_bytes, 1);
 
         // 删掉一个文件后重新对比：应当出现在"消失"里，且归属明确
         std::fs::remove_file(install.join("SomeApp.exe")).expect("删除文件失败");

@@ -7,7 +7,7 @@
 - Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.
 - Safer migrations: drive roots, the user profile root, Program Files roots and other system locations, as well as folders that are already a link, are refused; nested links are recreated on the target drive, an interrupted migration is rolled back on the next launch, and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
 - Faster migrations and roomier pages: scanning and lock checking share a single pass, the lock check shows progress and can be turned off, same-drive moves skip the pointless pre-checks.
-- Stronger uninstall: related processes are listed and can be closed with one click, files that stay locked are queued for the next reboot and verified on the next launch, and the flow ends with a copyable or savable before/after report including the freed space; leftover scanning covers Start Menu, LocalLow and Program Files, matching services, drivers and scheduled tasks are listed, and MS Store apps are removed through the system component interface.
+- Stronger uninstall: Viap waits until the uninstaller has really finished before scanning for leftovers, related processes are listed and can be closed with one click, files that stay locked are queued for the next reboot and verified on the next launch, and the report shows the real size before and after with the freed space; leftover scanning covers Start Menu, LocalLow and Program Files, matching services, drivers and scheduled tasks are listed, and MS Store apps are removed through the system component interface.
 
 ## v1.2.0
 

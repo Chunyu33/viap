@@ -5,6 +5,17 @@ import { useMemo } from 'react';
 import { AlertTriangle, Check, LoaderCircle, ScanSearch, Server, Trash2, X } from 'lucide-react';
 import { AppProcessInfo, LeftoverItem, SystemTrace } from '../types';
 
+/** 残留类型展示名：后端用稳定标识（Folder/File/Registry），本地化放在展示层 */
+const LEFTOVER_TYPE_LABELS: Record<string, string> = {
+  Folder: '文件夹',
+  File: '文件',
+  Registry: '注册表',
+};
+
+function formatLeftoverType(itemType: string): string {
+  return LEFTOVER_TYPE_LABELS[itemType] ?? itemType;
+}
+
 interface CleanupModalProps {
   isOpen: boolean;
   appName: string;
@@ -182,7 +193,7 @@ export default function CleanupModal({
                   </div>
                   <div className="min-w-0 flex-1 ml-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="badge badge-primary" style={{ fontSize: '10px' }}>{item.item_type}</span>
+                      <span className="badge badge-primary" style={{ fontSize: '10px' }}>{formatLeftoverType(item.item_type)}</span>
                       <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', flexShrink: 0 }}>
                         {formatItemSize(item.size_mb)}
                       </span>

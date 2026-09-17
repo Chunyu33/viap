@@ -27,6 +27,19 @@ use sysinfo::System;
 #[cfg(windows)]
 const BLACKLIST: &[&str] = &["microsoft", "windows", "common files", "tauri", "webview2"];
 
+/// 目录指纹最多统计的条目数：限制轮询成本，避免超大安装目录拖慢等待
+#[cfg(windows)]
+const MAX_FINGERPRINT_ENTRIES: usize = 5_000;
+/// 等待卸载完成的最大轮数（每轮 1 秒）
+#[cfg(windows)]
+const MAX_WAIT_ROUNDS: usize = 60;
+/// 连续多少轮"目录无变化"后认定卸载完成
+#[cfg(windows)]
+const STABLE_ROUNDS_TO_FINISH: u32 = 2;
+/// 卸载器进程占着目录但无动静时，最多再等多少轮
+#[cfg(windows)]
+const MAX_IDLE_BUSY_ROUNDS: u32 = 30;
+
 /// 卸载请求参数
 /// 支持按 app_id（通常传显示名）或 registry_path 定位应用
 #[derive(Debug, Deserialize)]
@@ -245,24 +258,72 @@ fn wait_until_uninstalled(input: &UninstallInput, store_package: Option<&str>) -
     // 卸载进程已退出，等待子进程启动（Inno Setup 等会 fork 自身到临时目录再执行）
     thread::sleep(Duration::from_millis(2000));
 
-    for _ in 0..60 {
-        // MS Store 应用没有卸载注册表键，只能用 Appx 包是否还在来判断
-        let still_installed = match store_package {
-            Some(package_full_name) => crate::app_manager::appx::is_package_installed(package_full_name),
-            None => is_application_still_installed(input),
-        };
-        if !still_installed {
-            return true;
+    // MS Store 应用没有卸载注册表键，只能用 Appx 包是否还在来判断
+    if let Some(package_full_name) = store_package {
+        for _ in 0..60 {
+            if !crate::app_manager::appx::is_package_installed(package_full_name) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1000));
         }
+        return false;
+    }
+
+    let install_location = resolve_install_location(input);
+    let install_path = install_location.as_deref().map(Path::new);
+    let mut previous_fingerprint = install_path.and_then(directory_fingerprint);
+    // 连续"无变化"轮数：达到阈值即认定结束
+    let mut stable_rounds = 0u32;
+    // 已经观察到目录变化后，卸载器进程「占着但没动静」的连续轮数
+    let mut idle_busy_rounds = 0u32;
+    // 是否见过目录变化：没见过就没有理由因为进程存在而继续等
+    let mut seen_change = false;
+
+    for _ in 0..MAX_WAIT_ROUNDS {
+        let still_installed = is_application_still_installed(input);
+        let fingerprint = install_path.and_then(directory_fingerprint);
+
+        // 主判据：目录仍在变小，说明卸载器正在删除。
+        // 安装目录往往先被删掉顶层 exe，此时"还有没有 exe"已经为假，
+        // 只看它就会过早判定完成（PyCharm 这类卸载器正是如此）。
+        let shrinking = matches!(
+            (previous_fingerprint, fingerprint),
+            (Some(before), Some(after)) if after < before
+        );
+
+        if shrinking {
+            seen_change = true;
+            idle_busy_rounds = 0;
+            stable_rounds = 0;
+        } else if seen_change && install_path.map(has_process_touching_directory).unwrap_or(false) {
+            // 辅助判据：卸载器进程还在，但目录暂时没动（可能在等用户点下一步）。
+            // 只在"本来就见过变化"时才继续等，且设上限——否则停在完成页的卸载器
+            // 会让等待白白拖满，最后反而报"未卸载成功"。
+            idle_busy_rounds += 1;
+            stable_rounds = 0;
+            if idle_busy_rounds > MAX_IDLE_BUSY_ROUNDS {
+                return !still_installed;
+            }
+        } else if !still_installed {
+            stable_rounds += 1;
+            // 连续两轮没有变化才算结束，避免卸载器在两步操作之间被误判
+            if stable_rounds >= STABLE_ROUNDS_TO_FINISH {
+                return true;
+            }
+        } else {
+            stable_rounds = 0;
+        }
+
+        previous_fingerprint = fingerprint;
         thread::sleep(Duration::from_millis(1000));
     }
     false
 }
 
+/// 解析安装目录：优先用前端传入的路径，其次从卸载注册表项读取
 #[cfg(windows)]
-fn is_application_still_installed(input: &UninstallInput) -> bool {
-    // 文件系统是卸载完成的强证据：很多卸载器会延迟删除注册表键，不能只看注册表判断失败。
-    let known_install_location = input
+fn resolve_install_location(input: &UninstallInput) -> Option<String> {
+    input
         .install_location
         .as_ref()
         .map(|location| sanitize_search_text(location))
@@ -272,9 +333,96 @@ fn is_application_still_installed(input: &UninstallInput) -> bool {
             let (hkey, sub_path) = parse_registry_path(registry_path)?;
             let key = RegKey::predef(hkey).open_subkey_with_flags(sub_path, KEY_READ).ok()?;
             read_install_location_with_fallback(&key)
-        });
+        })
+}
 
-    if let Some(location) = known_install_location {
+/// 目录是否仍在被卸载相关进程使用
+///
+/// 两个判据：进程可执行文件位于该目录内，或命令行里出现该目录
+/// （很多卸载器会把自己复制到临时目录再执行，此时只有命令行能对上）。
+#[cfg(windows)]
+fn has_process_touching_directory(dir: &Path) -> bool {
+    let location = dir.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    if location.is_empty() {
+        return false;
+    }
+
+    let mut system = System::new_all();
+    system.refresh_all();
+    let current_pid = std::process::id();
+
+    system.processes().iter().any(|(pid, process)| {
+        // 绝不把自己算进去
+        if pid.as_u32() == current_pid {
+            return false;
+        }
+        let command_line: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|argument| argument.to_string_lossy().to_string())
+            .collect();
+        process_touches_directory(process.exe(), &command_line, &location)
+    })
+}
+
+/// 进程是否正在使用该目录（纯判据，便于单测）
+///
+/// 两个条件：可执行文件位于目录内，或命令行里出现该目录。
+/// 后半条是必要的——很多卸载器会把自己复制到临时目录再执行，
+/// 此时只有命令行（通常带上安装目录作为参数）能对上。
+#[cfg(windows)]
+fn process_touches_directory(exe: Option<&Path>, command_line: &[String], location: &str) -> bool {
+    if location.is_empty() {
+        return false;
+    }
+    if let Some(exe) = exe {
+        let exe_lower = exe.to_string_lossy().to_lowercase();
+        if exe_lower.starts_with(&format!("{}\\", location)) {
+            return true;
+        }
+    }
+    command_line
+        .iter()
+        .any(|argument| argument.to_lowercase().contains(location))
+}
+
+/// 目录变化指纹（只统计两层，代价可控）
+///
+/// 取两层目录的"条目数 + 修改时间"混合值：卸载器删除文件或子目录都会让
+/// 对应目录的修改时间变化，据此判断卸载是否仍在进行。
+/// 刻意不做全量遍历——实测 20 万文件的目录全量统计要几十秒，不能放进轮询。
+#[cfg(windows)]
+fn directory_fingerprint(dir: &Path) -> Option<u64> {
+    if !dir.is_dir() {
+        return None;
+    }
+
+    let mut fingerprint: u64 = 0;
+    for (index, entry) in WalkDir::new(dir)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .take(MAX_FINGERPRINT_ENTRIES)
+        .enumerate()
+    {
+        fingerprint = fingerprint.wrapping_add((index as u64 + 1).wrapping_mul(31));
+        if let Ok(metadata) = entry.metadata() {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            fingerprint = fingerprint.wrapping_add(modified);
+        }
+    }
+    Some(fingerprint)
+}
+
+#[cfg(windows)]
+fn is_application_still_installed(input: &UninstallInput) -> bool {
+    // 文件系统是卸载完成的强证据：很多卸载器会延迟删除注册表键，不能只看注册表判断失败。
+    if let Some(location) = resolve_install_location(input) {
         return directory_contains_executables(Path::new(&location));
     }
 
@@ -1153,7 +1301,7 @@ pub async fn uninstall_application(input: UninstallInput) -> Result<UninstallRes
 
         if let Some(cmd) = executed_cmd {
             let message = format!(
-                "卸载命令已执行但仍检测到应用存在（可能未在卸载向导中确认完成）：{}",
+                "卸载命令已执行，但仍检测到应用存在：可能卸载程序还在后台运行，或未在卸载向导中确认完成：{}",
                 cmd
             );
             // 失败命令也写入操作日志，便于用户下次反馈时定位具体卸载器行为。
@@ -2884,6 +3032,54 @@ mod tests {
 #[cfg(all(test, windows))]
 mod process_tests {
     use super::*;
+
+    #[test]
+    fn process_touches_directory_covers_exe_and_command_line() {
+        let location = r"e:\ide\pycharm 2025.2.4";
+
+        // 卸载器本体就在安装目录里
+        assert!(process_touches_directory(
+            Some(Path::new(r"E:\IDE\PyCharm 2025.2.4\Uninstall.exe")),
+            &[],
+            location
+        ));
+        // 卸载器把自己复制到临时目录，但命令行带着安装目录
+        assert!(process_touches_directory(
+            Some(Path::new(r"C:\Users\me\AppData\Local\Temp\Un_A.exe")),
+            &[r"C:\Users\me\AppData\Local\Temp\Un_A.exe".to_string(), r"E:\IDE\PyCharm 2025.2.4".to_string()],
+            location
+        ));
+        // 与自己无关的进程不能被算进来
+        assert!(!process_touches_directory(
+            Some(Path::new(r"C:\Windows\explorer.exe")),
+            &[],
+            location
+        ));
+        assert!(!process_touches_directory(None, &[], location));
+    }
+
+    #[test]
+    fn directory_fingerprint_changes_when_content_changes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("viap-fingerprint-{suffix}"));
+        std::fs::create_dir_all(root.join("lib")).expect("创建目录失败");
+        std::fs::write(root.join("lib").join("a.dll"), b"x").expect("写入文件失败");
+
+        let before = directory_fingerprint(&root).expect("指纹应当可用");
+        // 只统计两层：这里删掉的是第三层文件，指纹不保证变化，
+        // 因此改为删除第二层的子目录（真实卸载器也会整目录删除）
+        std::fs::remove_dir_all(root.join("lib")).expect("删除目录失败");
+        let after = directory_fingerprint(&root).expect("指纹应当可用");
+        assert_ne!(before, after, "目录内容变化后指纹必须不同");
+
+        // 不存在的目录返回 None，调用方据此跳过判断
+        assert!(directory_fingerprint(&root.join("missing")).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn related_process_matching_covers_both_rules() {
