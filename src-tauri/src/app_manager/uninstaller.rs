@@ -24,8 +24,30 @@ use winreg::{HKEY, RegKey};
 #[cfg(windows)]
 use sysinfo::System;
 
+/// 绝对不能作为删除目标的系统目录名
+///
+/// 必须按"整段路径名"精确匹配。早期这里用的是子串匹配，结果把
+/// `RoachPet-1.0.0-windows-x64-portable` 这类便携应用目录（名字里带 windows）
+/// 误判成系统目录，直接拒绝卸载——这是必须避免的误伤。
 #[cfg(windows)]
-const BLACKLIST: &[&str] = &["microsoft", "windows", "common files", "tauri", "webview2"];
+const PROTECTED_DIRECTORY_NAMES: &[&str] = &[
+    "windows",
+    "system32",
+    "syswow64",
+    "winsxs",
+    "windowsapps",
+    "windows defender",
+    "common files",
+    "microsoft",
+    "webview2",
+    "tauri",
+    "$recycle.bin",
+    "system volume information",
+    "recovery",
+    "boot",
+    "perflogs",
+    "msocache",
+];
 
 /// 目录指纹最多统计的条目数：限制轮询成本，避免超大安装目录拖慢等待
 #[cfg(windows)]
@@ -2030,7 +2052,7 @@ fn scan_filesystem_residue(
 ) {
     for (root, max_depth) in roots {
         let root_path = Path::new(root);
-        if !root_path.exists() || !root_path.is_dir() || is_blacklisted_path(root_path) {
+        if !root_path.exists() || !root_path.is_dir() || !is_scan_root_allowed(root_path) {
             continue;
         }
 
@@ -2297,7 +2319,7 @@ fn matches_registry_key_strict(key: &RegKey, context: &StrictScanContext) -> boo
 #[cfg(windows)]
 fn matches_strict_leftover_path(path: &Path, context: &StrictScanContext) -> bool {
     let normalized_path = normalize_path(path);
-    if BLACKLIST.iter().any(|token| normalized_path.contains(token)) {
+    if is_blacklisted_path(path) {
         return false;
     }
 
@@ -2477,30 +2499,82 @@ fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
 }
 
+/// 路径是否位于 Windows 目录内（Windows 可能不在 C 盘，因此按环境变量判断）
 #[cfg(windows)]
-fn is_blacklisted_path(path: &Path) -> bool {
-    let normalized = normalize_path(path);
-
-    if normalized == r"c:\windows"
-        || normalized.starts_with(r"c:\windows\")
-        || normalized == r"c:\windows\system32"
-        || normalized.starts_with(r"c:\windows\system32\")
-        || normalized == r"c:\program files"
-        || normalized == r"c:\program files (x86)"
-    {
-        return true;
+fn is_inside_windows_directory(path: &Path) -> bool {
+    let Ok(system_root) = std::env::var("SystemRoot") else {
+        return false;
+    };
+    let normalized_path = normalize_path(path);
+    let normalized_root = normalize_path(Path::new(&system_root))
+        .trim_end_matches('\\')
+        .to_string();
+    if normalized_root.is_empty() {
+        return false;
     }
+    normalized_path == normalized_root
+        || normalized_path.starts_with(&format!("{}\\", normalized_root))
+}
 
-    if BLACKLIST.iter().any(|token| normalized.contains(token)) {
-        return true;
-    }
-
-    // 防止删除盘符根目录
+/// 路径是否本身就是受保护的根目录（删掉它们会直接破坏系统或用户环境）
+#[cfg(windows)]
+fn is_protected_root(path: &Path) -> bool {
+    // 盘符根目录没有父目录
     if path.parent().is_none() {
         return true;
     }
 
-    false
+    let normalized = normalize_path(path).trim_end_matches('\\').to_string();
+    let mut protected_roots: Vec<String> = Vec::new();
+    for key in ["SystemRoot", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramData"] {
+        if let Ok(value) = std::env::var(key) {
+            protected_roots.push(value);
+        }
+    }
+    // Program Files 可能装在非系统盘，两个盘符都算上
+    for drive in [std::env::var("SystemDrive").unwrap_or_default(), "C:".to_string()] {
+        if drive.is_empty() {
+            continue;
+        }
+        protected_roots.push(format!(r"{}\Program Files", drive));
+        protected_roots.push(format!(r"{}\Program Files (x86)", drive));
+        protected_roots.push(format!(r"{}\ProgramData", drive));
+    }
+
+    protected_roots.iter().any(|root| {
+        !root.trim().is_empty() && normalize_path(Path::new(root)).trim_end_matches('\\') == normalized
+    })
+}
+
+/// 路径中是否存在受保护的系统目录名（整段精确匹配）
+#[cfg(windows)]
+fn has_protected_directory_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy().to_lowercase();
+        !name.is_empty() && PROTECTED_DIRECTORY_NAMES.contains(&name.as_str())
+    })
+}
+
+/// 是否禁止把该路径作为删除目标
+///
+/// 三个判据：受保护根目录本身、Windows 目录内、路径中出现受保护的系统目录名。
+/// 注意这里只用于"能不能删"，不能用于"能不能扫描"——残留扫描的根目录本身就包含
+/// ProgramData、Program Files 这类受保护目录，见 `is_scan_root_allowed`。
+#[cfg(windows)]
+fn is_blacklisted_path(path: &Path) -> bool {
+    is_protected_root(path)
+        || is_inside_windows_directory(path)
+        || has_protected_directory_component(path)
+}
+
+/// 是否允许把该路径当作残留扫描的根目录
+///
+/// 只挡"绝对不能遍历"的位置：盘符根与 Windows 目录。
+/// 复用 `is_blacklisted_path` 会把 ProgramData / Program Files 这些
+/// 本来就是扫描根目录的位置一并挡掉，导致残留扫描直接失效。
+#[cfg(windows)]
+fn is_scan_root_allowed(path: &Path) -> bool {
+    path.parent().is_some() && !is_inside_windows_directory(path)
 }
 
 /// 强制删除文件或目录
@@ -3140,6 +3214,68 @@ mod process_tests {
             location
         ));
         assert!(!process_touches_directory(None, &[], location));
+    }
+
+    #[test]
+    fn portable_app_folder_with_windows_in_name_is_deletable() {
+        // 真实误伤案例：目录名带 -windows-x64 的便携应用曾被当成系统目录拒绝卸载
+        for path in [
+            r"D:\software\other\RoachPet-1.0.0-windows-x64-portable",
+            r"D:\software\other\RoachPet-1.0.0-windows-x64-portable\RoachPet.exe",
+            r"C:\Program Files\RoachPet",
+            r"D:\apps\tauri-app",
+            r"D:\apps\webview2-wrapper",
+        ] {
+            assert!(
+                !is_blacklisted_path(Path::new(path)),
+                "普通应用目录不应被当成系统目录: {}",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn system_directories_stay_protected() {
+        for path in [
+            r"C:\Windows",
+            r"C:\Windows\System32\drivers",
+            r"C:\Program Files",
+            r"C:\Program Files\Common Files",
+            r"C:\Program Files\WindowsApps",
+            r"C:\ProgramData\Microsoft",
+            r"D:\apps\tauri",
+            r"C:\",
+        ] {
+            assert!(
+                is_blacklisted_path(Path::new(path)),
+                "系统目录必须保持受保护: {}",
+                path
+            );
+        }
+
+        // 只按整段目录名匹配：带前缀的目录名不算命中
+        assert!(!is_blacklisted_path(Path::new(r"C:\Program Files\Microsoft VS Code")));
+    }
+
+    #[test]
+    fn scan_roots_allow_data_and_program_directories() {
+        // 残留扫描必须能进入这些位置，否则功能整体失效
+        for path in [
+            r"C:\ProgramData",
+            r"C:\Program Files",
+            r"C:\Users\me\AppData\Roaming",
+            r"C:\Users\me\AppData\Local",
+        ] {
+            assert!(
+                is_scan_root_allowed(Path::new(path)),
+                "残留扫描根目录不应被挡住: {}",
+                path
+            );
+        }
+        // 盘符根与 Windows 目录仍然不允许遍历
+        assert!(!is_scan_root_allowed(Path::new(r"C:\")));
+        assert!(!is_scan_root_allowed(Path::new(r"C:\Windows")));
+        assert!(!is_scan_root_allowed(Path::new(r"C:\Windows\System32")));
     }
 
     #[test]
