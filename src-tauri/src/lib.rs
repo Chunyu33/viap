@@ -346,16 +346,23 @@ fn apply_saved_window_size(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 上次启动时迁移中断的恢复提示（只提示一次，取走即清空）
-static PENDING_MIGRATION_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// 启动时需要告知用户的提示队列（迁移中断、重启删除复核等，取走即清空）
+static STARTUP_NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// 取走启动时的迁移中断提示，供前端弹一次 toast
+/// 取走启动提示，前端按顺序逐个弹出
 #[tauri::command]
-fn take_pending_migration_notice() -> Option<String> {
-    PENDING_MIGRATION_NOTICE
+fn take_startup_notices() -> Vec<String> {
+    STARTUP_NOTICES
         .lock()
-        .ok()
-        .and_then(|mut notice| notice.take())
+        .map(|mut notices| std::mem::take(&mut *notices))
+        .unwrap_or_default()
+}
+
+/// 追加一条启动提示
+fn push_startup_notice(notice: String) {
+    if let Ok(mut notices) = STARTUP_NOTICES.lock() {
+        notices.push(notice);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -383,9 +390,13 @@ pub fn run() {
             // 否则原路径缺失会让应用直接不可用；提示交给前端弹一次 toast
             if let Some(notice) = storage::pending_migration::recover_interrupted_migration() {
                 log_warn!("migration", "{}", notice);
-                if let Ok(mut slot) = PENDING_MIGRATION_NOTICE.lock() {
-                    *slot = Some(notice);
-                }
+                push_startup_notice(notice);
+            }
+
+            // 核对上次安排的"重启后删除"是否真的生效（卸载残留清理用）
+            if let Some(notice) = storage::reboot_cleanup::verify_pending().into_notice() {
+                log_warn!("uninstall", "{}", notice.replace('\n', " | "));
+                push_startup_notice(notice);
             }
 
             let app_handle = app.handle().clone();
@@ -417,7 +428,7 @@ pub fn run() {
             // 系统接口
             system::disk_usage::get_disk_usage,
             frontend_ready,
-            take_pending_migration_notice,
+            take_startup_notices,
             is_portable_build,
             get_viap_install_path,
             verify_file_integrity,
@@ -484,6 +495,7 @@ pub fn run() {
             app_manager::pre_uninstall::get_pre_uninstall_info,
             app_manager::uninstall_snapshot::begin_uninstall_snapshot,
             app_manager::uninstall_snapshot::diff_uninstall_snapshot,
+            app_manager::uninstall_report::save_uninstall_report,
             uninstaller::list_app_processes,
             uninstaller::kill_app_processes,
         ])

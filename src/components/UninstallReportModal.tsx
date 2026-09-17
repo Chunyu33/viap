@@ -5,9 +5,10 @@
 // 报告文本可一键复制，方便用户留档或在反馈问题时提供现场信息。
 
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Check, ClipboardCopy, GitCompare, HardDrive, Server } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { AlertTriangle, Check, ClipboardCopy, FolderOpen, GitCompare, HardDrive, Save, Server } from 'lucide-react';
 import Modal from './Modal';
-import type { SystemTrace, UninstallReportData } from '../types';
+import type { SaveReportOutcome, SystemTrace, UninstallReportData } from '../types';
 
 interface UninstallReportModalProps {
   isOpen: boolean;
@@ -88,9 +89,37 @@ function buildReportText(data: UninstallReportData): string {
 
 export default function UninstallReportModal({ isOpen, onClose, data }: UninstallReportModalProps) {
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedPath, setSavedPath] = useState('');
+  const [saveError, setSaveError] = useState('');
   const reportText = useMemo(() => (data ? buildReportText(data) : ''), [data]);
   const groups = useMemo(() => summarizeTraces(data?.systemTraces ?? []), [data]);
   const diff = data?.snapshotDiff ?? null;
+
+  /** 保存报告：把快照与差异一并写入数据目录，便于留档或反馈时附上 */
+  async function handleSave() {
+    if (!data) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      const outcome = await invoke<SaveReportOutcome>('save_uninstall_report', {
+        input: {
+          app_name: data.appName,
+          install_location: data.installLocation,
+          estimated_bytes: data.estimatedBytes,
+          uninstall_freed_bytes: data.uninstallFreedBytes,
+          cleanup_freed_bytes: data.cleanupFreedBytes,
+          failed_items: data.failedItems,
+          scheduled_for_reboot: data.scheduledForReboot,
+        },
+      });
+      setSavedPath(outcome.path);
+    } catch (error) {
+      setSaveError(String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function handleCopy() {
     try {
@@ -231,10 +260,25 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
             </pre>
           </details>
 
+          {savedPath && (
+            <p className="rounded px-3 py-2 text-[11px] break-all" style={{ background: 'var(--color-success-light)', color: 'var(--color-success)' }}>
+              报告已保存：{savedPath}
+            </p>
+          )}
+          {saveError && (
+            <p className="rounded px-3 py-2 text-[11px] break-all" style={{ background: 'var(--color-danger-light)', color: 'var(--color-danger)' }}>
+              保存报告失败：{saveError}
+            </p>
+          )}
+
           <div className="flex items-center justify-end gap-2 pt-1">
             <button className="btn h-8 text-[12px]" onClick={handleCopy}>
               {copied ? <Check className="w-3.5 h-3.5" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
               {copied ? '已复制' : '复制报告'}
+            </button>
+            <button className="btn h-8 text-[12px]" onClick={handleSave} disabled={saving}>
+              {saving ? <FolderOpen className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+              {saving ? '保存中...' : '保存报告'}
             </button>
             <button className="btn btn-primary h-8 text-[12px]" onClick={onClose}>完成</button>
           </div>

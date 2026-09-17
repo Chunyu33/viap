@@ -149,6 +149,12 @@ export interface UninstallSnapshotDiff {
   remaining: SnapshotDiffEntry[];
 }
 
+/** 保存卸载报告结果 */
+export interface SaveReportOutcome {
+  path: string;
+  pruned_count: number;
+}
+
 /** 卸载报告数据（前端汇总，用于展示与复制） */
 export interface UninstallReportData {
   appName: string;

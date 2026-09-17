@@ -80,7 +80,7 @@ pub struct SnapshotSummary {
 }
 
 /// 差异条目
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnapshotDiffEntry {
     /// 所属位置（展示名）
     pub group: String,
@@ -91,7 +91,7 @@ pub struct SnapshotDiffEntry {
 }
 
 /// 快照差异
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UninstallSnapshotDiff {
     /// 是否存在可用快照
     pub has_snapshot: bool,
@@ -106,6 +106,16 @@ pub struct UninstallSnapshotDiff {
 
 /// 进程内快照缓存：默认不落盘，流程结束即失去意义
 static UNINSTALL_SNAPSHOT: Mutex<Option<UninstallSnapshot>> = Mutex::new(None);
+
+/// 取当前快照的副本（保存报告时使用）
+pub(crate) fn current_snapshot() -> Option<UninstallSnapshot> {
+    UNINSTALL_SNAPSHOT.lock().ok().and_then(|slot| slot.clone())
+}
+
+/// 取当前快照与现状的差异（保存报告时使用，不改变缓存）
+pub(crate) fn current_diff() -> Option<UninstallSnapshotDiff> {
+    current_snapshot().map(|snapshot| compute_diff(&snapshot))
+}
 
 /// 采集卸载前快照并缓存
 #[tauri::command]

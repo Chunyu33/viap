@@ -5,12 +5,9 @@
 ## v1.2.1
 
 - Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.
-- Safer migrations: drive roots, the user profile root, Program Files roots and other system locations are refused, a folder that is already a link is refused instead of copying the data twice, nested directory links are recreated on the target drive (links pointing inside the folder are rewritten), and an interrupted migration is rolled back on the next launch.
-- Records can be deleted from a right-click menu after a second confirmation (the copy in the automatic backup is kept unless you tick the option), and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
-- Migrations are faster and lighter: one pass feeds the plan, the lock check and the size accounting, the lock check reports progress and checks executable files first, same-drive moves skip the pointless pre-checks, and the per-file lock check can be turned off in Settings. Pages use wider side margins so content no longer hugs the window edges.
-- Stronger uninstall: running processes are listed and can be closed with one click, locked files are queued for deletion on the next reboot, an before/after report with the freed space can be copied after uninstalling, and leftover scanning now covers Start Menu shortcuts, LocalLow and Program Files.
-- Before uninstalling, matching services, drivers and scheduled tasks are listed (shown only, never removed automatically), and MS Store apps are removed through the system component interface.
-- The uninstall report now compares the state before and after: entries that disappeared, appeared or stayed put are listed, so leftovers whose folder name does not match the app are caught too. The snapshot stays in memory only, and entries whose ownership is unclear are marked as such.
+- Safer migrations: drive roots, the user profile root, Program Files roots and other system locations, as well as folders that are already a link, are refused; nested links are recreated on the target drive, an interrupted migration is rolled back on the next launch, and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
+- Faster migrations and roomier pages: scanning and lock checking share a single pass, the lock check shows progress and can be turned off, same-drive moves skip the pointless pre-checks.
+- Stronger uninstall: related processes are listed and can be closed with one click, files that stay locked are queued for the next reboot and verified on the next launch, and the flow ends with a copyable or savable before/after report including the freed space; leftover scanning covers Start Menu, LocalLow and Program Files, matching services, drivers and scheduled tasks are listed, and MS Store apps are removed through the system component interface.
 
 ## v1.2.0
 

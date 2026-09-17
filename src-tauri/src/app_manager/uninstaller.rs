@@ -856,6 +856,9 @@ fn execute_force_remove(
         return Err("未找到可清理的文件或注册表项。应用可能已被完全卸载。".to_string());
     }
 
+    // 安排重启删除的项统一记一次，供下次启动核对是否真的删掉了
+    crate::storage::reboot_cleanup::record_pending_many(&scheduled_for_reboot, app_id);
+
     Ok(ForceRemoveOutcome {
         deleted_files,
         deleted_registry,
@@ -1338,6 +1341,11 @@ pub fn execute_cleanup(
             if success { "success" } else { "partial_failure" },
             &message,
             None,
+        );
+
+        crate::storage::reboot_cleanup::record_pending_many(
+            &scheduled_for_reboot,
+            app_name.as_deref().unwrap_or("未知应用"),
         );
 
         Ok(CleanupResult {
