@@ -124,6 +124,31 @@ export interface PreUninstallInfo {
   system_traces: SystemTrace[];
 }
 
+/** 快照采集摘要 */
+export interface SnapshotSummary {
+  created_at: number;
+  location_count: number;
+  entry_count: number;
+  uninstall_entry_count: number;
+}
+
+/** 快照差异条目 */
+export interface SnapshotDiffEntry {
+  group: string;
+  name: string;
+  /** certain：安装目录/应用注册表键；uncertain：公共目录顶层项，需人工确认归属 */
+  confidence: 'certain' | 'uncertain';
+}
+
+/** 卸载前后差异 */
+export interface UninstallSnapshotDiff {
+  has_snapshot: boolean;
+  created_at: number;
+  appeared: SnapshotDiffEntry[];
+  disappeared: SnapshotDiffEntry[];
+  remaining: SnapshotDiffEntry[];
+}
+
 /** 卸载报告数据（前端汇总，用于展示与复制） */
 export interface UninstallReportData {
   appName: string;
@@ -139,6 +164,8 @@ export interface UninstallReportData {
   scheduledForReboot: string[];
   systemTraces: SystemTrace[];
   storePackage: AppxPackage | null;
+  /** 卸载前后对比（未采集快照时为 null） */
+  snapshotDiff: UninstallSnapshotDiff | null;
 }
 
 /** 幽灵链接预览条目 */

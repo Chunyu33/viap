@@ -8,5 +8,6 @@ pub mod pre_uninstall;
 pub mod scanner;
 pub mod snapshot;
 pub mod traces;
+pub mod uninstall_snapshot;
 pub mod uninstaller;
 pub mod detector;

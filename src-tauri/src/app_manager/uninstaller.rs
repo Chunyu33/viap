@@ -2708,7 +2708,7 @@ fn scan_uninstaller_in_directory(dir: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn parse_registry_path(path: &str) -> Option<(HKEY, &str)> {
+pub(crate) fn parse_registry_path(path: &str) -> Option<(HKEY, &str)> {
     if let Some(rest) = path.strip_prefix("HKLM\\") {
         return Some((HKEY_LOCAL_MACHINE, rest));
     }

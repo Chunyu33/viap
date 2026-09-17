@@ -5,7 +5,7 @@
 // 报告文本可一键复制，方便用户留档或在反馈问题时提供现场信息。
 
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Check, ClipboardCopy, HardDrive, Server } from 'lucide-react';
+import { AlertTriangle, Check, ClipboardCopy, GitCompare, HardDrive, Server } from 'lucide-react';
 import Modal from './Modal';
 import type { SystemTrace, UninstallReportData } from '../types';
 
@@ -54,6 +54,19 @@ function buildReportText(data: UninstallReportData): string {
     lines.push(...data.failedItems.map((item) => `  · ${item}`));
   }
 
+  if (data.snapshotDiff?.has_snapshot) {
+    const { appeared, disappeared, remaining } = data.snapshotDiff;
+    lines.push('卸载前后对比：');
+    lines.push(`  消失 ${disappeared.length} 项（被卸载器删除）`);
+    lines.push(`  新增 ${appeared.length} 项（卸载期间出现，需人工确认归属）`);
+    lines.push(`  仍在 ${remaining.length} 项（卸载前后都在，可能是历史残留或其它应用）`);
+    const describe = (entries: typeof appeared) => entries
+      .slice(0, 15)
+      .map((entry) => `    · [${entry.group}] ${entry.name}${entry.confidence === 'uncertain' ? '（归属待确认）' : ''}`);
+    if (appeared.length > 0) lines.push(...describe(appeared));
+    if (disappeared.length > 0) lines.push(...describe(disappeared));
+  }
+
   const groups = summarizeTraces(data.systemTraces);
   if (data.systemTraces.length > 0) {
     lines.push('系统痕迹（需手动处理，Viap 不会自动删除）：');
@@ -77,6 +90,7 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
   const [copied, setCopied] = useState(false);
   const reportText = useMemo(() => (data ? buildReportText(data) : ''), [data]);
   const groups = useMemo(() => summarizeTraces(data?.systemTraces ?? []), [data]);
+  const diff = data?.snapshotDiff ?? null;
 
   async function handleCopy() {
     try {
@@ -133,6 +147,52 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
               <div className="mt-1 max-h-[90px] overflow-y-auto text-[11px]">
                 {data.failedItems.map((item, index) => <div key={index} className="break-all">· {item}</div>)}
               </div>
+            </div>
+          )}
+
+          {diff?.has_snapshot && (
+            <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
+              <p className="flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
+                <GitCompare className="w-3 h-3" />卸载前后对比
+              </p>
+              <div className="mt-1 grid grid-cols-3 gap-2 text-[11px]">
+                <span style={{ color: 'var(--color-success)' }}>消失 {diff.disappeared.length}</span>
+                <span style={{ color: 'var(--color-warning)' }}>新增 {diff.appeared.length}</span>
+                <span style={{ color: 'var(--text-tertiary)' }}>仍在 {diff.remaining.length}</span>
+              </div>
+
+              {diff.appeared.length > 0 && (
+                <div className="mt-2 text-[11px]">
+                  <p style={{ color: 'var(--text-secondary)' }}>卸载期间新出现（可作残留线索，归属需人工确认）：</p>
+                  <div className="mt-1 max-h-[90px] overflow-y-auto" style={{ color: 'var(--text-tertiary)' }}>
+                    {diff.appeared.slice(0, 20).map((entry) => (
+                      <div key={`${entry.group}-${entry.name}`} className="break-all">
+                        · [{entry.group}] {entry.name}
+                        {entry.confidence === 'uncertain' && <span>（归属待确认）</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {diff.disappeared.length > 0 && (
+                <details className="mt-2 text-[11px]">
+                  <summary className="cursor-pointer" style={{ color: 'var(--text-tertiary)' }}>
+                    查看被删除的 {diff.disappeared.length} 项
+                  </summary>
+                  <div className="mt-1 max-h-[90px] overflow-y-auto" style={{ color: 'var(--text-tertiary)' }}>
+                    {diff.disappeared.slice(0, 30).map((entry) => (
+                      <div key={`${entry.group}-${entry.name}`} className="break-all">· [{entry.group}] {entry.name}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {diff.appeared.length === 0 && diff.disappeared.length === 0 && (
+                <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                  标准位置与安装目录均无变化
+                </p>
+              )}
             </div>
           )}
 

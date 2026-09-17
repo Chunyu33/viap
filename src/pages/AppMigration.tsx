@@ -24,7 +24,9 @@ import {
   AppProcessInfo,
   CleanupResult,
   PreUninstallInfo,
+  SnapshotSummary,
   UninstallReportData,
+  UninstallSnapshotDiff,
   InstalledApp,
   LeftoverItem,
   MigrationProgressEvent,
@@ -225,6 +227,8 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   // 卸载报告（流程结束后展示）
   const [reportData, setReportData] = useState<UninstallReportData | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  // 卸载阶段实际释放的字节数（仅强制删除会返回，官方卸载器由卸载器自己删除）
+  const lastUninstallFreedRef = useRef(0);
   // Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮
   const [viapInstallPath, setViapInstallPath] = useState<string>('');
   // 应用迁移记录（用于还原时获取 historyId）
@@ -798,6 +802,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
     try {
       setForceRmLoading(true);
       setUninstallingKey(currentUninstallKey);
+      await beginUninstallSnapshot(app);
       const result = await invoke<UninstallResult>('force_remove_application', {
         input: {
           app_id: app.display_name,
@@ -809,6 +814,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         },
       });
       if (result.success) {
+        lastUninstallFreedRef.current = result.freed_bytes ?? 0;
         setForceRmPreviewOpen(false);
         showToast(result.message, 'success');
         const confirmScan = await confirm(
@@ -855,6 +861,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
           },
         });
         if (result.success) {
+          lastUninstallFreedRef.current = result.freed_bytes ?? 0;
           showToast(`${app.display_name} 已删除（目录为空）`, 'success');
           await handleRefresh();
         } else {
@@ -896,12 +903,36 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       .catch(() => setPreUninstallInfo(null));
   }
 
+  /** 删除动作开始前拍一次快照：用于事后做"卸载前后对比"（只存内存，不落盘） */
+  async function beginUninstallSnapshot(app: InstalledApp) {
+    // 新的一轮删除动作开始，先清掉上一轮记录
+    lastUninstallFreedRef.current = 0;
+    try {
+      await invoke<SnapshotSummary>('begin_uninstall_snapshot', {
+        appName: app.display_name,
+        installLocation: app.install_location,
+        registryPath: app.registry_path || null,
+      });
+    } catch (error) {
+      // 快照失败不影响卸载本身，只是报告里没有对比数据
+      logger.error('采集卸载快照失败:', error);
+    }
+  }
+
   /** 组装卸载报告：预计释放取列表里已知的体积，实际释放取两个阶段的结果 */
-  function buildReportData(
+  async function buildReportData(
     app: InstalledApp,
     uninstallFreedBytes: number,
     cleanupResult: CleanupResult | null,
   ) {
+    // 对比是报告里最有价值的一节：失败也不该挡住报告
+    let snapshotDiff: UninstallSnapshotDiff | null = null;
+    try {
+      snapshotDiff = await invoke<UninstallSnapshotDiff>('diff_uninstall_snapshot');
+    } catch (error) {
+      logger.error('对比卸载快照失败:', error);
+    }
+
     setReportData({
       appName: app.display_name,
       installLocation: app.install_location,
@@ -912,6 +943,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       scheduledForReboot: cleanupResult?.scheduled_for_reboot ?? [],
       systemTraces: preUninstallInfo?.system_traces ?? [],
       storePackage: preUninstallInfo?.store_package ?? null,
+      snapshotDiff,
     });
     setReportOpen(true);
   }
@@ -998,6 +1030,9 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         { title: '确认强力卸载', kind: 'warning', okLabel: '继续卸载', cancelLabel: '取消' }
       );
       if (!confirmed) return;
+
+      // 官方卸载器动刀之前先记录现场，卸载完才能对比出"多了什么、少了什么"
+      await beginUninstallSnapshot(app);
 
       const result = await invoke<UninstallResult>('uninstall_application', {
         input: {
@@ -1090,7 +1125,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
 
       // 清理是卸载流程的最后一站：在这里给出前后对比报告
       if (processTargetApp) {
-        buildReportData(processTargetApp, 0, result);
+        await buildReportData(processTargetApp, lastUninstallFreedRef.current, result);
       }
 
       setCleanupModalOpen(false);
