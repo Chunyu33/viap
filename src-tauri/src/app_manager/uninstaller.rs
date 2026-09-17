@@ -241,12 +241,17 @@ fn registry_key_belongs_to_app(key: &RegKey, sub_path: &str, keywords: &[String]
 }
 
 #[cfg(windows)]
-fn wait_until_uninstalled(input: &UninstallInput) -> bool {
+fn wait_until_uninstalled(input: &UninstallInput, store_package: Option<&str>) -> bool {
     // 卸载进程已退出，等待子进程启动（Inno Setup 等会 fork 自身到临时目录再执行）
     thread::sleep(Duration::from_millis(2000));
 
     for _ in 0..60 {
-        if !is_application_still_installed(input) {
+        // MS Store 应用没有卸载注册表键，只能用 Appx 包是否还在来判断
+        let still_installed = match store_package {
+            Some(package_full_name) => crate::app_manager::appx::is_package_installed(package_full_name),
+            None => is_application_still_installed(input),
+        };
+        if !still_installed {
             return true;
         }
         thread::sleep(Duration::from_millis(1000));
@@ -1095,10 +1100,21 @@ pub async fn uninstall_application(input: UninstallInput) -> Result<UninstallRes
 
         for uninstall_cmd in uninstall_cmds {
             eprintln!("[viap][uninstall] 尝试执行命令: {}", uninstall_cmd);
+            // Appx 卸载命令需要额外的结果校验手段（没有注册表键可查）
+            let store_package = if is_appx_remove_command(&uninstall_cmd) {
+                crate::app_manager::appx::resolve_package(
+                    &app_name,
+                    input.install_location.as_deref().map(Path::new),
+                )
+                .map(|package| package.package_full_name)
+            } else {
+                None
+            };
+
             match start_uninstall_process(&uninstall_cmd) {
                 Ok(_) => {
                     executed_cmd = Some(uninstall_cmd.clone());
-                    if !wait_until_uninstalled(&input) {
+                    if !wait_until_uninstalled(&input, store_package.as_deref()) {
                         eprintln!("[viap][uninstall] 命令执行后仍检测到已安装，继续尝试下一条命令");
                         continue;
                     }
@@ -1353,6 +1369,12 @@ pub fn execute_cleanup(
 // ============================================================================
 
 #[cfg(windows)]
+/// 判断是否为 MS Store / UWP 的移除命令
+#[cfg(windows)]
+fn is_appx_remove_command(command: &str) -> bool {
+    command.contains("Remove-AppxPackage")
+}
+
 fn resolve_uninstall_commands(input: &UninstallInput) -> Result<Vec<String>, String> {
     let mut tried_registry_path = false;
 
@@ -1389,8 +1411,16 @@ fn resolve_uninstall_commands(input: &UninstallInput) -> Result<Vec<String>, Str
                 return Ok(vec![exe_path]);
             }
         }
+        // 3. 最后一档：MS Store / UWP 应用没有 Uninstall 键，改走系统组件移除
+        if let Some(command) = resolve_store_uninstall_command(input) {
+            return Ok(vec![command]);
+        }
         let msg = format!("未找到应用 '{}' 的卸载命令", app_id);
         return Err(msg);
+    }
+
+    if let Some(command) = resolve_store_uninstall_command(input) {
+        return Ok(vec![command]);
     }
 
     if tried_registry_path {
@@ -1398,6 +1428,32 @@ fn resolve_uninstall_commands(input: &UninstallInput) -> Result<Vec<String>, Str
     } else {
         Err("参数无效：请提供 app_id 或 registry_path".to_string())
     }
+}
+
+/// 常规注册表途径找不到卸载命令时，尝试按 MS Store / UWP 包处理
+///
+/// 只在能唯一确定包的情况下才给出命令：多个同名包时宁可让用户自己判断，
+/// 也不要猜错包名去卸载别的应用。
+#[cfg(windows)]
+fn resolve_store_uninstall_command(input: &UninstallInput) -> Option<String> {
+    let app_name = input.app_id.as_deref().unwrap_or("").trim();
+    if app_name.is_empty() {
+        return None;
+    }
+    let location = input
+        .install_location
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(Path::new);
+
+    let package = crate::app_manager::appx::resolve_package(app_name, location)?;
+    crate::app_manager::appx::build_remove_command(&package.package_full_name)
+}
+
+#[cfg(not(windows))]
+fn resolve_store_uninstall_command(_input: &UninstallInput) -> Option<String> {
+    None
 }
 
 #[cfg(windows)]

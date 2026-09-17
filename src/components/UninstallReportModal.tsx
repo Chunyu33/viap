@@ -1,0 +1,185 @@
+// 卸载报告弹窗
+//
+// 卸载流程结束后给出"前后对比"：列表里已知的安装体积、本次实际释放的空间、
+// 仍然残留的项目、以及需要用户自行处理的系统痕迹（服务/驱动/计划任务）。
+// 报告文本可一键复制，方便用户留档或在反馈问题时提供现场信息。
+
+import { useMemo, useState } from 'react';
+import { AlertTriangle, Check, ClipboardCopy, HardDrive, Server } from 'lucide-react';
+import Modal from './Modal';
+import type { SystemTrace, UninstallReportData } from '../types';
+
+interface UninstallReportModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  data: UninstallReportData | null;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+}
+
+/** 痕迹按类型分组统计，报告里只给数量与名称，避免刷屏 */
+function summarizeTraces(traces: SystemTrace[]) {
+  const groups: Record<string, SystemTrace[]> = { service: [], driver: [], task: [] };
+  for (const trace of traces) {
+    (groups[trace.kind] ??= []).push(trace);
+  }
+  return groups;
+}
+
+/** 组装可复制的纯文本报告 */
+function buildReportText(data: UninstallReportData): string {
+  const lines: string[] = [
+    `Viap 卸载报告`,
+    `应用：${data.appName}`,
+    `安装目录：${data.installLocation || '未知'}`,
+    `预计释放（安装目录）：${formatBytes(data.estimatedBytes)}`,
+    `实际释放：${formatBytes(data.uninstallFreedBytes + data.cleanupFreedBytes)}`
+      + `（卸载 ${formatBytes(data.uninstallFreedBytes)} + 残留清理 ${formatBytes(data.cleanupFreedBytes)}）`,
+  ];
+
+  if (data.storePackage) {
+    lines.push(`MS Store 包：${data.storePackage.package_full_name}`);
+  }
+  if (data.scheduledForReboot.length > 0) {
+    lines.push(`重启后自动删除：${data.scheduledForReboot.length} 项`);
+    lines.push(...data.scheduledForReboot.map((item) => `  · ${item}`));
+  }
+  if (data.failedItems.length > 0) {
+    lines.push(`未能删除：${data.failedItems.length} 项`);
+    lines.push(...data.failedItems.map((item) => `  · ${item}`));
+  }
+
+  const groups = summarizeTraces(data.systemTraces);
+  if (data.systemTraces.length > 0) {
+    lines.push('系统痕迹（需手动处理，Viap 不会自动删除）：');
+    if (groups.service.length > 0) {
+      lines.push(`  服务 ${groups.service.length} 个：${groups.service.map(t => t.name).join('、')}`);
+    }
+    if (groups.driver.length > 0) {
+      lines.push(`  驱动 ${groups.driver.length} 个：${groups.driver.map(t => t.name).join('、')}`);
+    }
+    if (groups.task.length > 0) {
+      lines.push(`  计划任务 ${groups.task.length} 个：${groups.task.map(t => t.name).join('、')}`);
+    }
+  } else {
+    lines.push('系统痕迹：未检测到服务 / 驱动 / 计划任务');
+  }
+
+  return lines.join('\n');
+}
+
+export default function UninstallReportModal({ isOpen, onClose, data }: UninstallReportModalProps) {
+  const [copied, setCopied] = useState(false);
+  const reportText = useMemo(() => (data ? buildReportText(data) : ''), [data]);
+  const groups = useMemo(() => summarizeTraces(data?.systemTraces ?? []), [data]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(reportText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时保持按钮原状，用户仍可手动选中文本
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="卸载报告" width={560}>
+      {data && (
+        <div className="flex flex-col gap-3 text-[12px]">
+          <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-row)' }}>
+            <p style={{ color: 'var(--text-primary)' }}>{data.appName}</p>
+            <p className="mt-1 break-all" style={{ color: 'var(--text-tertiary)' }}>{data.installLocation || '未知安装目录'}</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
+              <p className="flex items-center gap-1" style={{ color: 'var(--text-tertiary)' }}>
+                <HardDrive className="w-3 h-3" />预计释放
+              </p>
+              <p className="mt-1 text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {formatBytes(data.estimatedBytes)}
+              </p>
+            </div>
+            <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
+              <p style={{ color: 'var(--text-tertiary)' }}>本次实际释放</p>
+              <p className="mt-1 text-[14px] font-semibold" style={{ color: 'var(--color-success)' }}>
+                {formatBytes(data.uninstallFreedBytes + data.cleanupFreedBytes)}
+              </p>
+            </div>
+          </div>
+
+          {data.storePackage && (
+            <p className="rounded px-3 py-2" style={{ background: 'var(--color-primary-light)', color: 'var(--text-secondary)' }}>
+              MS Store 应用：{data.storePackage.package_full_name}
+            </p>
+          )}
+
+          {data.scheduledForReboot.length > 0 && (
+            <p className="rounded px-3 py-2" style={{ background: 'var(--color-warning-light)', color: 'var(--color-warning)' }}>
+              <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+              {data.scheduledForReboot.length} 项文件被占用，已安排在下次重启时自动删除。
+            </p>
+          )}
+
+          {data.failedItems.length > 0 && (
+            <div className="rounded px-3 py-2" style={{ background: 'var(--color-danger-light)', color: 'var(--color-danger)' }}>
+              <p>{data.failedItems.length} 项未能删除（可尝试以管理员身份重试）：</p>
+              <div className="mt-1 max-h-[90px] overflow-y-auto text-[11px]">
+                {data.failedItems.map((item, index) => <div key={index} className="break-all">· {item}</div>)}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)' }}>
+            <p className="flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
+              <Server className="w-3 h-3" />系统痕迹（需手动处理）
+            </p>
+            {data.systemTraces.length === 0 ? (
+              <p className="mt-1" style={{ color: 'var(--text-tertiary)' }}>未检测到服务 / 驱动 / 计划任务</p>
+            ) : (
+              <div className="mt-1 flex flex-col gap-1">
+                {(['service', 'driver', 'task'] as const).map((kind) => {
+                  const items = groups[kind];
+                  if (!items || items.length === 0) return null;
+                  const label = kind === 'service' ? '服务' : kind === 'driver' ? '驱动' : '计划任务';
+                  return (
+                    <div key={kind}>
+                      <span style={{ color: 'var(--text-secondary)' }}>{label} {items.length} 个：</span>
+                      <span className="break-all" style={{ color: 'var(--text-tertiary)' }}>
+                        {items.map(trace => trace.name).join('、')}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <details>
+            <summary className="cursor-pointer text-[11px]" style={{ color: 'var(--text-tertiary)' }}>查看可复制报告</summary>
+            <pre
+              className="mt-2 max-h-[160px] overflow-auto rounded px-2 py-2 text-[11px] whitespace-pre-wrap break-all"
+              style={{ background: 'var(--bg-row)', color: 'var(--text-secondary)' }}
+            >
+              {reportText}
+            </pre>
+          </details>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button className="btn h-8 text-[12px]" onClick={handleCopy}>
+              {copied ? <Check className="w-3.5 h-3.5" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
+              {copied ? '已复制' : '复制报告'}
+            </button>
+            <button className="btn btn-primary h-8 text-[12px]" onClick={onClose}>完成</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}

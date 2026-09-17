@@ -481,6 +481,7 @@ pub fn run() {
             uninstall_application,
             scan_app_residue,
             execute_cleanup,
+            app_manager::pre_uninstall::get_pre_uninstall_info,
             uninstaller::list_app_processes,
             uninstaller::kill_app_processes,
         ])

@@ -101,6 +101,46 @@ export interface ProcessKillResult {
   failed: string[];
 }
 
+/** MS Store / UWP 包信息（存在时可走系统组件移除） */
+export interface AppxPackage {
+  name: string;
+  package_full_name: string;
+  install_location: string;
+}
+
+/** 系统痕迹类型：服务 / 驱动 / 计划任务 */
+export type SystemTraceKind = 'service' | 'driver' | 'task';
+
+/** 系统痕迹条目（只提示，不自动删除） */
+export interface SystemTrace {
+  kind: SystemTraceKind;
+  name: string;
+  detail: string;
+}
+
+/** 卸载前提示信息（一次调用同时拿到商店包与系统痕迹） */
+export interface PreUninstallInfo {
+  store_package: AppxPackage | null;
+  system_traces: SystemTrace[];
+}
+
+/** 卸载报告数据（前端汇总，用于展示与复制） */
+export interface UninstallReportData {
+  appName: string;
+  installLocation: string;
+  /** 列表里已知的安装目录体积（字节），用于"预计释放" */
+  estimatedBytes: number;
+  /** 实际释放：卸载阶段 + 残留清理阶段 */
+  uninstallFreedBytes: number;
+  cleanupFreedBytes: number;
+  /** 清理失败的项目 */
+  failedItems: string[];
+  /** 已安排重启后删除的项目 */
+  scheduledForReboot: string[];
+  systemTraces: SystemTrace[];
+  storePackage: AppxPackage | null;
+}
+
 /** 幽灵链接预览条目 */
 export interface GhostLinkEntry {
   record_id: string;

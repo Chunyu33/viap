@@ -2,8 +2,8 @@
 // 极简风格：半透明背景 + 高对比风险操作按钮
 
 import { useMemo } from 'react';
-import { AlertTriangle, Check, LoaderCircle, ScanSearch, Trash2, X } from 'lucide-react';
-import { AppProcessInfo, LeftoverItem } from '../types';
+import { AlertTriangle, Check, LoaderCircle, ScanSearch, Server, Trash2, X } from 'lucide-react';
+import { AppProcessInfo, LeftoverItem, SystemTrace } from '../types';
 
 interface CleanupModalProps {
   isOpen: boolean;
@@ -18,6 +18,8 @@ interface CleanupModalProps {
   appProcesses?: AppProcessInfo[];
   onKillProcesses?: () => void;
   killingProcesses?: boolean;
+  /** 残留的服务 / 驱动 / 计划任务：只提示，Viap 不会自动删除 */
+  systemTraces?: SystemTrace[];
 }
 
 function formatItemSize(sizeMb: number): string {
@@ -38,6 +40,7 @@ export default function CleanupModal({
   appProcesses = [],
   onKillProcesses,
   killingProcesses = false,
+  systemTraces = [],
 }: CleanupModalProps) {
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
 
@@ -104,6 +107,23 @@ export default function CleanupModal({
                 {killingProcesses ? '结束中...' : '结束这些进程'}
               </button>
             )}
+          </div>
+        )}
+
+        {/* 系统痕迹：服务/驱动/计划任务删不掉也不该由工具删，如实告知用户 */}
+        {systemTraces.length > 0 && (
+          <div className="mx-5 mt-3 rounded-lg px-3 py-2.5" style={{ background: 'var(--bg-row)' }}>
+            <p className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+              <Server className="w-3.5 h-3.5 inline mr-1" />
+              检测到 {systemTraces.length} 项系统痕迹（需手动处理）
+            </p>
+            <div className="mt-1 max-h-[72px] overflow-y-auto text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+              {systemTraces.map((trace) => (
+                <div key={`${trace.kind}-${trace.name}`} className="break-all">
+                  · [{trace.kind === 'service' ? '服务' : trace.kind === 'driver' ? '驱动' : '计划任务'}] {trace.name}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

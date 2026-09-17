@@ -19,9 +19,12 @@ import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathChe
 import WarningConfirmDialog from '../components/WarningConfirmDialog';
 import { useViapStore } from '../store';
 import { readLocalUserSettings } from '../utils/userSettings';
+import UninstallReportModal from '../components/UninstallReportModal';
 import {
   AppProcessInfo,
   CleanupResult,
+  PreUninstallInfo,
+  UninstallReportData,
   InstalledApp,
   LeftoverItem,
   MigrationProgressEvent,
@@ -217,6 +220,11 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   const [killingProcesses, setKillingProcesses] = useState(false);
   // 记录当前展示进程提示的应用（残留清理弹窗没有 forceRmPreviewApp）
   const [processTargetApp, setProcessTargetApp] = useState<InstalledApp | null>(null);
+  // 卸载前提示信息（MS Store 包 + 系统痕迹）
+  const [preUninstallInfo, setPreUninstallInfo] = useState<PreUninstallInfo | null>(null);
+  // 卸载报告（流程结束后展示）
+  const [reportData, setReportData] = useState<UninstallReportData | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   // Viap 自身的安装目录，用于禁用自身的迁移/卸载按钮
   const [viapInstallPath, setViapInstallPath] = useState<string>('');
   // 应用迁移记录（用于还原时获取 historyId）
@@ -872,12 +880,40 @@ export default function AppMigration({ visible }: { visible: boolean }) {
   function refreshAppProcesses(app: InstalledApp) {
     setProcessTargetApp(app);
     setForceRmProcesses([]);
+    setPreUninstallInfo(null);
     invoke<AppProcessInfo[]>('list_app_processes', {
       installLocation: app.install_location,
       appName: app.display_name,
     })
       .then(setForceRmProcesses)
       .catch(() => setForceRmProcesses([]));
+    // 系统痕迹与商店包检测较慢（注册表枚举 + 一次 PowerShell），异步补齐即可，不阻塞弹窗
+    invoke<PreUninstallInfo>('get_pre_uninstall_info', {
+      appName: app.display_name,
+      installLocation: app.install_location,
+    })
+      .then(setPreUninstallInfo)
+      .catch(() => setPreUninstallInfo(null));
+  }
+
+  /** 组装卸载报告：预计释放取列表里已知的体积，实际释放取两个阶段的结果 */
+  function buildReportData(
+    app: InstalledApp,
+    uninstallFreedBytes: number,
+    cleanupResult: CleanupResult | null,
+  ) {
+    setReportData({
+      appName: app.display_name,
+      installLocation: app.install_location,
+      estimatedBytes: Math.max(0, (app.estimated_size || 0) * 1024),
+      uninstallFreedBytes,
+      cleanupFreedBytes: cleanupResult?.freed_bytes ?? 0,
+      failedItems: cleanupResult?.failed_items ?? [],
+      scheduledForReboot: cleanupResult?.scheduled_for_reboot ?? [],
+      systemTraces: preUninstallInfo?.system_traces ?? [],
+      storePackage: preUninstallInfo?.store_package ?? null,
+    });
+    setReportOpen(true);
   }
 
   /** 结束应用相关进程：结束后刷新进程列表，让用户看到是否清干净 */
@@ -1050,6 +1086,11 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         showToast('清理成功', 'success');
       } else {
         showToast(result.message || '部分项目清理失败，请重试', 'error');
+      }
+
+      // 清理是卸载流程的最后一站：在这里给出前后对比报告
+      if (processTargetApp) {
+        buildReportData(processTargetApp, 0, result);
       }
 
       setCleanupModalOpen(false);
@@ -1752,6 +1793,7 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         appProcesses={forceRmProcesses}
         onKillProcesses={handleKillAppProcesses}
         killingProcesses={killingProcesses}
+        systemTraces={preUninstallInfo?.system_traces ?? []}
         onClose={handleCloseCleanupModal}
         onToggleItem={handleToggleLeftover}
         onConfirm={handleConfirmCleanup}
@@ -1778,6 +1820,13 @@ export default function AppMigration({ visible }: { visible: boolean }) {
         }}
         onToggleItem={handleForceRmToggleItem}
         onConfirm={handleForceRmConfirm}
+      />
+
+      {/* 卸载报告：前后对比 + 可复制文本 */}
+      <UninstallReportModal
+        isOpen={reportOpen}
+        onClose={() => setReportOpen(false)}
+        data={reportData}
       />
 
       {/* 迁移目标选择弹窗（区分 默认 / 自定义 / 取消） */}
