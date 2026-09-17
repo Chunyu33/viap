@@ -993,9 +993,7 @@ fn execute_force_remove(
                 break;
             }
             if is_safe_registry_cleanup_target(hkey, &sub_path, &cleanup_keywords) {
-                deleted_registry = RegKey::predef(hkey)
-                    .delete_subkey_all(&sub_path)
-                    .is_ok();
+                deleted_registry = delete_registry_key_robust(hkey, &sub_path);
             }
         }
     }
@@ -1414,10 +1412,7 @@ pub fn execute_cleanup(
                     continue;
                 }
 
-                let deleted = RegKey::predef(hkey)
-                    .delete_subkey_all(sub_path)
-                    .is_ok();
-                if deleted {
+                if delete_registry_key_robust(hkey, sub_path) {
                     cleaned_count += 1;
                 } else {
                     failed_items.push(item);
@@ -2605,6 +2600,95 @@ fn clear_readonly_single(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 注册表删除失败的归类
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RegistryDeleteFailure {
+    /// 键已经不存在（卸载器自己删掉了，我们删得晚）
+    AlreadyGone,
+    /// 权限不足，需要提权重试
+    NeedsElevation,
+    /// 其它错误
+    Other,
+}
+
+/// 归类注册表删除失败原因
+///
+/// 单独抽出来是为了可测：`NotFound` 与"权限不足"的处理完全不同——
+/// 前者是成功（键确实没了），后者才需要提权。
+#[cfg(windows)]
+fn classify_registry_delete_failure(error: &std::io::Error) -> RegistryDeleteFailure {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => RegistryDeleteFailure::AlreadyGone,
+        std::io::ErrorKind::PermissionDenied => RegistryDeleteFailure::NeedsElevation,
+        _ => RegistryDeleteFailure::Other,
+    }
+}
+
+/// 判断注册表键当前是否还存在（读不了但存在也按存在处理）
+#[cfg(windows)]
+fn registry_key_exists(hkey: HKEY, sub_path: &str) -> bool {
+    match RegKey::predef(hkey).open_subkey_with_flags(sub_path, KEY_READ) {
+        Ok(_) => true,
+        // 读权限不足说明键还在，只是我们读不了；只有 NotFound 才代表真没了
+        Err(error) => classify_registry_delete_failure(&error) != RegistryDeleteFailure::AlreadyGone,
+    }
+}
+
+/// 把 HKEY 转成 reg.exe 认得的根键名
+#[cfg(windows)]
+fn registry_hive_label(hkey: HKEY) -> &'static str {
+    if hkey == HKEY_CURRENT_USER {
+        "HKCU"
+    } else {
+        "HKLM"
+    }
+}
+
+/// 删除注册表键，必要时提权重试
+///
+/// 返回 true 表示"该键现在确实不存在"。注意这里包含两种情况：
+/// 1. 我们删掉了它
+/// 2. 它本来就已经不存在——卸载器通常会把键一起删掉，我们删得晚，
+///    这种情况必须算成功，否则会像 PyCharm 那样把已清理的项报成"未能删除"
+#[cfg(windows)]
+fn delete_registry_key_robust(hkey: HKEY, sub_path: &str) -> bool {
+    if !registry_key_exists(hkey, sub_path) {
+        return true;
+    }
+
+    match RegKey::predef(hkey).delete_subkey_all(sub_path) {
+        Ok(()) => return true,
+        Err(error) => {
+            // 竞态：别的进程刚好删掉了
+            if !registry_key_exists(hkey, sub_path) {
+                return true;
+            }
+            if classify_registry_delete_failure(&error) != RegistryDeleteFailure::NeedsElevation {
+                log_warn!("uninstall", "删除注册表键失败 {}: {}", sub_path, error);
+                return false;
+            }
+        }
+    }
+
+    // 权限不足：提权后重试一次（用户已确认允许提权，UAC 由系统弹出）
+    let full_path = format!("{}\\{}", registry_hive_label(hkey), sub_path);
+    let reg_exe = std::env::var("SystemRoot")
+        .map(|root| format!(r"{}\System32\reg.exe", root))
+        .unwrap_or_else(|_| "reg.exe".to_string());
+    log_warn!("uninstall", "注册表键权限不足，提权重试: {}", full_path);
+    if let Err(error) = spawn_elevated_and_wait(
+        &reg_exe,
+        &["delete".to_string(), full_path, "/f".to_string()],
+        None,
+    ) {
+        // reg delete 对"键不存在"也会返回非 0，因此失败只记日志，
+        // 最终以"键是否真的还在"为准，避免把已删掉的键报成失败
+        log_warn!("uninstall", "提权删除注册表键返回错误: {}", error);
+    }
+    !registry_key_exists(hkey, sub_path)
+}
+
 /// 在无窗口的情况下执行一个命令行工具，忽略返回码，仅用于权限回退
 #[cfg(windows)]
 fn run_silent(program: &str, args: &[&str]) -> Result<(), String> {
@@ -3056,6 +3140,58 @@ mod process_tests {
             location
         ));
         assert!(!process_touches_directory(None, &[], location));
+    }
+
+    #[test]
+    fn registry_delete_failures_are_classified_by_kind() {
+        use std::io::{Error, ErrorKind};
+
+        // NotFound 必须归类为"本来就没有"，否则会把卸载器已清理的项报成失败
+        assert_eq!(
+            classify_registry_delete_failure(&Error::from(ErrorKind::NotFound)),
+            RegistryDeleteFailure::AlreadyGone
+        );
+        assert_eq!(
+            classify_registry_delete_failure(&Error::from(ErrorKind::PermissionDenied)),
+            RegistryDeleteFailure::NeedsElevation
+        );
+        assert_eq!(
+            classify_registry_delete_failure(&Error::from(ErrorKind::Other)),
+            RegistryDeleteFailure::Other
+        );
+    }
+
+    #[test]
+    fn deleting_a_missing_registry_key_counts_as_success() {
+        // 用户目录下的路径不需要提权，可以在测试里真实建删
+        let key_path = format!(
+            r"Software\ViapTest\{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("系统时间应有效")
+                .as_nanos()
+        );
+
+        // 键不存在时直接算成功（不能触发提权，否则测试会弹 UAC）
+        assert!(
+            delete_registry_key_robust(HKEY_CURRENT_USER, &key_path),
+            "不存在的键应当视为删除成功"
+        );
+
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(&key_path)
+            .expect("创建测试键失败");
+        let (child, _) = key.create_subkey("child").expect("创建子键失败");
+        drop(child);
+        drop(key);
+        assert!(registry_key_exists(HKEY_CURRENT_USER, &key_path));
+
+        // 真实删除：包含子键的整棵树都要清掉
+        assert!(delete_registry_key_robust(HKEY_CURRENT_USER, &key_path));
+        assert!(!registry_key_exists(HKEY_CURRENT_USER, &key_path));
+
+        // 再删一次仍然返回成功，保证重复清理不会报错
+        assert!(delete_registry_key_robust(HKEY_CURRENT_USER, &key_path));
     }
 
     #[test]
