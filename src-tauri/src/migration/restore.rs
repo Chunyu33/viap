@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::migration::cleanup::{cleanup_leftover_backups, remove_directory_robust};
-use crate::migration::copy_engine::{build_copy_plan_with_progress, copy_dir_with_progress};
+use crate::migration::copy_engine::{build_copy_plan, copy_dir};
 use crate::migration::links::rollback_restore_link;
 use crate::migration::{emit_progress, format_bytes};
 
@@ -25,13 +25,10 @@ pub(crate) fn restore_directory_with_progress(
     app_handle: &tauri::AppHandle,
 ) -> Result<RestoreDirectoryResult, String> {
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    let restore_plan = build_copy_plan_with_progress(
-        target_path,
-        original_path,
-        task_id,
-        &cancel_flag,
-        app_handle,
-    )?;
+    let reporter = |step: &str, percent: f64, message: &str, copied: u64, total: u64| {
+        emit_progress(app_handle, task_id, percent, step, message, copied, total);
+    };
+    let restore_plan = build_copy_plan(target_path, original_path, &cancel_flag, &reporter)?;
     let total_size = restore_plan.total_size;
 
     let original_parent = original_path
@@ -53,7 +50,7 @@ pub(crate) fn restore_directory_with_progress(
     fs::create_dir_all(original_path)
         .map_err(|e| format!("创建原路径目录失败 {}: {}", original_path.display(), e))?;
 
-    if let Err(e) = copy_dir_with_progress(restore_plan, task_id, &cancel_flag, app_handle) {
+    if let Err(e) = copy_dir(restore_plan, &cancel_flag, &reporter) {
         let rollback = rollback_restore_link(original_path, target_path);
         return Err(format!("恢复复制失败：{}\n{}", e, rollback));
     }

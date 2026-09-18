@@ -967,7 +967,7 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
 
   return (
     <div className="h-full overflow-hidden flex flex-col"
-      style={{ padding: '12px 16px', width: '100%' }}>
+      style={{ padding: '12px var(--spacing-8)', width: '100%' }}>
       <div className="h-full flex flex-col w-full gap-3">
         {/* top stats + actions */}
         <div className="flex items-center justify-between flex-wrap gap-2 flex-shrink-0"

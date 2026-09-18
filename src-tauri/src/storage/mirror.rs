@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::de::DeserializeOwned;
@@ -51,7 +51,10 @@ fn mirror_file_path(file_name: &str) -> PathBuf {
 
 /// 原子写入镜像文件（temp → rename）；失败只记录日志
 fn write_mirror_file(file_name: &str, json: &str) {
-    let path = mirror_file_path(file_name);
+    write_mirror_file_at(&mirror_file_path(file_name), json)
+}
+
+fn write_mirror_file_at(path: &Path, json: &str) {
     if let Some(parent) = path.parent() {
         if let Err(error) = fs::create_dir_all(parent) {
             log_warn!("mirror", "创建镜像目录失败 {}: {}", parent.display(), error);
@@ -67,12 +70,15 @@ fn write_mirror_file(file_name: &str, json: &str) {
 
 /// 读取镜像文件；文件缺失或损坏时返回 None 并记录原因
 fn read_mirror_json<T: DeserializeOwned>(file_name: &str) -> Option<T> {
-    let path = mirror_file_path(file_name);
+    read_mirror_json_at(&mirror_file_path(file_name))
+}
+
+fn read_mirror_json_at<T: DeserializeOwned>(path: &Path) -> Option<T> {
     if !path.exists() {
         return None;
     }
 
-    match fs::read_to_string(&path) {
+    match fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<T>(&contents) {
             Ok(value) => Some(value),
             Err(error) => {
@@ -165,6 +171,46 @@ fn write_history_mirror(storage: &HistoryStorage) {
         Ok(json) => write_mirror_file(MIRROR_HISTORY_FILE, &json),
         Err(error) => log_warn!("mirror", "序列化历史镜像失败: {}", error),
     }
+}
+
+/// 从自动备份中删除某条迁移记录（用户显式勾选时调用）
+///
+/// 返回该记录在备份中是否存在；备份文件不存在时视为已删除，不报错。
+pub fn remove_record_from_mirror(record_id: &str) -> Result<bool, String> {
+    remove_record_from_mirror_at(&mirror_file_path(MIRROR_HISTORY_FILE), record_id)
+}
+
+/// 删除逻辑核心：接收备份文件路径，便于单测在临时文件上验证
+fn remove_record_from_mirror_at(path: &Path, record_id: &str) -> Result<bool, String> {
+    let Some(mut storage) = read_mirror_json_at::<HistoryStorage>(path) else {
+        return Ok(false);
+    };
+
+    let before = storage.records.len();
+    storage.records.retain(|record| record.id != record_id);
+    if storage.records.len() == before {
+        return Ok(false);
+    }
+
+    match serde_json::to_string_pretty(&storage) {
+        Ok(json) => write_mirror_file_at(path, &json),
+        Err(error) => log_warn!("mirror", "序列化历史镜像失败: {}", error),
+    }
+    Ok(true)
+}
+
+/// 从自动备份的兜底元数据中删除某个应用
+pub fn remove_migrated_app_from_mirror(original_path: &str) -> Result<(), String> {
+    let Some(mut storage) = read_mirror_json::<MigratedAppStorage>(MIRROR_MIGRATED_APP_FILE) else {
+        return Ok(());
+    };
+
+    let before = storage.apps.len();
+    storage.apps.retain(|entry| !entry.original_path.eq_ignore_ascii_case(original_path));
+    if storage.apps.len() != before {
+        write_migrated_apps_mirror(&storage.apps);
+    }
+    Ok(())
 }
 
 fn write_custom_folders_mirror(folders: &[CustomFolderEntry]) {
@@ -289,4 +335,55 @@ pub fn import_mirror_backup() -> Result<MirrorImportResult, String> {
     // 兜底元数据可能补充了新的已迁移应用，失效应用列表缓存让角标刷新
     crate::app_manager::cache::invalidate();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_history(ids: &[&str]) -> HistoryStorage {
+        HistoryStorage {
+            version: 1,
+            records: ids
+                .iter()
+                .map(|id| MigrationRecord {
+                    id: (*id).to_string(),
+                    app_name: "sample".to_string(),
+                    original_path: format!(r"C:\sample\{}", id),
+                    target_path: format!(r"D:\sample\{}", id),
+                    size: 1,
+                    migrated_at: 1,
+                    status: "active".to_string(),
+                    record_type: MigrationRecordType::App,
+                })
+                .collect(),
+        }
+    }
+
+    /// 勾选"同时删除备份记录"时，只有目标记录被移除，其余记录保持不动
+    #[test]
+    fn removes_only_the_requested_record_from_the_backup() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("viap-mirror-{suffix}"));
+        std::fs::create_dir_all(&dir).expect("创建测试目录失败");
+        let path = dir.join("migration_history.json");
+
+        let storage = sample_history(&["mig_1", "mig_2", "mig_3"]);
+        std::fs::write(&path, serde_json::to_string_pretty(&storage).unwrap()).expect("写入失败");
+
+        assert_eq!(remove_record_from_mirror_at(&path, "mig_2"), Ok(true));
+        let remaining = read_mirror_json_at::<HistoryStorage>(&path).expect("读取失败");
+        assert_eq!(remaining.records.len(), 2);
+        assert!(remaining.records.iter().all(|record| record.id != "mig_2"));
+
+        // 再次删除同一条记录：不存在，返回 false 且不报错
+        assert_eq!(remove_record_from_mirror_at(&path, "mig_2"), Ok(false));
+        // 备份文件不存在时同样安全返回
+        assert_eq!(remove_record_from_mirror_at(&dir.join("missing.json"), "mig_1"), Ok(false));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

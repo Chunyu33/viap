@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { AnimatePresence, motion, type Variants } from 'framer-motion';
 import {
   AlertTriangle, Check, CheckCircle2, FolderSearch, HardDriveDownload,
   Info, Link2, LoaderCircle, RefreshCw, X,
@@ -26,6 +27,20 @@ interface LinkRecoveryModalProps {
   /** 导入成功后回调：父页面据此刷新迁移记录与目录列表 */
   onImported: () => void;
 }
+
+/** 弹窗过渡：缓动与 PageTransition 保持一致，避免各处动画手感不同 */
+const overlayVariants: Variants = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1, transition: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } },
+  exit: { opacity: 0, transition: { duration: 0.15, ease: [0.4, 0, 1, 1] } },
+};
+
+/** 面板过渡：子级不写 initial/animate，由父级状态向下传播，保证开合同步 */
+const panelVariants: Variants = {
+  initial: { opacity: 0, scale: 0.96, y: 10 },
+  animate: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } },
+  exit: { opacity: 0, scale: 0.97, y: 6, transition: { duration: 0.16, ease: [0.4, 0, 1, 1] } },
+};
 
 /** 可选的扫描深度：默认 4 覆盖 C:\Users\<用户>\AppData\Local\Programs\<应用> */
 const SCAN_DEPTH_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -290,29 +305,37 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
   const selectedCount = selectedPaths.size;
   const allSelectableSelected = selectableCount > 0 && selectedCount === selectableCount;
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center p-4">
-      <div
-        className="absolute inset-0"
-        style={{
-          background: 'linear-gradient(180deg, rgba(15,23,42,0.42), rgba(2,6,23,0.62))',
-          backdropFilter: 'blur(12px)',
-        }}
-        onClick={scanning || importing ? undefined : onClose}
-      />
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          key="link-recovery-dialog"
+          className="fixed inset-0 z-50 grid place-items-center p-4"
+          variants={overlayVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+        >
+          <div
+            className="absolute inset-0"
+            style={{
+              background: 'linear-gradient(180deg, rgba(15,23,42,0.42), rgba(2,6,23,0.62))',
+              backdropFilter: 'blur(12px)',
+            }}
+            onClick={scanning || importing ? undefined : onClose}
+          />
 
-      <div
-        className="relative w-full overflow-hidden rounded-xl shadow-2xl animate-modal-in flex flex-col"
-        style={{
-          // 弹窗宽度跟随窗口（宽屏时给出更多候选空间），仍保留滚动条与最大高度约束
-          maxWidth: 'min(1040px, calc(100vw - 264px))',
-          maxHeight: 'min(680px, calc(100vh - 64px))',
-          background: 'var(--bg-modal)',
-          border: '1px solid var(--border-color)',
-        }}
-      >
+          <motion.div
+            className="relative w-full overflow-hidden rounded-xl shadow-2xl flex flex-col"
+            variants={panelVariants}
+            style={{
+              // 弹窗宽度跟随窗口（宽屏时给出更多候选空间），仍保留滚动条与最大高度约束
+              maxWidth: 'min(1040px, calc(100vw - 264px))',
+              maxHeight: 'min(680px, calc(100vh - 64px))',
+              background: 'var(--bg-modal)',
+              border: '1px solid var(--border-color)',
+            }}
+          >
         {/* 头部 */}
         <div className="flex items-start justify-between px-5 pt-4 pb-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)' }}>
           <div className="pr-4 min-w-0">
@@ -614,7 +637,9 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
             </button>
           </div>
         </div>
-      </div>
-    </div>
+        </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

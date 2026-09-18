@@ -47,6 +47,18 @@ pub fn load_history() -> HistoryStorage {
 /// 策略：先写临时文件 → sync 刷盘 → 备份旧文件 → rename 覆盖
 /// 确保写入过程中崩溃不会损坏原有数据
 pub fn save_history(storage: &HistoryStorage) -> Result<(), String> {
+    save_history_inner(storage, true)
+}
+
+/// 写入历史但不刷新自动备份
+///
+/// 删除单条记录时使用：镜像保持原样，用户仍可通过「从备份导入」找回这条记录，
+/// 因此"同时删除备份里的记录"才能作为一个默认关闭的选项存在。
+fn save_history_without_mirror(storage: &HistoryStorage) -> Result<(), String> {
+    save_history_inner(storage, false)
+}
+
+fn save_history_inner(storage: &HistoryStorage, update_mirror: bool) -> Result<(), String> {
     let path = get_history_file_path();
     let temp_path = path.with_extension("json.tmp");
     let backup_path = path.with_extension("json.bak");
@@ -72,7 +84,9 @@ pub fn save_history(storage: &HistoryStorage) -> Result<(), String> {
         .map_err(|e| format!("重命名历史文件失败: {}", e))?;
 
     // 4. 镜像兜底：数据目录被误删时仍能从镜像恢复迁移记录（失败不阻塞主流程）
-    crate::storage::mirror::mirror_history(storage);
+    if update_mirror {
+        crate::storage::mirror::mirror_history(storage);
+    }
 
     Ok(())
 }
@@ -707,6 +721,56 @@ pub fn get_migration_stats() -> Result<MigrationStats, String> {
         restored_count,
         app_migrations: app_count,
         folder_migrations: folder_count,
+    })
+}
+
+// ============================================================================
+// 记录删除
+// ============================================================================
+
+/// 删除单条迁移记录（只删记录，不动磁盘上的任何文件）
+///
+/// - `remove_backup`：是否同时把该记录从自动备份中删除。
+///   默认 false —— 备份是误删记录后最后的恢复手段，保留它才能"删错了再导回来"。
+///   注意删除记录时**不刷新镜像**，否则备份会跟着一起少掉这条记录，选项就失去意义。
+#[tauri::command]
+pub fn delete_migration_record(
+    history_id: String,
+    remove_backup: Option<bool>,
+) -> Result<MigrationResult, String> {
+    let mut storage = load_history();
+    let index = storage
+        .records
+        .iter()
+        .position(|record| record.id == history_id)
+        .ok_or_else(|| "未找到该迁移记录".to_string())?;
+
+    let record = storage.records.remove(index);
+    save_history_without_mirror(&storage)?;
+
+    // App 类型的兜底元数据同步移除，否则应用列表仍会按"已迁移"显示
+    if record.record_type == MigrationRecordType::App {
+        crate::storage::migrated_app_metadata::remove_migrated_app(&record.original_path);
+    }
+
+    let mut backup_note = "自动备份中仍保留这条记录，可通过「恢复迁移记录 → 从备份导入」找回。";
+    if remove_backup.unwrap_or(false) {
+        crate::storage::mirror::remove_record_from_mirror(&history_id)?;
+        if record.record_type == MigrationRecordType::App {
+            crate::storage::mirror::remove_migrated_app_from_mirror(&record.original_path)?;
+        }
+        backup_note = "已同时从自动备份中删除该记录。";
+    }
+
+    crate::app_manager::cache::invalidate();
+
+    Ok(MigrationResult {
+        success: true,
+        message: format!(
+            "已删除「{}」的迁移记录。\n\n原路径与目标位置的文件都没有改动；{}",
+            record.app_name, backup_note
+        ),
+        new_path: None,
     })
 }
 

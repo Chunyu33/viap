@@ -15,6 +15,9 @@ import Toast, { useToast } from '../components/Toast';
 import FilterSelect from '../components/FilterSelect';
 import EmptyState from '../components/EmptyState';
 import LinkRecoveryModal from '../components/LinkRecoveryModal';
+import ContextMenu from '../components/ContextMenu';
+import Checkbox from '../components/Checkbox';
+import Modal from '../components/Modal';
 import { useViapStore } from '../store';
 
 // no_data: 原路径已消失且目标为空/不存在，通常表示应用已被外部卸载。
@@ -102,7 +105,7 @@ function setCachedStatus(id: string, status: LinkStatus) {
 }
 
 function HistoryRow({
-  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate, onOpenPath,
+  record, onRestore, isRestoring, restoreProgress, linkStatus, onCleanup, onRemigrate, onOpenPath, onContextMenu,
 }: {
   record: MigrationRecord;
   onRestore: (id: string, recordType: string) => void;
@@ -113,6 +116,8 @@ function HistoryRow({
   onRemigrate?: (id: string) => void;
   /** 打开路径所在文件夹 */
   onOpenPath: (path: string) => void;
+  /** 右键菜单：交由页面统一用固定定位渲染 */
+  onContextMenu?: (record: MigrationRecord, position: { x: number; y: number }) => void;
 }) {
   const isLargeFolder = record.record_type === 'LargeFolder';
   const [expanded, setExpanded] = useState(false);
@@ -130,6 +135,11 @@ function HistoryRow({
         className="flex items-center gap-3 cursor-pointer"
         style={{ height: 'var(--row-height)', padding: '0 8px' }}
         onClick={() => setExpanded(!expanded)}
+        onContextMenu={(event) => {
+          if (!onContextMenu) return;
+          event.preventDefault();
+          onContextMenu(record, { x: event.clientX, y: event.clientY });
+        }}
         onMouseEnter={(e) => {
           if (linkStatus !== 'broken_fixable' && linkStatus !== 'broken_lost' && linkStatus !== 'no_data') (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)';
         }}
@@ -351,6 +361,11 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   // 迁移记录重建弹窗：仅在用户点击时打开（不做自动检查）
   const [linkRecoveryOpen, setLinkRecoveryOpen] = useState(false);
   const [sizeScanRunning, setSizeScanRunning] = useState(false);
+  // 右键菜单与删除确认
+  const [rowMenu, setRowMenu] = useState<{ record: MigrationRecord; x: number; y: number } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MigrationRecord | null>(null);
+  const [deleteBackupToo, setDeleteBackupToo] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   /** 列头点击排序：同 key 三态切换 asc → desc → 清除（回到 date_desc） */
   function handleColumnSort(key: SortKey) {
@@ -366,6 +381,26 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   }
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 20;
+
+  /** 删除单条迁移记录：默认保留自动备份里的同一条记录，勾选后才一并删除 */
+  async function handleConfirmDeleteRecord() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const result = await invoke<MigrationResult>('delete_migration_record', {
+        historyId: deleteTarget.id,
+        removeBackup: deleteBackupToo,
+      });
+      showToast(result.message, 'success', 8000);
+      setDeleteTarget(null);
+      setDeleteBackupToo(false);
+      await loadHistory();
+    } catch (error) {
+      showToast(`删除失败: ${error}`, 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   async function loadHistory() {
     try {
@@ -653,7 +688,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
 
   return (
     <div className="h-full overflow-hidden flex flex-col"
-      style={{ padding: '12px 16px', width: '100%' }}>
+      style={{ padding: '12px var(--spacing-8)', width: '100%' }}>
       {/* search / filter / sort + stats + refresh — 固定在顶部，不参与滚动 */}
       <div className="flex items-center gap-2 flex-wrap flex-shrink-0"
         style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
@@ -792,7 +827,8 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
                     linkStatus={linkStatuses[record.id] || 'unknown'}
                     onCleanup={handleCleanupBroken}
                     onRemigrate={handleRemigrate}
-                    onOpenPath={handleOpenPath} />
+                    onOpenPath={handleOpenPath}
+                    onContextMenu={(record, position) => setRowMenu({ record, ...position })} />
                 ))}
 
                 {/* pagination */}
@@ -820,6 +856,80 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           </div>
         </>
       )}
+      {/* 右键菜单：删除单条记录 */}
+      {rowMenu && (
+        <ContextMenu
+          x={rowMenu.x}
+          y={rowMenu.y}
+          onClose={() => setRowMenu(null)}
+          items={[
+            {
+              key: 'delete',
+              label: '删除记录',
+              icon: <Trash2 className="w-3 h-3" />,
+              danger: true,
+              onSelect: () => setDeleteTarget(rowMenu.record),
+            },
+          ]}
+        />
+      )}
+
+      {/* 删除二次确认：默认保留自动备份，勾选后才一并删除 */}
+      <Modal
+        isOpen={deleteTarget !== null}
+        onClose={() => { if (!deleting) { setDeleteTarget(null); setDeleteBackupToo(false); } }}
+        title="删除迁移记录"
+      >
+        {deleteTarget && (
+          <div className="flex flex-col gap-3">
+            <div className="rounded border px-3 py-2 text-[12px]" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-row)' }}>
+              <p style={{ color: 'var(--text-primary)' }}>{deleteTarget.app_name}</p>
+              <p className="mt-1 break-all" style={{ color: 'var(--text-tertiary)' }}>{deleteTarget.original_path}</p>
+              <p className="break-all" style={{ color: 'var(--text-tertiary)' }}>→ {deleteTarget.target_path}</p>
+            </div>
+
+            <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+              删除记录<strong style={{ color: 'var(--text-primary)' }}>不会删除任何文件</strong>：
+              原路径仍是链接，目标位置的数据也保持原样。如果之后需要这条记录，可以在「恢复迁移记录」里重新扫描出来。
+            </p>
+
+            <label className="flex items-start gap-2 cursor-pointer text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+              <Checkbox
+                size="sm"
+                checked={deleteBackupToo}
+                onChange={setDeleteBackupToo}
+                className="mt-0.5"
+              />
+              <span>
+                同时从自动备份中删除这条记录
+                <span className="block text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                  不勾选（默认）：备份里仍留着它，之后可用「从备份导入」找回
+                </span>
+              </span>
+            </label>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                className="btn h-8 text-[12px]"
+                onClick={() => { setDeleteTarget(null); setDeleteBackupToo(false); }}
+                disabled={deleting}
+              >
+                取消
+              </button>
+              <button
+                className="btn h-8 text-[12px]"
+                style={{ color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+                onClick={handleConfirmDeleteRecord}
+                disabled={deleting}
+              >
+                {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* 迁移记录重建弹窗：数据目录被误删后从原路径联接反推记录 */}
       <LinkRecoveryModal
         isOpen={linkRecoveryOpen}

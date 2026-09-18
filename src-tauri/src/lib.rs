@@ -346,6 +346,25 @@ fn apply_saved_window_size(window: &tauri::WebviewWindow) {
     }
 }
 
+/// 启动时需要告知用户的提示队列（迁移中断、重启删除复核等，取走即清空）
+static STARTUP_NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 取走启动提示，前端按顺序逐个弹出
+#[tauri::command]
+fn take_startup_notices() -> Vec<String> {
+    STARTUP_NOTICES
+        .lock()
+        .map(|mut notices| std::mem::take(&mut *notices))
+        .unwrap_or_default()
+}
+
+/// 追加一条启动提示
+fn push_startup_notice(notice: String) {
+    if let Ok(mut notices) = STARTUP_NOTICES.lock() {
+        notices.push(notice);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(feature = "portable")]
@@ -365,6 +384,19 @@ pub fn run() {
             // 窗口尚未显示，此时套用记忆尺寸不会出现尺寸跳动
             if let Some(window) = app.get_webview_window("main") {
                 apply_saved_window_size(&window);
+            }
+
+            // 上次迁移在"改名 → 建链接"之间被中断时，先把备份还原回原路径，
+            // 否则原路径缺失会让应用直接不可用；提示交给前端弹一次 toast
+            if let Some(notice) = storage::pending_migration::recover_interrupted_migration() {
+                log_warn!("migration", "{}", notice);
+                push_startup_notice(notice);
+            }
+
+            // 核对上次安排的"重启后删除"是否真的生效（卸载残留清理用）
+            if let Some(notice) = storage::reboot_cleanup::verify_pending().into_notice() {
+                log_warn!("uninstall", "{}", notice.replace('\n', " | "));
+                push_startup_notice(notice);
             }
 
             let app_handle = app.handle().clone();
@@ -396,6 +428,7 @@ pub fn run() {
             // 系统接口
             system::disk_usage::get_disk_usage,
             frontend_ready,
+            take_startup_notices,
             is_portable_build,
             get_viap_install_path,
             verify_file_integrity,
@@ -422,6 +455,7 @@ pub fn run() {
             storage::history::get_migrated_paths,
             storage::history::restore_app,
             storage::history::cleanup_broken_record,
+            storage::history::delete_migration_record,
             storage::history::remigrate_ghost_link,
             storage::history::check_link_status,
             storage::history::clean_ghost_links,
@@ -458,6 +492,12 @@ pub fn run() {
             uninstall_application,
             scan_app_residue,
             execute_cleanup,
+            app_manager::pre_uninstall::get_pre_uninstall_info,
+            app_manager::uninstall_snapshot::begin_uninstall_snapshot,
+            app_manager::uninstall_snapshot::diff_uninstall_snapshot,
+            app_manager::uninstall_report::save_uninstall_report,
+            uninstaller::list_app_processes,
+            uninstaller::kill_app_processes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

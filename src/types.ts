@@ -55,6 +55,10 @@ export interface UninstallResult {
   command: string | null;
   // 扫描出的残留项目
   leftovers: LeftoverItem[];
+  // 本次实际释放的字节数
+  freed_bytes?: number;
+  // 因文件被占用而安排到重启后自动删除的项目
+  scheduled_for_reboot?: string[];
 }
 
 /**
@@ -78,6 +82,100 @@ export interface CleanupResult {
   cleaned_count: number;
   // 清理失败项
   failed_items: string[];
+  // 本次实际释放的字节数
+  freed_bytes?: number;
+  // 因文件被占用而安排到重启后自动删除的项目
+  scheduled_for_reboot?: string[];
+}
+
+/** 应用相关进程（强力删除前提示用户先结束它们） */
+export interface AppProcessInfo {
+  pid: number;
+  name: string;
+  exe_path: string;
+}
+
+/** 结束进程结果 */
+export interface ProcessKillResult {
+  killed: number;
+  failed: string[];
+}
+
+/** MS Store / UWP 包信息（存在时可走系统组件移除） */
+export interface AppxPackage {
+  name: string;
+  package_full_name: string;
+  install_location: string;
+}
+
+/** 系统痕迹类型：服务 / 驱动 / 计划任务 */
+export type SystemTraceKind = 'service' | 'driver' | 'task';
+
+/** 系统痕迹条目（只提示，不自动删除） */
+export interface SystemTrace {
+  kind: SystemTraceKind;
+  name: string;
+  detail: string;
+}
+
+/** 卸载前提示信息（一次调用同时拿到商店包与系统痕迹） */
+export interface PreUninstallInfo {
+  store_package: AppxPackage | null;
+  system_traces: SystemTrace[];
+}
+
+/** 快照采集摘要 */
+export interface SnapshotSummary {
+  created_at: number;
+  location_count: number;
+  entry_count: number;
+  uninstall_entry_count: number;
+}
+
+/** 快照差异条目 */
+export interface SnapshotDiffEntry {
+  group: string;
+  name: string;
+  /** certain：安装目录/应用注册表键；uncertain：公共目录顶层项，需人工确认归属 */
+  confidence: 'certain' | 'uncertain';
+}
+
+/** 卸载前后差异 */
+export interface UninstallSnapshotDiff {
+  has_snapshot: boolean;
+  created_at: number;
+  appeared: SnapshotDiffEntry[];
+  disappeared: SnapshotDiffEntry[];
+  remaining: SnapshotDiffEntry[];
+  /** 卸载前安装目录体积（字节） */
+  install_dir_bytes_before: number;
+  /** 生成报告时安装目录体积（字节） */
+  install_dir_bytes_after: number;
+}
+
+/** 保存卸载报告结果 */
+export interface SaveReportOutcome {
+  path: string;
+  pruned_count: number;
+}
+
+/** 卸载报告数据（前端汇总，用于展示与复制） */
+export interface UninstallReportData {
+  appName: string;
+  installLocation: string;
+  /** 列表里已知的安装目录体积（字节），用于"预计释放" */
+  estimatedBytes: number;
+  /** 实际释放：卸载阶段 + 残留清理阶段 */
+  uninstallFreedBytes: number;
+  cleanupFreedBytes: number;
+  /** 清理失败的项目 */
+  failedItems: string[];
+  /** 已安排重启后删除的项目 */
+  scheduledForReboot: string[];
+  systemTraces: SystemTrace[];
+  storePackage: AppxPackage | null;
+  /** 卸载前后对比（未采集快照时为 null） */
+  snapshotDiff: UninstallSnapshotDiff | null;
 }
 
 /** 幽灵链接预览条目 */

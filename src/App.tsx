@@ -2,7 +2,7 @@
 // 企业级模块化设计
 // 集成主题系统，支持浅色/深色/跟随系统三种模式
 
-import { useEffect, useState, createContext, useContext, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, createContext, useContext, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FolderSync, FolderArchive, History, Settings as SettingsIcon } from 'lucide-react';
 import TitleBar from './components/TitleBar';
@@ -13,6 +13,7 @@ import LargeFolders from './pages/LargeFolders';
 import MigrationHistory from './pages/MigrationHistory';
 import Settings from './pages/Settings';
 import StartupScreen from './components/StartupScreen';
+import Toast, { useToast } from './components/Toast';
 import { DiskUsage, TabType } from './types';
 import { useTheme, ThemeMode, ResolvedTheme } from './hooks/useTheme';
 import './App.css';
@@ -73,6 +74,9 @@ function App() {
   const [diskLoading, setDiskLoading] = useState(true);
   const [diskRefreshing, setDiskRefreshing] = useState(false);
   const [startupVisible, setStartupVisible] = useState(true);
+  const { toast, showToast, hideToast } = useToast();
+  // 启动提示（迁移中断自动还原、重启删除复核结果等）：一次取回，逐个弹出
+  const [startupNotices, setStartupNotices] = useState<string[]>([]);
 
   // 初始化主题系统
   const themeState = useTheme();
@@ -112,6 +116,33 @@ function App() {
       invoke('frontend_ready').catch(() => {});
     });
   }, []);
+
+  useEffect(() => {
+    // 启动时后端可能已自动还原中断的迁移、并复核了重启删除项，这里取回提示逐个展示
+    invoke<string[]>('take_startup_notices')
+      .then((notices) => {
+        if (notices.length > 0) setStartupNotices(notices);
+      })
+      .catch(() => {
+        // 旧版本后端没有该命令：忽略即可，不影响启动
+      });
+  }, []);
+
+  // 队列里的第一条用 toast 展示；关闭后自动展示下一条
+  useEffect(() => {
+    if (startupNotices.length === 0) return;
+    showToast(startupNotices[0], 'info', 15000);
+  }, [startupNotices, showToast]);
+
+  // 关闭的是启动提示时才出队：页面自己的提示（迁移成功等）不应吃掉启动提示
+  const handleToastClose = useCallback(() => {
+    const currentNotice = startupNotices[0];
+    const isStartupNotice = currentNotice !== undefined && toast.message === currentNotice;
+    hideToast();
+    if (isStartupNotice) {
+      setStartupNotices(previous => previous.slice(1));
+    }
+  }, [hideToast, startupNotices, toast.message]);
 
   useEffect(() => {
     // 非首屏页面按需挂载，避免启动时一次初始化全部模块造成白屏等待。
@@ -173,6 +204,15 @@ function App() {
 
         {/* 标题栏下方：更新通知条 */}
         <UpdateNotification />
+
+        {/* 启动兜底提示：后端启动时已还原中断的迁移、复核重启删除项，这里只负责告知 */}
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          visible={toast.visible}
+          duration={toast.duration ?? 10000}
+          onClose={handleToastClose}
+        />
 
         {/* 页面内容区域 — CSS display 切换，组件实例保持存活，opacity 过渡动画 */}
         <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)', position: 'relative' }}>

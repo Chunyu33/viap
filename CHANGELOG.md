@@ -2,6 +2,13 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.2.1
+
+- Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.
+- Safer migrations: drive roots, the user profile root, Program Files roots and other system locations, as well as folders that are already a link, are refused; nested links are recreated on the target drive, an interrupted migration is rolled back on the next launch, and overwriting a leftover target moves it to the recycle bin so a misjudged overwrite can be undone.
+- Faster migrations and roomier pages: scanning and lock checking share a single pass, the lock check shows progress and can be turned off, same-drive moves skip the pointless pre-checks.
+- Stronger uninstall: Viap waits until the uninstaller has really finished before scanning for leftovers, related processes are listed and can be closed with one click, files that stay locked are queued for the next reboot and verified on the next launch, registry entries that need higher rights are retried with elevation and entries that are already gone are no longer reported as failures, app folders whose name contains words like windows or tauri are no longer mistaken for system folders and refused, and the report shows the real size before and after with the freed space; leftover scanning covers Start Menu, LocalLow and Program Files, matching services, drivers and scheduled tasks are listed, and MS Store apps are removed through the system component interface.
+
 ## v1.2.0
 
 - Lost migration records can be rebuilt: pick the original folder on the Migration Records page, confirm, and the records are regenerated. Recovering the same folder twice is detected and skipped, and rebuilt records fill in their size automatically.

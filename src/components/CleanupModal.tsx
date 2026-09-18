@@ -2,8 +2,19 @@
 // 极简风格：半透明背景 + 高对比风险操作按钮
 
 import { useMemo } from 'react';
-import { AlertTriangle, Check, LoaderCircle, ScanSearch, Trash2, X } from 'lucide-react';
-import { LeftoverItem } from '../types';
+import { AlertTriangle, Check, LoaderCircle, ScanSearch, Server, Trash2, X } from 'lucide-react';
+import { AppProcessInfo, LeftoverItem, SystemTrace } from '../types';
+
+/** 残留类型展示名：后端用稳定标识（Folder/File/Registry），本地化放在展示层 */
+const LEFTOVER_TYPE_LABELS: Record<string, string> = {
+  Folder: '文件夹',
+  File: '文件',
+  Registry: '注册表',
+};
+
+function formatLeftoverType(itemType: string): string {
+  return LEFTOVER_TYPE_LABELS[itemType] ?? itemType;
+}
 
 interface CleanupModalProps {
   isOpen: boolean;
@@ -14,6 +25,12 @@ interface CleanupModalProps {
   onClose: () => void;
   onToggleItem: (path: string) => void;
   onConfirm: () => void;
+  /** 正在运行的相关进程：删除前提示用户先结束它们，否则文件会删不掉 */
+  appProcesses?: AppProcessInfo[];
+  onKillProcesses?: () => void;
+  killingProcesses?: boolean;
+  /** 残留的服务 / 驱动 / 计划任务：只提示，Viap 不会自动删除 */
+  systemTraces?: SystemTrace[];
 }
 
 function formatItemSize(sizeMb: number): string {
@@ -31,6 +48,10 @@ export default function CleanupModal({
   onClose,
   onToggleItem,
   onConfirm,
+  appProcesses = [],
+  onKillProcesses,
+  killingProcesses = false,
+  systemTraces = [],
 }: CleanupModalProps) {
   const selectedCount = useMemo(() => items.filter((item) => item.selected).length, [items]);
 
@@ -76,6 +97,46 @@ export default function CleanupModal({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* 相关进程：仍在运行的程序会导致删除失败，先让用户处理掉 */}
+        {appProcesses.length > 0 && (
+          <div className="mx-5 mt-3 rounded-lg px-3 py-2.5" style={{ background: 'var(--color-warning-light)' }}>
+            <p className="text-[12px] font-medium" style={{ color: 'var(--color-warning)' }}>
+              <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+              检测到 {appProcesses.length} 个相关进程正在运行，删除会失败
+            </p>
+            <p className="mt-1 text-[11px] truncate" style={{ color: 'var(--text-secondary)' }} title={appProcesses.map(p => `${p.name} (${p.pid})`).join('、')}>
+              {appProcesses.map(p => `${p.name} (${p.pid})`).join('、')}
+            </p>
+            {onKillProcesses && (
+              <button
+                onClick={onKillProcesses}
+                disabled={killingProcesses || loading}
+                className="btn h-7 text-[11px] mt-2"
+              >
+                {killingProcesses ? <LoaderCircle className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                {killingProcesses ? '结束中...' : '结束这些进程'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 系统痕迹：服务/驱动/计划任务删不掉也不该由工具删，如实告知用户 */}
+        {systemTraces.length > 0 && (
+          <div className="mx-5 mt-3 rounded-lg px-3 py-2.5" style={{ background: 'var(--bg-row)' }}>
+            <p className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+              <Server className="w-3.5 h-3.5 inline mr-1" />
+              检测到 {systemTraces.length} 项系统痕迹（需手动处理）
+            </p>
+            <div className="mt-1 max-h-[72px] overflow-y-auto text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+              {systemTraces.map((trace) => (
+                <div key={`${trace.kind}-${trace.name}`} className="break-all">
+                  · [{trace.kind === 'service' ? '服务' : trace.kind === 'driver' ? '驱动' : '计划任务'}] {trace.name}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 体部 */}
         <div className="overflow-y-auto px-5 py-3" style={{ maxHeight: 'min(360px, 50vh)' }}>
@@ -132,7 +193,7 @@ export default function CleanupModal({
                   </div>
                   <div className="min-w-0 flex-1 ml-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="badge badge-primary" style={{ fontSize: '10px' }}>{item.item_type}</span>
+                      <span className="badge badge-primary" style={{ fontSize: '10px' }}>{formatLeftoverType(item.item_type)}</span>
                       <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', flexShrink: 0 }}>
                         {formatItemSize(item.size_mb)}
                       </span>

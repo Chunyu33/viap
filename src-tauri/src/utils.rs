@@ -109,30 +109,46 @@ pub fn expand_env_vars(path_str: &str) -> String {
 /// 返回 (可用空间, 所需空间) 或错误
 pub fn check_disk_space_for_restore(target_dir: &Path, required_bytes: u64) -> Result<(u64, u64), String> {
     let required_with_buffer = (required_bytes as f64 * 1.1) as u64;
+    let available = available_space_for_path(target_dir)
+        .ok_or_else(|| format!("未找到目标磁盘: {}", target_dir.display()))?;
 
-    let target_str = target_dir.to_string_lossy();
-    let drive_prefix = if target_str.len() >= 2 && target_str.as_bytes()[1] == b':' {
-        format!("{}\\", &target_str[..2])
-    } else {
-        return Err("无法确定目标盘符".to_string());
-    };
-
-    let disks = Disks::new_with_refreshed_list();
-    for disk in disks.list() {
-        let mount = disk.mount_point().to_string_lossy().to_string();
-        if mount.starts_with(&drive_prefix[..1]) || mount.eq_ignore_ascii_case(&drive_prefix) {
-            let available = disk.available_space();
-            if available < required_with_buffer {
-                return Err(format!(
-                    "目标磁盘空间不足：需要 {} 字节（含 10% 缓冲），可用 {} 字节",
-                    required_with_buffer, available
-                ));
-            }
-            return Ok((available, required_with_buffer));
-        }
+    if available < required_with_buffer {
+        return Err(format!(
+            "目标磁盘空间不足：需要 {} 字节（含 10% 缓冲），可用 {} 字节",
+            required_with_buffer, available
+        ));
     }
+    Ok((available, required_with_buffer))
+}
 
-    Err(format!("未找到目标磁盘: {}", drive_prefix))
+/// 查询路径所在卷的可用空间
+///
+/// 挂载点必须按"完整路径分隔边界"匹配，否则以盘符首字母比较会把 `C:\` 误判成
+/// 任何以 C 开头的挂载点（如 CD-ROM 或自定义挂载目录），从而读到错误的可用空间。
+pub fn available_space_for_path(path: &Path) -> Option<u64> {
+    let path_upper = path.to_string_lossy().to_uppercase();
+    Disks::new_with_refreshed_list()
+        .list()
+        .iter()
+        .filter_map(|disk| {
+            let mount = disk.mount_point().to_string_lossy().to_uppercase();
+            let mount_clean = mount.trim_end_matches('\\');
+            if mount_clean.is_empty() {
+                return None;
+            }
+            // 匹配完整路径分隔边界，避免 C: 误匹配 CD: 或 C:\Mount\Disk2
+            let is_match = path_upper == mount_clean
+                || (path_upper.starts_with(mount_clean)
+                    && path_upper.as_bytes().get(mount_clean.len()) == Some(&b'\\'));
+            if is_match {
+                Some((mount_clean.len(), disk.available_space()))
+            } else {
+                None
+            }
+        })
+        // 多个挂载点匹配时选最长（最具体）的那个
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, space)| space)
 }
 
 /// 获取实际的 app_data_templates.json 路径
@@ -148,4 +164,87 @@ pub fn custom_folders_path(data_dir: &Path) -> PathBuf {
 /// 获取 migration_history.json 路径
 pub fn history_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join("migration_history.json")
+}
+
+// ============================================================================
+// 长路径支持
+// ============================================================================
+
+/// 把路径转换为 Win32 扩展长度（`\\?\`）宽字符形式，供原生 API 调用使用
+///
+/// # 为什么需要
+///
+/// Viap 的可执行文件没有声明 `longPathAware`，而注册表的长路径策略只对声明过的
+/// 进程生效，因此 `CopyFileExW` / `MoveFileExW` 这类 Win32 API 在路径超过 260 字符时
+/// 会返回 `ERROR_PATH_NOT_FOUND(3)`。Rust 标准库内部会自动加前缀，原生调用不会——
+/// 这就是 Yarn / npm 缓存（目录名很长）迁移报「错误码 3」的根因。
+///
+/// # 边界
+///
+/// 扩展长度形式不做路径归一化：`.` / `..` 不会被解析，相对路径也无法使用，
+/// 因此只对「绝对路径且不含这两个分量」的路径加前缀，其余情况退回普通形式，
+/// 与修复前的行为保持一致。
+pub fn to_extended_length_wide(path: &Path) -> Vec<u16> {
+    let text = path.to_string_lossy().replace('/', "\\");
+    extend_win32_path(&text)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// 为绝对路径加 `\\?\` 前缀；UNC 路径需要 `\\?\UNC\` 形式
+fn extend_win32_path(text: &str) -> String {
+    if !is_extendable_absolute_path(text) {
+        return text.to_string();
+    }
+    if text.starts_with(r"\\?\") {
+        return text.to_string();
+    }
+    if let Some(unc_rest) = text.strip_prefix(r"\\") {
+        return format!(r"\\?\UNC\{}", unc_rest);
+    }
+    format!(r"\\?\{}", text)
+}
+
+/// 判断路径是否可以安全地套用扩展长度前缀
+fn is_extendable_absolute_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let has_drive_prefix = bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\';
+    let is_unc_prefix = text.starts_with(r"\\");
+    if !has_drive_prefix && !is_unc_prefix {
+        return false;
+    }
+    !text.split('\\').any(|part| part == "." || part == "..")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_length_path_covers_drive_unc_and_fallbacks() {
+        let to_text = |path: &str| {
+            let wide = to_extended_length_wide(Path::new(path));
+            String::from_utf16_lossy(&wide[..wide.len() - 1])
+        };
+
+        // 盘符绝对路径：统一加 \\?\ 前缀，并归一化正斜杠
+        assert_eq!(to_text(r"C:\a\b.bin"), r"\\?\C:\a\b.bin");
+        assert_eq!(to_text("C:/a/b.bin"), r"\\?\C:\a\b.bin");
+        // 已有前缀不重复添加；UNC 路径使用 \\?\UNC\ 形式
+        assert_eq!(to_text(r"\\?\C:\a"), r"\\?\C:\a");
+        assert_eq!(to_text(r"\\server\share\a"), r"\\?\UNC\server\share\a");
+        // 相对路径和含 . / .. 的路径必须保持原样，否则会变成非法路径
+        assert_eq!(to_text(r"a\b"), r"a\b");
+        assert_eq!(to_text(r"C:\a\..\b"), r"C:\a\..\b");
+    }
+    #[test]
+    fn available_space_lookup_matches_volume_boundaries() {
+        // 临时目录所在卷必须能查到可用空间
+        let available = available_space_for_path(&std::env::temp_dir());
+        assert!(available.map(|value| value > 0).unwrap_or(false));
+
+        // 不存在的盘符不能匹配到别的卷（旧实现按首字母匹配会误判）
+        assert!(available_space_for_path(Path::new(r"Z:\not-exist")).is_none());
+    }
 }

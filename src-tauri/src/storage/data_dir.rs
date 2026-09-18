@@ -203,13 +203,16 @@ const MANAGED_FILE_STEMS: &[&str] = &[
     "ui_settings",
     "uninstall_logs",
 ];
-const MANAGED_DIRECTORY: &str = "cache";
+/// 卸载报告子目录名（用户主动保存的报告放在数据目录下这里）
+pub(crate) const UNINSTALL_REPORTS_DIR_NAME: &str = "uninstall_reports";
+/// 由本程序管理的子目录：图标缓存 / 大小缓存，以及卸载报告
+const MANAGED_DIRECTORIES: &[&str] = &["cache", UNINSTALL_REPORTS_DIR_NAME];
 
 /// 判断数据目录下的某个条目是否由本程序管理
 fn is_managed_entry(file_name: &str, is_dir: bool) -> bool {
     let lower = file_name.to_lowercase();
     if is_dir {
-        return lower == MANAGED_DIRECTORY;
+        return MANAGED_DIRECTORIES.iter().any(|name| lower == *name);
     }
     MANAGED_FILE_STEMS
         .iter()
@@ -228,6 +231,29 @@ fn looks_like_app_cache(path: &Path) -> bool {
         || CACHE_DIRS.iter().any(|name| path.join(name).is_dir())
 }
 
+/// 判断目录是否确实是本程序的受管目录
+///
+/// 数据目录可能同时被用户选作其它用途，同名目录不能无条件搬运/删除：
+/// - cache：必须包含本程序缓存文件
+/// - uninstall_reports：必须包含 json 报告
+fn looks_like_managed_directory(path: &Path, name: &str) -> bool {
+    if name.eq_ignore_ascii_case(UNINSTALL_REPORTS_DIR_NAME) {
+        return std::fs::read_dir(path)
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(|extension| extension.eq_ignore_ascii_case("json"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+    }
+    looks_like_app_cache(path)
+}
+
 /// 复制 Viap 的受管数据到新数据目录，返回复制的文件数
 fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result<u32, String> {
     if paths_overlap(old_dir, new_dir) {
@@ -241,7 +267,10 @@ fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result
         return Ok(0);
     }
 
-    let cache_is_managed = looks_like_app_cache(&old_dir.join(MANAGED_DIRECTORY));
+    let managed_directories: Vec<(&str, bool)> = MANAGED_DIRECTORIES
+        .iter()
+        .map(|name| (*name, looks_like_managed_directory(&old_dir.join(name), name)))
+        .collect();
     let mut copied_files = 0u32;
     for entry in walkdir::WalkDir::new(old_dir).follow_links(false) {
         let entry = entry.map_err(|error| format!("读取数据目录失败: {}", error))?;
@@ -261,11 +290,22 @@ fn migrate_data_files(old_dir: &Path, new_dir: &Path, overwrite: bool) -> Result
             if !is_managed_entry(&first_name, entry.file_type().is_dir()) {
                 continue;
             }
-            if entry.file_type().is_dir() && !cache_is_managed {
+            if entry.file_type().is_dir() {
+                let managed = managed_directories
+                    .iter()
+                    .any(|(name, managed)| *managed && first_name.eq_ignore_ascii_case(name));
+                if !managed {
+                    continue;
+                }
+            }
+        } else {
+            // 子项：只处理受管子目录内部，且该子目录必须通过"确实是我们的"校验
+            let is_managed_subdir = managed_directories.iter().any(|(name, managed)| {
+                *managed && first_name.eq_ignore_ascii_case(name)
+            });
+            if !is_managed_subdir {
                 continue;
             }
-        } else if !first_name.eq_ignore_ascii_case(MANAGED_DIRECTORY) || !cache_is_managed {
-            continue;
         }
 
         // 临时文件可能只写入了一半，不能在新目录中恢复成有效配置。
@@ -315,8 +355,8 @@ fn remove_managed_data_entries(old_dir: &Path) -> Result<u32, String> {
         if !is_managed_entry(&file_name, file_type.is_dir()) {
             continue;
         }
-        // cache 目录只在确认是本程序缓存时才删除，避免误删同名的应用数据
-        if file_type.is_dir() && !looks_like_app_cache(&entry.path()) {
+        // 受管目录只在确认是本程序产物时才删除，避免误删同名的应用数据
+        if file_type.is_dir() && !looks_like_managed_directory(&entry.path(), &file_name) {
             continue;
         }
 

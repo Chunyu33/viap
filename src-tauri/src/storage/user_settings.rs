@@ -42,6 +42,9 @@ pub struct UserSettings {
     /// 自动备份迁移数据（历史、自定义文件夹、应用兜底数据）；关闭后只保留手动备份
     #[serde(default = "default_true")]
     pub auto_backup_enabled: bool,
+    /// 跳过迁移前的逐文件占用检测（大目录迁移更快，但占用问题会在复制阶段才暴露）
+    #[serde(default)]
+    pub skip_lock_check: bool,
     /// 窗口宽度（逻辑像素，随窗口拖动单独保存）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_width: Option<u32>,
@@ -81,6 +84,7 @@ impl Default for UserSettings {
             font_size_px: default_font_size(),
             theme: default_theme(),
             auto_backup_enabled: true,
+            skip_lock_check: false,
             window_width: None,
             window_height: None,
         }

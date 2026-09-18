@@ -2011,9 +2011,8 @@ fn scan_directory_constrained(
         let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if !ft.is_dir() {
-            continue;
-        }
+        // 目录联接在 Windows 上被归类为「重解析点」而非目录（is_dir=false），
+        // 因此必须先判断链接再判断目录，否则迁移后的绿色软件会被整个跳过
         if ft.is_symlink() {
             // 迁移后的目录联接仍需检查是否为可识别应用
             // 绿色软件（无注册表条目）仅靠 Tier3 发现，跳过会导致迁移后消失
@@ -2032,6 +2031,9 @@ fn scan_directory_constrained(
                 }
             }
             continue; // 不递归进入联接内部，避免重复计算
+        }
+        if !ft.is_dir() {
+            continue;
         }
         scan_directory_constrained(
             &entry.path(),

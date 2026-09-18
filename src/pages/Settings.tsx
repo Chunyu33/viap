@@ -623,17 +623,30 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
               </div>
               <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--text-tertiary)' }} />
             </button>
-            <div className="setting-item" style={{ padding: '10px 14px' }}>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
+            <div className="setting-item" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
                   <Trash2 className="w-4 h-4" style={{ color: 'var(--text-secondary)' }} />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="setting-label">删除文件移入回收站</p>
                   <p className="setting-desc">关闭后直接彻底删除</p>
                 </div>
               </div>
               <Toggle active={settings.useRecycleBin} onChange={() => updateSetting('useRecycleBin', !settings.useRecycleBin)} />
+            </div>
+
+            <div className="setting-item" style={{ padding: '10px 14px' }}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                  <ShieldCheck className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div className="min-w-0">
+                  <p className="setting-label">迁移前检测文件占用</p>
+                  <p className="setting-desc">关闭后跳过逐文件检测，大目录迁移更快；占用问题会在复制阶段才发现</p>
+                </div>
+              </div>
+              <Toggle active={!settings.skipLockCheck} onChange={() => updateSetting('skipLockCheck', !settings.skipLockCheck)} />
             </div>
           </div>
         </section>
