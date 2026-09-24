@@ -2,6 +2,11 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.2.2
+
+- The portable build no longer reports a phantom update: it used to say "new version available" on every launch even when you were already on the latest package. The banner now appears only when a genuinely newer version exists, and tells you which version it is.
+- Fixed the size reported for some small tools: a single executable sitting in a shared folder such as an installer collection used to be treated as one app, so the whole folder (tens of GB) counted as its size and a migration would have dragged unrelated files along. Such executables are no longer listed as separate apps.
+
 ## v1.2.1
 
 - Fixed migrations failing with "error code 3" for deeply nested folders such as Yarn and npm caches, and migrated portable apps no longer go missing from the app list.

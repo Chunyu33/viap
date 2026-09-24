@@ -1,6 +1,6 @@
 [package]
 name = "viap"
-version = "1.2.1"
+version = "1.2.2"
 description = "一个应用、数据迁移工具"
 authors = ["Evan Lau"]
 edition = "2021"
@@ -16,6 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# tauri-build 依赖 schemars（host 编译），schemars 的 preserve_order 分支又依赖 indexmap 1.x。
+# resolver v2 下 host 与 target 的 feature 独立解析，因此必须在这里单独启用 indexmap 的 std：
+# indexmap 的 build.rs 只有在收到 CARGO_FEATURE_STD 时才跳过 autocfg 探测（本机探测会失败）。
+indexmap = { version = "1.9", features = ["std"] }
 
 [features]
 # Tauri dev 模式会以 --no-default-features 启动；custom-protocol 只放在默认 feature，
@@ -61,6 +65,10 @@ junction = "1.0"
 minisign-verify = "0.2.5"
 # 仅启用 rustls，避免完整性校验引入系统 TLS 依赖
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
+# indexmap 1.x 默认不带 std，其 build.rs 依赖 autocfg 探测 sysroot 来决定 has_std；
+# 本机 release 构建下该探测返回 false，会让 schemars 的 preserve_order 分支按 no_std 编译
+# （IndexMap<K, V> 缺第三个泛型参数）而报错。显式启用 std 让 build.rs 走直通分支，跳过探测。
+indexmap = { version = "1.9", features = ["std"] }
 
 # Windows API 绑定，用于提取应用图标和原生文件复制
 [target.'cfg(windows)'.dependencies]

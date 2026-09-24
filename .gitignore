@@ -19,6 +19,7 @@ dist-ssr
 .DS_Store
 /.claude
 /.codex
+.workbuddy
 CLAUDE.*
 AGENTS.*
 /docs
