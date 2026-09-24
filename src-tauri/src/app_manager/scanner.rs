@@ -1440,6 +1440,105 @@ fn is_container_directory(path: &Path) -> bool {
     false
 }
 
+/// 判定两个 exe 是否同属一个套件时，词干至少要有这么长的公共部分，
+/// 否则 a / go 这类短名会与大量无关文件误配
+#[cfg(windows)]
+const MIN_RELATED_STEM_CHARS: usize = 4;
+
+/// 判断两个可执行文件词干是否属于同一套件。
+///
+/// 同一套件的可执行文件命名上通常有迹可循（Photoshop / PhotoshopHelper），
+/// 而聚合目录里堆放的 exe 彼此毫无关系（geek / dism++x64 / everything）。
+/// 这个差异正是区分「多 exe 套件」与「多个程序的存放处」的依据。
+#[cfg(windows)]
+fn exe_stems_are_related(left: &str, right: &str) -> bool {
+    let left = left.trim().to_lowercase();
+    let right = right.trim().to_lowercase();
+    // 过短的词干参与比较会大量误配，直接判为无关
+    if left.chars().count() < MIN_RELATED_STEM_CHARS
+        || right.chars().count() < MIN_RELATED_STEM_CHARS
+    {
+        return false;
+    }
+    if left.contains(&right) || right.contains(&left) {
+        return true;
+    }
+    // 共享前缀：覆盖 photoshop / photoshophelper 这类互不包含但前缀一致的命名
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left_char, right_char)| left_char == right_char)
+        .count()
+        >= MIN_RELATED_STEM_CHARS
+}
+
+/// 判断目录是否为「多应用聚合目录」。
+///
+/// 这类目录堆放着多个互不相关的程序——例如专门存放安装包的 `F:\软件安装包`，
+/// 或者解压出来的合集目录。它不属于其中任何一个应用：把整个目录算作单个应用的
+/// 大小时体积会严重虚高（实测有 30GB 的安装包目录被记到一个几 MB 的小工具头上），
+/// 迁移时更会把无关文件一起搬走。
+///
+/// 判定方式：目录名与该 exe 无命名关联，且目录里有其他 exe，但没有任何一个与它
+/// 相关。只要出现一条命名线索（目录名相关或存在同套件 exe），就仍按正常应用目录
+/// 处理，避免误伤多 exe 套件。
+#[cfg(windows)]
+fn is_aggregate_directory(dir: &Path, exe_path: &Path) -> bool {
+    let target_stem = exe_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    if target_stem.is_empty() {
+        return false;
+    }
+
+    // 目录名与 exe 名相关时，目录很可能就是这个应用的安装根，无需继续判断
+    let dir_name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !dir_name.is_empty() && exe_stems_are_related(dir_name, target_stem) {
+        return false;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let target_key = normalize_path(&exe_path.to_string_lossy());
+    let mut has_related_sibling = false;
+    let mut has_unrelated_sibling = false;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        // 自身不算「同目录的其他 exe」
+        if normalize_path(&path.to_string_lossy()) == target_key {
+            continue;
+        }
+        let is_exe = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false);
+        if !is_exe {
+            continue;
+        }
+        let sibling_stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        if exe_stems_are_related(sibling_stem, target_stem) {
+            has_related_sibling = true;
+            break;
+        }
+        has_unrelated_sibling = true;
+    }
+
+    // 目录里有其他 exe，却没有任何一个与目标相关 → 这里只是多个程序的存放处
+    has_unrelated_sibling && !has_related_sibling
+}
+
 /// 验证 `dir` 是否是 `exe_path` 的合法安装目录。
 ///
 /// 判定逻辑（满足任意一条即通过）：
@@ -1452,6 +1551,13 @@ fn is_container_directory(path: &Path) -> bool {
 /// 全部不满足 → 该目录只是一个容器，exe 是孤立文件，不能作为安装目录
 #[cfg(windows)]
 fn validate_install_dir(dir: &Path, exe_path: &Path) -> bool {
+    // 前置否决：聚合目录里的 exe 不算独立应用。
+    // 必须放在最前——下方的「同目录还有其他 exe」判据本意是识别多 exe 套件，
+    // 但聚合目录里恰好堆满互不相关的 exe，反而会变成它通过验证的理由。
+    if is_aggregate_directory(dir, exe_path) {
+        return false;
+    }
+
     // 条件1：目录名与 exe 名相关
     let dir_name = dir
         .file_name()
@@ -2061,6 +2167,12 @@ fn maybe_push_app(
     if is_container_directory(dir) {
         return;
     }
+    // 聚合目录同理：目录里堆着多个互不相关的 exe 时，把它整个登记为某个应用的
+    // 安装根会让大小严重虚高、迁移连带搬走无关文件。Tier 3 的评分只看「目录里有
+    // 几个 exe」，无法区分套件与聚合，需要在这里补一道否决。
+    if is_aggregate_directory(dir, exe_path) {
+        return;
+    }
     let install_location = dir.to_string_lossy().to_string();
     let loc_key = normalize_path(&install_location);
     let exe_key = normalize_path(&exe_path.to_string_lossy());
@@ -2262,5 +2374,46 @@ mod tests {
         let _ = fs::write(&dll, b"MZ");
         assert!(validate_install_dir(&tmp, &exe));
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_rejects_exe_isolated_in_aggregate_directory() {
+        // 复现用户反馈：安装在「软件安装包」这类聚合目录里的单文件小工具，
+        // 目录中其他安装包不该被算进它的大小、也不该被一起迁移
+        let tmp = std::env::temp_dir().join("viap_test_aggregate_dir");
+        let _ = fs::create_dir_all(&tmp);
+        let tool = tmp.join("geek.exe");
+        let _ = fs::write(&tool, b"MZ");
+        let _ = fs::write(tmp.join("dism++x64.exe"), b"MZ");
+        let _ = fs::write(tmp.join("everything-1.4.exe"), b"MZ");
+
+        assert!(is_aggregate_directory(&tmp, &tool));
+        assert!(!validate_install_dir(&tmp, &tool));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_keeps_multi_exe_suite_in_own_directory() {
+        // 同套件的多 exe 目录必须仍被接受，不能被聚合目录判据误伤
+        let tmp = std::env::temp_dir().join("viap_test_suite_dir");
+        let _ = fs::create_dir_all(&tmp);
+        let main_exe = tmp.join("MySuite.exe");
+        let _ = fs::write(&main_exe, b"MZ");
+        let _ = fs::write(tmp.join("MySuiteHelper.exe"), b"MZ");
+
+        assert!(!is_aggregate_directory(&tmp, &main_exe));
+        assert!(validate_install_dir(&tmp, &main_exe));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_related_stem_matching_ignores_short_names() {
+        // 短词干参与比较会大量误配，必须判为无关
+        assert!(!exe_stems_are_related("a", "abc"));
+        assert!(!exe_stems_are_related("go", "goland"));
+        assert!(exe_stems_are_related("MyApp", "myapp"));
+        assert!(exe_stems_are_related("photoshop", "photoshophelper"));
     }
 }
