@@ -19,6 +19,7 @@ mod system;
 mod storage;
 mod folder_manager;
 mod integrity;
+mod portable_update;
 
 use std::sync::atomic::Ordering;
 
@@ -430,6 +431,7 @@ pub fn run() {
             frontend_ready,
             take_startup_notices,
             is_portable_build,
+            portable_update::check_portable_update,
             get_viap_install_path,
             verify_file_integrity,
             // 存储层 — 数据目录

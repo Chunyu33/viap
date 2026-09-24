@@ -41,7 +41,7 @@ Viap is designed to keep a usable data copy until the migration switch has been 
 
 - **Standard installer**: installed application with update support.
 - **WebView2 offline installer**: includes the WebView2 runtime for systems that cannot download it during installation.
-- **Portable ZIP**: extract and run without installation. User data is stored beside the application in `data`; portable builds do not check for updates automatically. Download new versions manually from [GitHub Releases](https://github.com/Chunyu33/viap/releases) or [Quark Drive](https://pan.quark.cn/s/4761ee4ba698).
+- **Portable ZIP**: extract and run without installation. User data is stored beside the application in `data`; portable builds cannot update themselves, but they do check for new versions and will point you to a manual download from [GitHub Releases](https://github.com/Chunyu33/viap/releases) or [Quark Drive](https://pan.quark.cn/s/4761ee4ba698).
 
 On first launch, the portable build can copy missing data from an existing Viap installation. Existing installation data is not deleted.
 

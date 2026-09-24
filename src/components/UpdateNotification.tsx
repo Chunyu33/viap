@@ -11,7 +11,7 @@ import { ArrowDownToLine, Loader2, X } from 'lucide-react';
 export default function UpdateNotification() {
   const {
     status, updateInfo, downloadProgress,
-    isPortable, checkForUpdate, downloadAndInstall, dismiss,
+    isPortable, portableUpdate, checkForUpdate, downloadAndInstall, dismiss,
   } = useUpdater();
   const [portableNoticeVisible, setPortableNoticeVisible] = useState(true);
 
@@ -29,11 +29,13 @@ export default function UpdateNotification() {
     return () => clearTimeout(timer);
   }, [checkForUpdate, isPortable]);
 
-  if (isPortable && !portableNoticeVisible) {
-    return null;
-  }
-
   if (isPortable) {
+    // 只有后端确认线上版本确实更高时才提示：版本相同或无法确认时整条横幅不出现，
+    // 避免拿着最新包的用户每次启动都被提示"发现新版本"。
+    const latestVersion = portableUpdate?.has_update === true ? portableUpdate.latest_version : null;
+    if (latestVersion === null || !portableNoticeVisible) {
+      return null;
+    }
     return (
       <div
         style={{
@@ -43,7 +45,7 @@ export default function UpdateNotification() {
         }}
       >
         <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-primary)' }}>
-          发现新版本。便携版不提供自动更新，请从 GitHub Releases 或作者提供的网盘手动下载最新版本。
+          发现新版本 v{latestVersion}。便携版不提供自动更新，请从 GitHub Releases 或作者提供的网盘手动下载最新版本。
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <button

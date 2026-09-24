@@ -41,7 +41,7 @@ Viap 会尽量保证迁移切换完成并验证成功后才清理源目录，但
 
 - **普通安装版**：安装运行，支持自动更新。
 - **WebView2 离线安装版**：安装包内置 WebView2 运行环境，适合无法联网下载安装运行环境的电脑。
-- **便携版 ZIP**：解压后直接运行，无需安装。用户数据默认保存在程序目录下的 `data` 文件夹；便携版不会自动检查更新，请从 [GitHub Releases](https://github.com/Chunyu33/viap/releases) 或[夸克网盘](https://pan.quark.cn/s/4761ee4ba698)手动下载新版本。
+- **便携版 ZIP**：解压后直接运行，无需安装。用户数据默认保存在程序目录下的 `data` 文件夹；便携版不支持自动更新，检测到新版本后会提示你从 [GitHub Releases](https://github.com/Chunyu33/viap/releases) 或[夸克网盘](https://pan.quark.cn/s/4761ee4ba698)手动下载。
 
 便携版首次启动时可以从已有 Viap 安装中复制缺失数据，不会删除原安装版数据。
 

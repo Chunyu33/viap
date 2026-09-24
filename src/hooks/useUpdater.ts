@@ -26,12 +26,21 @@ export interface UpdateInfo {
   pubDate: string;
 }
 
+/** 便携版更新检查结果，字段名与后端 PortableUpdateCheck 保持一致 */
+export interface PortableUpdateInfo {
+  has_update: boolean;
+  latest_version: string;
+  current_version: string;
+}
+
 export function useUpdater() {
   const [status, setStatus] = useState<UpdateStatus>('idle');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isPortable, setIsPortable] = useState<boolean | null>(null);
+  // 便携版更新信息：null 表示"无法确认"（网络失败或限流），此时前端保持静默
+  const [portableUpdate, setPortableUpdate] = useState<PortableUpdateInfo | null>(null);
   // 保存 Update 对象引用，避免 downloadAndInstall 闭包过期
   const updateRef = useRef<Update | null>(null);
   // 取消标志：用户 dismiss 后阻止后台下载完成后的 relaunch
@@ -43,6 +52,22 @@ export function useUpdater() {
       .then(setIsPortable)
       .catch(() => setIsPortable(false));
   }, []);
+
+  useEffect(() => {
+    // 便携版不做自动更新，但必须确认真有新版才提示：
+    // 否则用户拿到的已经是最新包，每次启动却看到"发现新版本"。
+    if (isPortable !== true) return;
+    let cancelled = false;
+    invoke<PortableUpdateInfo | null>('check_portable_update')
+      .then((result) => {
+        // 后端返回 null 代表无法确认（断网、限流等），保持 null 即不提示
+        if (!cancelled && result) setPortableUpdate(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isPortable]);
 
   const checkForUpdate = useCallback(async (): Promise<Update | null> => {
     if (isPortable !== false) {
@@ -138,6 +163,7 @@ export function useUpdater() {
     downloadProgress,
     error,
     isPortable,
+    portableUpdate,
     updateRef,
     checkForUpdate,
     downloadAndInstall,
