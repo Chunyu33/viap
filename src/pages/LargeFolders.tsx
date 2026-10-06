@@ -9,7 +9,7 @@ import {
   RefreshCw, FolderOpen, AlertTriangle,
   Link2, Undo2, Plus, X, Loader2, Check,
   Monitor, FileText, Download, Image, Video,
-  MessageCircle, Building2, Users, Phone, Bird, Globe, Code, Package, Palette, Film, ArrowRightLeft,
+  MessageCircle, Building2, Users, Phone, Bird, Send, Globe, Code, Package, Palette, Film, ArrowRightLeft,
 } from 'lucide-react';
 import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
@@ -48,6 +48,7 @@ function getFolderIcon(iconId: string) {
     qq: <Users className="w-4 h-4" />,
     dingtalk: <Phone className="w-4 h-4" />,
     feishu: <Bird className="w-4 h-4" />,
+    telegram: <Send className="w-4 h-4" />,
     chrome_cache: <Globe className="w-4 h-4" />,
     edge_cache: <Globe className="w-4 h-4" />,
     vscode_extensions: <Code className="w-4 h-4" />,
@@ -78,8 +79,16 @@ function getFolderIcon(iconId: string) {
     ollama_data: <Code className="w-4 h-4" />,
     comfyui_data: <Code className="w-4 h-4" />,
     gemini_data: <Code className="w-4 h-4" />,
+    // 新增的 AI 客户端共用「代码」图标；模型缓存用「包」图标，扫列表时一眼能分出大类。
+    ai_data: <Code className="w-4 h-4" />,
+    ai_models: <Package className="w-4 h-4" />,
   };
   return map[iconId] || <FolderOpen className="w-4 h-4" />;
+}
+
+/** 比较路径时用的归一化形式：去掉尾部斜杠、统一分隔符与大小写 */
+function normalizePathForCompare(path: string): string {
+  return path.replace(/[/\\]+$/, '').replace(/\//g, '\\').toLowerCase();
 }
 
 /** 从 localStorage 读取默认数据迁移目录，仅非 C 盘路径有效 */
@@ -946,6 +955,19 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
       showToast(dangerMsg, 'error');
       return;
     }
+    // 内置优先：命中的目录已经在列表里（内置条目带图标与进程名，信息更全），
+    // 这里直接提示并中止，避免同一目录在「应用数据」和「自定义文件夹」各出现一次。
+    const target = normalizePathForCompare(selectedPath as string);
+    const covered = folders.find((f) => normalizePathForCompare(f.path) === target);
+    if (covered) {
+      showToast(
+        covered.folder_type === 'Custom'
+          ? `「${covered.display_name}」已经在列表里了`
+          : `该目录已由内置的「${covered.display_name}」覆盖，无需再添加`,
+        'info',
+      );
+      return;
+    }
     try {
       await invoke('add_custom_folder', { path: selectedPath as string });
       showToast('文件夹已添加', 'success');
@@ -1059,11 +1081,19 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
                 {appDataFolders.length > 0 && (
                   <section>
                     <div className="flex items-center justify-between px-2 mb-1.5">
-                      <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>应用数据</span>
+                      {/* 列表只展示检测到的目录，没装的或不在这几个已知位置的应用不会出现，
+                          这里把规则说明白，避免用户以为「装了却不见了」 */}
+                      <span
+                        className="text-[12px] font-semibold"
+                        title="只列出本机确实存在的目录：没安装的应用、或数据不在已知位置的应用不会显示；想迁移其它位置可以添加到「自定义文件夹」"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        应用数据
+                      </span>
                       <div className="flex items-center gap-2">
                         {!appDataLoaded && !appDataScanning && (
                           <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-                            默认不扫描，避免机械硬盘冷启动卡顿
+                            只列出本机存在的目录 · 默认不扫描体积
                           </span>
                         )}
                         {appDataScanning && (

@@ -16,6 +16,9 @@ pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
         template("qq", "QQ", "qq", &["QQ.exe"], None),
         template("dingtalk", "钉钉", "dingtalk", &["DingTalk.exe"], None),
         template("feishu", "飞书", "feishu", &["Lark.exe", "Feishu.exe"], None),
+        // Telegram 桌面版把消息、媒体与账号全都放在这一个目录里，是典型的大目录。
+        // 便携版会把 tdata 放在程序同级目录，那种情况这里检测不到。
+        template("telegram", "Telegram 数据", "telegram", &["Telegram.exe"], Some(r"%APPDATA%\Telegram Desktop")),
         template("chrome_cache", "Chrome 缓存", "chrome_cache", &["chrome.exe"], None),
         template("edge_cache", "Edge 缓存", "edge_cache", &["msedge.exe"], None),
         template("vscode_extensions", "VS Code 扩展", "vscode_extensions", &["code.exe"], None),
@@ -41,6 +44,42 @@ pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
         template("ollama_data", "Ollama 数据", "ollama_data", &["ollama.exe"], Some(r"%USERPROFILE%\.ollama")),
         template("comfyui_data", "ComfyUI 数据", "comfyui_data", &["python.exe"], Some(r"%USERPROFILE%\.comfyui")),
         template("gemini_data", "Gemini CLI 数据", "gemini_data", &["node.exe"], Some(r"%USERPROFILE%\.gemini")),
+        // 主流 AI 客户端：会话、索引与模型都落在固定目录里，逐个列出方便单独迁移。
+        // 这些路径随版本变动频繁，写错不会显示成可用项 —— 目录不存在的条目会被自动隐藏，
+        // 所以这里宁可多列几条已知位置，也不要让装了应用的用户看到「未找到」。
+        template("workbuddy_data", "WorkBuddy 数据", "ai_data", &["WorkBuddy.exe"], Some(r"%USERPROFILE%\.workbuddy")),
+        // dsh 有两处：用户目录下的 .dsh 是真正的工作目录（会话、附件、配置），
+        // AppData 里那个只是桌面端外壳自己的缓存，分开列便于判断哪边占地方。
+        template("dsh_data", "DeepSeek Harness 数据", "ai_data", &["dsh.exe", "dsh-desktop.exe"], Some(r"%USERPROFILE%\.dsh")),
+        template("dsh_desktop_app", "DeepSeek Harness 应用数据", "ai_data", &["dsh-desktop.exe"], Some(r"%APPDATA%\@deepseek-ai\dsh-desktop")),
+        template("kimi_code", "Kimi Code 数据", "ai_data", &["kimi-desktop.exe", "kimi-code.exe"], Some(r"%USERPROFILE%\.kimi-code")),
+        template("kimi_code_app", "Kimi Code 应用数据", "ai_data", &["kimi-desktop.exe", "kimi-code.exe"], Some(r"%APPDATA%\kimi-code-app")),
+        template("kimi_desktop", "Kimi 桌面版数据", "ai_data", &["kimi-desktop.exe"], Some(r"%APPDATA%\kimi-desktop")),
+        template("kimi_work", "Kimi Work 数据", "ai_data", &["kimi-desktop.exe", "kimi-code.exe"], Some(r"%USERPROFILE%\.kimi-work")),
+        template("opencode_data", "opencode 数据", "ai_data", &["opencode.exe"], Some(r"%APPDATA%\ai.opencode.desktop")),
+        template("openai_desktop", "ChatGPT / Codex 桌面版", "ai_data", &["ChatGPT.exe", "codex.exe"], Some(r"%LOCALAPPDATA%\OpenAI")),
+        template("yuanbao_data", "腾讯元宝数据", "ai_data", &["Yuanbao.exe"], Some(r"%LOCALAPPDATA%\com.tencent.yuanbao")),
+        template("zcode_data", "ZCode 数据", "ai_data", &["ZCode.exe"], Some(r"%APPDATA%\ZCode")),
+        template("cherry_studio", "Cherry Studio 数据", "ai_data", &["Cherry Studio.exe"], Some(r"%APPDATA%\CherryStudio")),
+        template("chatbox_data", "Chatbox 数据", "ai_data", &["Chatbox.exe"], Some(r"%APPDATA%\Chatbox")),
+        template("jan_data", "Jan 数据", "ai_data", &["Jan.exe"], Some(r"%USERPROFILE%\jan")),
+        template("anythingllm_data", "AnythingLLM 数据", "ai_data", &["AnythingLLM.exe"], Some(r"%APPDATA%\anythingllm-desktop\storage")),
+        template("dify_data", "Dify 数据", "ai_data", &[], Some(r"%USERPROFILE%\.dify")),
+        // 用户目录下的「.<厂商>」目录：AI 编程类工具普遍把索引、会话与引擎放这里。
+        // 这几个在本机实测确实存在且有体积 —— .codeium 约 900 MB、.agent-browser 约 428 MB。
+        // 这三个用的都是新 ID：codebuddy_data / codeium_data / continue_data 在 deprecated
+        // 列表里（旧版本取消过），沿用旧 ID 会「先删后加」，每次加载都要重写配置文件。
+        template("codebuddy_local", "CodeBuddy 数据", "ai_data", &["CodeBuddy.exe"], Some(r"%USERPROFILE%\.codebuddy")),
+        template("codeium_local", "Codeium / Windsurf 数据", "ai_data", &["Windsurf.exe"], Some(r"%USERPROFILE%\.codeium")),
+        template("continue_local", "Continue 数据", "ai_data", &[], Some(r"%USERPROFILE%\.continue")),
+        template("kimi_webbridge", "Kimi 浏览器桥接数据", "ai_data", &["kimi-desktop.exe"], Some(r"%USERPROFILE%\.kimi-webbridge")),
+        template("devin_shared", "Devin 共享数据", "ai_data", &[], Some(r"%USERPROFILE%\.devin-shared")),
+        template("agent_browser_cache", "AI 浏览器内核缓存", "ai_data", &[], Some(r"%USERPROFILE%\.agent-browser")),
+        // 模型缓存单独用「模型」图标：它们通常最大，也最值得优先搬走
+        template("lmstudio_models", "LM Studio 模型", "ai_models", &["LM Studio.exe"], Some(r"%USERPROFILE%\.lmstudio")),
+        template("lmstudio_cache", "LM Studio 缓存", "ai_models", &["LM Studio.exe"], Some(r"%USERPROFILE%\.cache\lm-studio")),
+        template("hf_cache", "Hugging Face 模型缓存", "ai_models", &[], Some(r"%USERPROFILE%\.cache\huggingface\hub")),
+        template("modelscope_cache", "ModelScope 模型缓存", "ai_models", &[], Some(r"%USERPROFILE%\.cache\modelscope\hub")),
         // Adobe 和剪映拆分 Roaming/LocalAppData，避免一次迁移过大的无关目录。
         template("adobe_appdata", "Adobe 用户数据", "adobe_appdata", &["Photoshop.exe", "Adobe Premiere Pro.exe"], Some(r"%APPDATA%\Adobe")),
         template("adobe_localdata", "Adobe 本地数据", "adobe_localdata", &["Photoshop.exe", "Adobe Premiere Pro.exe"], Some(r"%LOCALAPPDATA%\Adobe")),
