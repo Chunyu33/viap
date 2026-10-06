@@ -147,7 +147,8 @@ const AppRow = memo(function AppRow({
     height: 'var(--row-height)' as unknown as string,
     padding: '0 8px',
     background: isSelected ? 'var(--bg-row-selected)' : 'transparent',
-    borderBottom: '1px solid var(--border-color)',
+    // 行分隔线单独用 --border-color-row：液态玻璃外观下这条线会被移除
+    borderBottom: '1px solid var(--border-color-row)',
   } as React.CSSProperties;
 
   return (
@@ -280,7 +281,7 @@ function LoadingSkeleton() {
   const rowStyle: React.CSSProperties = {
     height: 'var(--row-height)' as unknown as string,
     padding: '0 8px',
-    borderBottom: '1px solid var(--border-color)',
+    borderBottom: '1px solid var(--border-color-row)',
   } as React.CSSProperties;
 
   return (
@@ -467,7 +468,7 @@ export default function AppList({
   if (loading) {
     const loadingHint = '正在扫描应用...';
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col glass-surface">
         <div
           className="flex items-center gap-2 mb-2 text-[12px]"
           style={{ color: 'var(--text-tertiary)' }}
@@ -488,9 +489,16 @@ export default function AppList({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* toolbar — 允许换行：窗口变窄或字号调大时筛选器不挤压搜索框 */}
-      <div className="flex items-center gap-2 flex-wrap flex-shrink-0 mb-1" style={{ padding: '2px 8px' }}>
-        <div className="relative flex-1 min-w-[180px] max-w-xs">
+      {/* toolbar — 允许换行：窗口变窄或字号调大时筛选器不挤压搜索框。
+          左右内缩走 --toolbar-inset-x：液态玻璃下内容装进卡片，这里要收到 0 才能与卡片左边缘齐平。
+          上下不要额外内边距、只用 mb-3：这样内容离标题栏与离内容卡片都是 12px，
+          和另外两个模块完全一致（换行时间距由 flex 的 gap-2 提供）。 */}
+      <div className="flex items-center gap-2 flex-wrap flex-shrink-0 mb-3" style={{ padding: '0 var(--toolbar-inset-x)' }}>
+        {/* 搜索框与两个筛选器按容器宽度按比例伸缩：
+            flex-1 让它们平分剩余空间，min-w 保证窗口很窄时不塌成一条线，
+            max-w 用百分比而不是固定像素，窗口变宽时才会跟着一起变宽。
+            三者上限合计 54%，剩下的宽度留给右侧图标按钮与批量操作。 */}
+        <div className="relative flex-1 min-w-[170px] max-w-[30%]">
           <Search
             className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
             style={{ color: 'var(--text-tertiary)' }}
@@ -504,11 +512,11 @@ export default function AppList({
             className="w-full h-8 pl-7 pr-7 text-[12px] rounded border outline-none transition-colors"
             style={{
               background: 'var(--bg-input)',
-              borderColor: 'var(--border-color)',
+              borderColor: 'var(--border-color-control)',
               color: 'var(--text-primary)',
             }}
             onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color-control)'; }}
           />
           {inputQuery && (
             <button
@@ -527,29 +535,35 @@ export default function AppList({
           value={migrationFilter}
           onChange={setMigrationFilter}
           options={migrationOptions}
-          className="w-[120px]"
+          className="flex-1 min-w-[104px] max-w-[12%]"
           disabled={operationsLocked}
         />
         <FilterSelect
           value={driveFilter}
           onChange={setDriveFilter}
           options={driveOptions}
-          className="w-[120px]"
+          className="flex-1 min-w-[104px] max-w-[12%]"
           disabled={operationsLocked}
         />
-        {/* BLOCKED 应用显隐切换 + 刷新 */}
-        <span className="text-[11px] flex-shrink-0 ml-1 flex items-center gap-1">
+        {/* BLOCKED 应用显隐切换 + 刷新。
+            原来这里多了一个 ml-1、两个按钮之间用 gap-1，与工具栏其它项的 gap-2 不同，
+            一行里出现 8/8/12/4 四种间距；统一成 gap-2 后整行节奏一致。
+
+            底色走 --bg-control：普通模式仍是原来的透明底，液态玻璃下换成与左侧下拉、
+            搜索框相同的填充，整行才是同一种设计语言（之前是裸图标，与旁边的白色胶囊并排很割裂）。
+            圆角、内高光由 glass.css 里与下拉共用的一组规则接管。 */}
+        <span className="text-[11px] flex-shrink-0 flex items-center gap-2">
           <button
             onClick={() => setShowBlockedApps(!showBlockedApps)}
             disabled={operationsLocked}
-            className="flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
+            className="ctrl-icon flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
             style={{
-              background: 'transparent',
-              borderColor: 'var(--border-color)',
+              background: 'var(--bg-control)',
+              borderColor: 'var(--border-color-control)',
             }}
             title={showBlockedApps ? '隐藏不可迁移的系统应用' : '显示所有应用（含不可迁移项）'}
             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-control)'; }}
           >
             {showBlockedApps
               ? <ShieldOff className="w-3.5 h-3.5" style={{ color: 'var(--color-warning)' }} />
@@ -559,15 +573,15 @@ export default function AppList({
           {onRefresh && (
             <button
               onClick={onRefresh}
-              className="flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
+              className="ctrl-icon flex items-center justify-center h-8 w-8 rounded border cursor-pointer transition-colors"
               style={{
-                background: 'transparent',
-                borderColor: 'var(--border-color)',
+                background: 'var(--bg-control)',
+                borderColor: 'var(--border-color-control)',
               }}
               title="刷新应用列表"
               disabled={operationsLocked || refreshing}
               onMouseEnter={(e) => { if (!refreshing) (e.currentTarget as HTMLElement).style.background = 'var(--bg-row-hover)'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-control)'; }}
             >
               <RotateCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
@@ -608,138 +622,141 @@ export default function AppList({
         )}
       </div>
 
-      {/* column header */}
-      <div
-        className="flex items-center gap-3 flex-shrink-0 text-[10px] uppercase tracking-wider"
-        style={{
-          padding: '0 8px',
-          height: '24px',
-          color: 'var(--text-tertiary)',
-          borderBottom: '1px solid var(--border-color-strong)',
-        }}
-      >
-        <div className="flex-shrink-0 w-4" />
-        <div className="flex-shrink-0 w-7" />
-        <button
-          className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
-          onClick={() => handleSort('name')}
-          disabled={operationsLocked}
-          style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
-        >
-          名称
-          {sortKey === 'name' ? (
-            sortOrder === 'asc'
-              ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
-              : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
-          ) : (
-            <ArrowUpDown className="h-3 w-3 opacity-30" />
-          )}
-        </button>
-        <button
-          className="flex-shrink-0 w-16 flex items-center justify-end gap-0.5 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
-          onClick={() => handleSort('size')}
-          disabled={operationsLocked}
-          style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
-        >
-          大小
-          {sortKey === 'size' ? (
-            sortOrder === 'asc'
-              ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
-              : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
-          ) : (
-            <ArrowUpDown className="h-3 w-3 opacity-30" />
-          )}
-        </button>
-        {/* 与行内操作列保持一致：最小宽度，让字号调大时表头与行同步变宽 */}
-        <span className="flex-shrink-0" style={{ minWidth: '150px', textAlign: 'right' }}>操作</span>
-      </div>
-
-      {/* 扫描/刷新进度提示：仅在进行中显示，不遮挡已加载的应用 */}
-      {((scanPhase && scanPhase !== 'done') || refreshing) && (
+      {/* 列表卡片：表头、列表与页脚同属一张卡片，行在卡内滚动 */}
+      <div className="flex-1 min-h-0 flex flex-col glass-surface">
+        {/* column header */}
         <div
-          className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md mb-1 flex-shrink-0"
-          style={{ background: 'var(--color-primary-light)', color: 'var(--color-primary)' }}
+          className="flex items-center gap-3 flex-shrink-0 text-[10px] uppercase tracking-wider"
+          style={{
+            padding: '0 8px',
+            height: '24px',
+            color: 'var(--text-tertiary)',
+            borderBottom: '1px solid var(--border-color-divider)',
+          }}
         >
-          <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
-          <span>
-            {refreshing && '正在刷新应用列表...'}
-            {!refreshing && scanPhase === 'snapshot' && `已读取上次快照，正在校验应用列表...`}
-            {!refreshing && scanPhase === 'tier1' && `正在扫描快捷方式...`}
-            {!refreshing && scanPhase === 'tier2' && `正在扫描文件系统...`}
-            {!refreshing && scanPhase === 'tier3' && `正在加载图标...`}
-            {!refreshing && scanPhase === 'icons' && `正在加载图标...`}
-            {!refreshing && scanPhase === 'sizes' && `正在计算目录大小...`}
-          </span>
+          <div className="flex-shrink-0 w-4" />
+          <div className="flex-shrink-0 w-7" />
+          <button
+            className="flex-1 min-w-0 flex items-center gap-1 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => handleSort('name')}
+            disabled={operationsLocked}
+            style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
+          >
+            名称
+            {sortKey === 'name' ? (
+              sortOrder === 'asc'
+                ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+                : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+            ) : (
+              <ArrowUpDown className="h-3 w-3 opacity-30" />
+            )}
+          </button>
+          <button
+            className="flex-shrink-0 w-16 flex items-center justify-end gap-0.5 cursor-pointer hover:text-[var(--text-primary)] transition-colors"
+            onClick={() => handleSort('size')}
+            disabled={operationsLocked}
+            style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit' }}
+          >
+            大小
+            {sortKey === 'size' ? (
+              sortOrder === 'asc'
+                ? <ArrowUp className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+                : <ArrowDown className="h-3 w-3" style={{ color: 'var(--color-primary)' }} />
+            ) : (
+              <ArrowUpDown className="h-3 w-3 opacity-30" />
+            )}
+          </button>
+          {/* 与行内操作列保持一致：最小宽度，让字号调大时表头与行同步变宽 */}
+          <span className="flex-shrink-0" style={{ minWidth: '150px', textAlign: 'right' }}>操作</span>
         </div>
-      )}
 
-      {/* list body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        {sortedApps.length > 0 ? (
-          <div className="flex flex-col">
-            {sortedApps.map((app) => {
-              const key = app.registry_path || app.install_location;
-              const isViapSelf = isViapSelfApp(app);
-              // 流式扫描完成前图标尚未全部加载
-              const iconsLoading = !!scanPhase && scanPhase !== 'done' && scanPhase !== 'idle';
-              return (
-                <AppRow
-                  key={key}
-                  app={app}
-                  iconsLoading={iconsLoading}
-                  onMigrate={onMigrate}
-                  onRestore={onRestore}
-                  onUninstall={onUninstall}
-                  onOpenFolder={handleOpenFolder}
-                  isUninstalling={uninstallingKey === `${app.display_name}|${app.registry_path}`}
-                  isRestoring={restoringKey === `${app.display_name}|${app.registry_path}`}
-                  restoreProgress={restoreProgressMap[`${app.display_name}|${app.registry_path}`]}
-                  isMigrated={isAppMigrated(app)}
-                  isSelected={selectedKeys?.has(key)}
-                  onToggleSelect={onToggleSelect}
-                  showCheckbox={!!onToggleSelect}
-                  // 后台线程以 install_location 为 key 推送大小
-                  // 兼容 registry-scanned 应用（key = registry_path）和非注册表应用（key = install_location）
-                  appSize={sizeMap?.get(key) ?? sizeMap?.get(app.install_location.toLowerCase())}
-                  isViap={isViapSelf}
-                  operationsLocked={operationsLocked}
-                />
-              );
-            })}
-          </div>
-        ) : (
-          <div className='flex justify-center items-center w-full h-full'>
-            <EmptyState icon={<Search />} title="未找到匹配的应用" description="尝试调整筛选条件或搜索关键词" />
-          </div>
-        )}
-      </div>
-
-      {/* footer: 应用总数 + 总占用 */}
-      <div
-        className="flex-shrink-0 flex items-center gap-2 text-[12px]"
-        style={{
-          padding: '8px 0',
-          color: 'var(--text-secondary)',
-          borderTop: '1px solid var(--border-color)',
-        }}
-      >
-        <span className="tabular-nums" style={{ color: 'var(--text-primary)' }}>
-          <span className="mr-1 font-bold" style={{ color: 'var(--text-primary)' }}>
-            {filteredApps.length}
-          </span>
-          个应用
-        </span>
-        <span style={{ color: 'var(--border-color-strong)' }}>·</span>
-        {sizesLoading ? (
-          <span className="inline-block w-3 h-3 border border-[var(--color-primary)] border-t-transparent rounded-full animate-spin" />
-        ) : (
-          <>
-            <span>总占用</span>
-            <span className="tabular-nums font-bold" style={{ color: 'var(--text-primary)' }}>
-              {formatSize(filteredTotalSize)}
+        {/* 扫描/刷新进度提示：仅在进行中显示，不遮挡已加载的应用 */}
+        {((scanPhase && scanPhase !== 'done') || refreshing) && (
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md mb-1 flex-shrink-0"
+            style={{ background: 'var(--color-primary-light)', color: 'var(--color-primary)' }}
+          >
+            <LoaderCircle className="h-3 w-3 animate-spin flex-shrink-0" />
+            <span>
+              {refreshing && '正在刷新应用列表...'}
+              {!refreshing && scanPhase === 'snapshot' && `已读取上次快照，正在校验应用列表...`}
+              {!refreshing && scanPhase === 'tier1' && `正在扫描快捷方式...`}
+              {!refreshing && scanPhase === 'tier2' && `正在扫描文件系统...`}
+              {!refreshing && scanPhase === 'tier3' && `正在加载图标...`}
+              {!refreshing && scanPhase === 'icons' && `正在加载图标...`}
+              {!refreshing && scanPhase === 'sizes' && `正在计算目录大小...`}
             </span>
-          </>
+          </div>
         )}
+
+        {/* list body */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {sortedApps.length > 0 ? (
+            <div className="flex flex-col">
+              {sortedApps.map((app) => {
+                const key = app.registry_path || app.install_location;
+                const isViapSelf = isViapSelfApp(app);
+                // 流式扫描完成前图标尚未全部加载
+                const iconsLoading = !!scanPhase && scanPhase !== 'done' && scanPhase !== 'idle';
+                return (
+                  <AppRow
+                    key={key}
+                    app={app}
+                    iconsLoading={iconsLoading}
+                    onMigrate={onMigrate}
+                    onRestore={onRestore}
+                    onUninstall={onUninstall}
+                    onOpenFolder={handleOpenFolder}
+                    isUninstalling={uninstallingKey === `${app.display_name}|${app.registry_path}`}
+                    isRestoring={restoringKey === `${app.display_name}|${app.registry_path}`}
+                    restoreProgress={restoreProgressMap[`${app.display_name}|${app.registry_path}`]}
+                    isMigrated={isAppMigrated(app)}
+                    isSelected={selectedKeys?.has(key)}
+                    onToggleSelect={onToggleSelect}
+                    showCheckbox={!!onToggleSelect}
+                    // 后台线程以 install_location 为 key 推送大小
+                    // 兼容 registry-scanned 应用（key = registry_path）和非注册表应用（key = install_location）
+                    appSize={sizeMap?.get(key) ?? sizeMap?.get(app.install_location.toLowerCase())}
+                    isViap={isViapSelf}
+                    operationsLocked={operationsLocked}
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <div className='flex justify-center items-center w-full h-full'>
+              <EmptyState icon={<Search />} title="未找到匹配的应用" description="尝试调整筛选条件或搜索关键词" />
+            </div>
+          )}
+        </div>
+
+        {/* footer: 应用总数 + 总占用 */}
+        <div
+          className="flex-shrink-0 flex items-center gap-2 text-[12px]"
+          style={{
+            padding: '8px 0',
+            color: 'var(--text-secondary)',
+            borderTop: '1px solid var(--border-color-row)',
+          }}
+        >
+          <span className="tabular-nums" style={{ color: 'var(--text-primary)' }}>
+            <span className="mr-1 font-bold" style={{ color: 'var(--text-primary)' }}>
+              {filteredApps.length}
+            </span>
+            个应用
+          </span>
+          <span style={{ color: 'var(--border-color-strong)' }}>·</span>
+          {sizesLoading ? (
+            <span className="inline-block w-3 h-3 border border-[var(--color-primary)] border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <>
+              <span>总占用</span>
+              <span className="tabular-nums font-bold" style={{ color: 'var(--text-primary)' }}>
+                {formatSize(filteredTotalSize)}
+              </span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

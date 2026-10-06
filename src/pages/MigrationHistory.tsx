@@ -123,7 +123,8 @@ function HistoryRow({
   const [expanded, setExpanded] = useState(false);
 
   const rowStyle: React.CSSProperties = {
-    borderBottom: '1px solid var(--border-color)',
+    // 行分隔线单独用 --border-color-row：液态玻璃外观下这条线会被移除
+    borderBottom: '1px solid var(--border-color-row)',
     background: linkStatus === 'broken_lost' || linkStatus === 'no_data' ? 'var(--color-danger-light)'
       : linkStatus === 'broken_fixable' ? 'var(--color-warning-light)'
       : 'transparent',
@@ -282,7 +283,9 @@ function HistoryRow({
           maxHeight: expanded ? '200px' : '0px',
           opacity: expanded ? 1 : 0,
           borderTop: expanded ? '1px solid var(--border-color)' : '1px solid transparent',
-          background: 'var(--bg-row-hover)',
+          // 展开面板铺在列表卡片之上，用 --bg-inset 而不是 --bg-row-hover：
+          // 后者在玻璃外观下是不透明度很高的白，叠在半透明卡片上会成为一块实色。
+          background: 'var(--bg-inset)',
         }}
         onClick={e => e.stopPropagation()}
       >
@@ -381,6 +384,9 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
   }
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 20;
+  // 分页浮层是绝对定位、不占布局空间，会盖住列表最后一行，
+  // 所以给滚动内容补一段等高留白（浮层高度 36px + 距底 8px + 余量 8px）。
+  const PAGER_OVERLAY_RESERVE_PX = 52;
 
   /** 删除单条迁移记录：默认保留自动备份里的同一条记录，勾选后才一并删除 */
   async function handleConfirmDeleteRecord() {
@@ -691,16 +697,17 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
       style={{ padding: '12px var(--spacing-8)', width: '100%' }}>
       {/* search / filter / sort + stats + refresh — 固定在顶部，不参与滚动 */}
       <div className="flex items-center gap-2 flex-wrap flex-shrink-0"
-        style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
-          <div className="relative flex-1 max-w-xs">
+        style={{ paddingBottom: '12px', borderBottom: '1px solid var(--border-color-row)' }}>
+          {/* 与「应用管理」同一套规则：搜索与筛选按容器宽度按比例伸缩，各自带上下界 */}
+          <div className="relative flex-1 min-w-[170px] max-w-[30%]">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-tertiary)' }} />
             <input
               type="text" placeholder="搜索名称..." value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full h-8 pl-7 pr-7 text-[12px] rounded border outline-none transition-colors"
-              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-color-control)', color: 'var(--text-primary)' }}
               onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
-              onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color)'; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border-color-control)'; }}
             />
             {searchQuery && (
               <button
@@ -720,7 +727,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
               { value: 'App' as const, label: '应用' },
               { value: 'LargeFolder' as const, label: '文件夹' },
             ]}
-            className="w-[110px]" />
+            className="flex-1 min-w-[104px] max-w-[12%]" />
           <FilterSelect value={sortBy} onChange={setSortBy}
             options={[
               { value: 'date_desc' as const, label: '最新优先' },
@@ -732,7 +739,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
               { value: 'size_desc' as const, label: '体积最大' },
               { value: 'size_asc' as const, label: '体积最小' },
             ]}
-            className="w-[110px]" />
+            className="flex-1 min-w-[104px] max-w-[12%]" />
           {/* stats — 原独立行移至此处，节省垂直空间 */}
           {records.length > 0 && (
             <div className="flex items-center gap-3 text-[12px] ml-2">
@@ -798,10 +805,12 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
           }
         />
       ) : (
-        <>
+        // 列表卡片：表头与行同属一张卡片，行在卡内滚动；普通模式下这些内容区原本平铺在页面上
+        // relative 是分页浮层的定位基准
+        <div className="relative flex-1 min-h-0 flex flex-col glass-surface">
           {/* column header — 固定，不参与滚动 */}
           <div className="flex items-center gap-3 flex-shrink-0 text-[10px] uppercase tracking-wider"
-            style={{ padding: '0 8px', height: '24px', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-color-strong)' }}>
+            style={{ padding: '0 8px', height: '24px', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-color-divider)' }}>
             <div className="flex-shrink-0 w-7" />
             <SortHeader label="名称" sortKey="name" sortBy={sortBy} onSort={handleColumnSort}
               style={{ width: '180px', flexShrink: 0 }} />
@@ -813,48 +822,63 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
             <span className="flex-shrink-0" style={{ width: '84px' }} />
           </div>
 
-          {/* 列表 — 独立滚动容器 */}
-          <div className="flex-1 overflow-y-auto min-h-0">
+          {/* 列表 — 独立滚动容器，卡片与表头一同构成外层 */}
+          <div className="flex-1 overflow-y-auto min-h-0"
+            style={{ paddingBottom: totalPages > 1 ? PAGER_OVERLAY_RESERVE_PX : undefined }}>
             {pageRecords.length === 0 ? (
               <EmptyState icon={<Search />} title="无匹配记录" description="尝试调整筛选条件或搜索关键词" />
             ) : (
-              <>
-                {pageRecords.map(record => (
-                  <HistoryRow key={record.id} record={record}
-                    onRestore={handleRestore}
-                    isRestoring={restoringId === record.id}
-                    restoreProgress={restoreProgressMap[record.id]}
-                    linkStatus={linkStatuses[record.id] || 'unknown'}
-                    onCleanup={handleCleanupBroken}
-                    onRemigrate={handleRemigrate}
-                    onOpenPath={handleOpenPath}
-                    onContextMenu={(record, position) => setRowMenu({ record, ...position })} />
-                ))}
-
-                {/* pagination */}
-                {totalPages > 1 && (
-                  <div className="flex items-center justify-center gap-1.5 py-3">
-                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
-                      className="btn h-6 text-[11px] px-2">上一页</button>
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-                      <button key={p} onClick={() => setCurrentPage(p)}
-                        className="h-6 min-w-[24px] text-[11px] rounded border transition-colors"
-                        style={{
-                          background: p === currentPage ? 'var(--color-primary)' : 'transparent',
-                          borderColor: p === currentPage ? 'var(--color-primary)' : 'var(--border-color)',
-                          color: p === currentPage ? 'var(--text-inverse)' : 'var(--text-secondary)',
-                        }}>
-                        {p}
-                      </button>
-                    ))}
-                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
-                      className="btn h-6 text-[11px] px-2">下一页</button>
-                  </div>
-                )}
-              </>
+              pageRecords.map(record => (
+                <HistoryRow key={record.id} record={record}
+                  onRestore={handleRestore}
+                  isRestoring={restoringId === record.id}
+                  restoreProgress={restoreProgressMap[record.id]}
+                  linkStatus={linkStatuses[record.id] || 'unknown'}
+                  onCleanup={handleCleanupBroken}
+                  onRemigrate={handleRemigrate}
+                  onOpenPath={handleOpenPath}
+                  onContextMenu={(record, position) => setRowMenu({ record, ...position })} />
+              ))
             )}
           </div>
-        </>
+
+          {/* 分页浮层 — 绝对定位在卡片底部居中：不占布局行高，宽度随内容自适应，
+              用 min/max 卡住上下界。两种主题共用同一套布局，不做主题区分。
+              外层铺满整宽只负责居中，且 pointer-events-none，避免挡住列表的点击。 */}
+          {pageRecords.length > 0 && totalPages > 1 && (
+            <div className="absolute inset-x-0 z-10 flex justify-center pointer-events-none"
+              style={{ bottom: 'var(--spacing-2)' }}>
+              <div
+                className="flex flex-wrap items-center justify-center gap-1.5 px-3 py-1.5 pointer-events-auto"
+                style={{
+                  width: 'fit-content',
+                  minWidth: '208px',
+                  maxWidth: 'calc(100% - var(--spacing-6))',
+                  background: 'var(--bg-modal)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-lg)',
+                  boxShadow: 'var(--shadow-md)',
+                }}
+              >
+                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
+                  className="btn h-6 text-[11px] px-2">上一页</button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                  <button key={p} onClick={() => setCurrentPage(p)}
+                    className="h-6 min-w-[24px] text-[11px] rounded border transition-colors"
+                    style={{
+                      background: p === currentPage ? 'var(--color-primary)' : 'transparent',
+                      borderColor: p === currentPage ? 'var(--color-primary)' : 'var(--border-color)',
+                      color: p === currentPage ? 'var(--text-inverse)' : 'var(--text-secondary)',
+                    }}>
+                    {p}
+                  </button>
+                ))}
+                <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                  className="btn h-6 text-[11px] px-2">下一页</button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
       {/* 右键菜单：删除单条记录 */}
       {rowMenu && (

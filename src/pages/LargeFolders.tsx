@@ -211,7 +211,7 @@ function FolderRow({
   const rowStyle: React.CSSProperties = {
     height: 'var(--row-height)' as unknown as string,
     padding: '0 8px',
-    borderBottom: '1px solid var(--border-color)',
+    borderBottom: '1px solid var(--border-color-row)',
     opacity: notFound ? 0.4 : 1,
   } as React.CSSProperties;
 
@@ -968,10 +968,12 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
   return (
     <div className="h-full overflow-hidden flex flex-col"
       style={{ padding: '12px var(--spacing-8)', width: '100%' }}>
-      <div className="h-full flex flex-col w-full gap-3">
+      {/* 不再用 gap-3 分隔工具栏与内容卡片：工具栏自带 12px 下内边距，
+          再叠一层 12px 的 gap 会让工具栏下方变成 24px，与上方 12px 不对称。 */}
+      <div className="h-full flex flex-col w-full">
         {/* top stats + actions */}
         <div className="flex items-center justify-between flex-wrap gap-2 flex-shrink-0"
-          style={{ paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
+          style={{ paddingBottom: '12px', borderBottom: '1px solid var(--border-color-row)' }}>
           <div className="flex items-center gap-4 text-[12px]">
             <span style={{ color: 'var(--text-secondary)' }}>
               可释放 <strong style={{ color: 'var(--text-primary)' }}>{loading ? '...' : formatSize(totalReclaimable)}</strong>
@@ -1019,94 +1021,96 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
           </div>
         </div>
 
-        {/* content */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {loading ? (
-            <div className="flex flex-col">
-              {[1,2,3,4,5].map(i => (
-                <div key={i} className="flex items-center gap-3 animate-pulse" style={{ height: 'var(--row-height)', padding: '0 8px', borderBottom: '1px solid var(--border-color)' }}>
-                  <div className="w-7 h-7 rounded" style={{ background: 'var(--bg-row-hover)' }} />
-                  <div className="flex-1 h-3 rounded" style={{ background: 'var(--bg-row-hover)' }} />
-                  <div className="w-20 h-3 rounded" style={{ background: 'var(--bg-row-hover)' }} />
-                  <div className="w-16 h-7 rounded" style={{ background: 'var(--bg-row-hover)' }} />
-                </div>
-              ))}
-            </div>
-          ) : folders.length === 0 ? (
-            <EmptyState icon={<FolderOpen />} title="未检测到可迁移的文件夹" description="系统扫描未发现可管理的数据目录" />
-          ) : (
-            <div className="flex flex-col gap-4">
-              {systemFolders.length > 0 && (
-                <section>
-                  <div className="flex items-center gap-2 mb-1.5 px-2">
-                    <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>系统文件夹</span>
-                    <span className="badge" style={{ color: 'var(--color-warning)', background: 'var(--color-warning-light)' }}>
-                      <AlertTriangle className="w-3 h-3" />谨慎操作
-                    </span>
+        {/* content — 卡片只作外框，滚动在内层，与另外两个模块结构一致 */}
+        <div className="flex-1 min-h-0 flex flex-col glass-surface">
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {loading ? (
+              <div className="flex flex-col">
+                {[1,2,3,4,5].map(i => (
+                  <div key={i} className="flex items-center gap-3 animate-pulse" style={{ height: 'var(--row-height)', padding: '0 8px', borderBottom: '1px solid var(--border-color-row)' }}>
+                    <div className="w-7 h-7 rounded" style={{ background: 'var(--bg-row-hover)' }} />
+                    <div className="flex-1 h-3 rounded" style={{ background: 'var(--bg-row-hover)' }} />
+                    <div className="w-20 h-3 rounded" style={{ background: 'var(--bg-row-hover)' }} />
+                    <div className="w-16 h-7 rounded" style={{ background: 'var(--bg-row-hover)' }} />
                   </div>
-                  {systemFolders.map(f => (
-                    <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
-                      onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
-                      restoreProgress={restoreProgressMap[f.id]}
-                      showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
-                  ))}
-                </section>
-              )}
-
-              {appDataFolders.length > 0 && (
-                <section>
-                  <div className="flex items-center justify-between px-2 mb-1.5">
-                    <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>应用数据</span>
-                    <div className="flex items-center gap-2">
-                      {!appDataLoaded && !appDataScanning && (
-                        <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-                          默认不扫描，避免机械硬盘冷启动卡顿
-                        </span>
-                      )}
-                      {appDataScanning && (
-                        <span className="text-[10px]" style={{ color: 'var(--color-primary)' }}>
-                          正在后台加载应用数据...
-                        </span>
-                      )}
-                      <button
-                        onClick={handleLoadAppData}
-                        disabled={appDataScanning}
-                        className="btn h-6 text-[11px]"
-                        title="扫描应用数据目录大小，机械硬盘可能需要较长时间"
-                      >
-                        {appDataScanning && <Loader2 className="w-3 h-3 animate-spin" />}
-                        {appDataLoaded ? '重新加载' : '加载应用数据'}
-                      </button>
+                ))}
+              </div>
+            ) : folders.length === 0 ? (
+              <EmptyState icon={<FolderOpen />} title="未检测到可迁移的文件夹" description="系统扫描未发现可管理的数据目录" />
+            ) : (
+              <div className="flex flex-col gap-4">
+                {systemFolders.length > 0 && (
+                  <section>
+                    <div className="flex items-center gap-2 mb-1.5 px-2">
+                      <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>系统文件夹</span>
+                      <span className="badge" style={{ color: 'var(--color-warning)', background: 'var(--color-warning-light)' }}>
+                        <AlertTriangle className="w-3 h-3" />谨慎操作
+                      </span>
                     </div>
-                  </div>
-                  <AppDataAccordion
-                    folders={appDataFolders}
-                    renderFolder={(f) => (
+                    {systemFolders.map(f => (
                       <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
                         onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
                         restoreProgress={restoreProgressMap[f.id]}
                         showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
-                    )}
-                  />
-                </section>
-              )}
+                    ))}
+                  </section>
+                )}
 
-              {customFolders.length > 0 && (
-                <section>
-                  <div className="px-2 mb-1.5">
-                    <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>自定义文件夹</span>
-                  </div>
-                  {customFolders.map(f => (
-                    <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
-                      onOpenFolder={openFolder} onRemove={handleRemoveCustomFolder}
-                      isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
-                      restoreProgress={restoreProgressMap[f.id]}
-                      showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
-                  ))}
-                </section>
-              )}
-            </div>
-          )}
+                {appDataFolders.length > 0 && (
+                  <section>
+                    <div className="flex items-center justify-between px-2 mb-1.5">
+                      <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>应用数据</span>
+                      <div className="flex items-center gap-2">
+                        {!appDataLoaded && !appDataScanning && (
+                          <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                            默认不扫描，避免机械硬盘冷启动卡顿
+                          </span>
+                        )}
+                        {appDataScanning && (
+                          <span className="text-[10px]" style={{ color: 'var(--color-primary)' }}>
+                            正在后台加载应用数据...
+                          </span>
+                        )}
+                        <button
+                          onClick={handleLoadAppData}
+                          disabled={appDataScanning}
+                          className="btn h-6 text-[11px]"
+                          title="扫描应用数据目录大小，机械硬盘可能需要较长时间"
+                        >
+                          {appDataScanning && <Loader2 className="w-3 h-3 animate-spin" />}
+                          {appDataLoaded ? '重新加载' : '加载应用数据'}
+                        </button>
+                      </div>
+                    </div>
+                    <AppDataAccordion
+                      folders={appDataFolders}
+                      renderFolder={(f) => (
+                        <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
+                          onOpenFolder={openFolder} isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                          restoreProgress={restoreProgressMap[f.id]}
+                          showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
+                      )}
+                    />
+                  </section>
+                )}
+
+                {customFolders.length > 0 && (
+                  <section>
+                    <div className="px-2 mb-1.5">
+                      <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>自定义文件夹</span>
+                    </div>
+                    {customFolders.map(f => (
+                      <FolderRow key={f.id} folder={f} onMigrate={handleMigrate} onRestore={handleRestore}
+                        onOpenFolder={openFolder} onRemove={handleRemoveCustomFolder}
+                        isMigrating={migratingFolder?.id === f.id} isRestoring={restoringFolderId === f.id}
+                        restoreProgress={restoreProgressMap[f.id]}
+                        showCheckbox isSelected={selectedKeys.has(f.id)} onToggleSelect={handleToggleSelect} />
+                    ))}
+                  </section>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -22,7 +22,7 @@ Viap is a Windows desktop application built with Tauri, React, TypeScript, and R
 - Uninstall applications and scan or clean related leftovers, with running-process handling, a before/after comparison report and matching services, drivers or scheduled tasks.
 - Show disk usage, application snapshots, lazy-loaded icons, and background scan progress.
 - Detect HDD cold-start cases and let users manually load slow application-data directories.
-- Support light and dark themes, font-size settings, portable mode, and WebView2 offline installers.
+- Support light and dark themes, an optional liquid-glass appearance, font-size settings, portable mode, and WebView2 offline installers.
 - Verify the running executable against the official GitHub Release signature.
 
 ## Safety Notes
@@ -50,7 +50,7 @@ On first launch, the portable build can copy missing data from an existing Viap 
 - Installed builds normally use `%APPDATA%\viap`.
 - Portable builds normally use the application directory's `data` folder.
 - The Settings page can change Viap's data directory and copies managed data before switching to the new location.
-- Themes, font size, default migration paths, recycle-bin preference, and scan settings are persisted with the user data.
+- Themes, the liquid-glass appearance, font size, default migration paths, recycle-bin preference, and scan settings are persisted with the user data.
 
 ## Integrity Verification
 

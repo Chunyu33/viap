@@ -2,7 +2,7 @@
 // 展示 LightC 和 BinlockX 两个关联项目的简介与下载信息
 
 import { useEffect, useState, useCallback } from 'react';
-import { X, Code2, Download } from 'lucide-react';
+import { X, Code2, Download, Globe } from 'lucide-react';
 import lightcIcon from '../assets/imgs/lightc.svg';
 import binlockxIcon from '../assets/imgs/binlockx.svg';
 
@@ -14,7 +14,16 @@ interface ProjectPromoModalProps {
 interface ProjectLink {
   label: string;
   url: string;
+  /** 决定按钮用哪个图标，缺省按「下载」处理 */
+  kind?: 'website' | 'github' | 'download';
 }
+
+/** 链接类型 → 图标：官网用地球、GitHub 用代码、下载用箭头 */
+const LINK_ICONS: Record<NonNullable<ProjectLink['kind']>, typeof Globe> = {
+  website: Globe,
+  github: Code2,
+  download: Download,
+};
 
 interface ProjectInfo {
   name: string;
@@ -33,8 +42,8 @@ const projects: ProjectInfo[] = [
     icon: <img src={lightcIcon} className="w-5 h-5 project-promo-icon" alt="LightC" />,
     iconColor: '#F59E0B',
     links: [
-      { label: 'GitHub', url: 'https://github.com/chunyu33/lightc/releases' },
-      { label: '网盘下载', url: 'https://pan.quark.cn/s/bce8f722bf33' },
+      { label: '官网', url: 'https://lightc.app/', kind: 'website' },
+      { label: '网盘下载', url: 'https://pan.quark.cn/s/bce8f722bf33', kind: 'download' },
     ],
   },
   {
@@ -44,8 +53,8 @@ const projects: ProjectInfo[] = [
     icon: <img src={binlockxIcon} className="w-5 h-5 project-promo-icon" alt="BinlockX" />,
     iconColor: '#10B981',
     links: [
-      // { label: 'GitHub', url: 'https://github.com/user/binlockx/releases' },
-      { label: '网盘下载', url: 'https://pan.quark.cn/s/4243a5142b29' },
+      { label: '官网', url: 'https://binlockx.evan666.cc/', kind: 'website' },
+      { label: '网盘下载', url: 'https://pan.quark.cn/s/4243a5142b29', kind: 'download' },
     ],
   },
 ];
@@ -166,7 +175,7 @@ export default function ProjectPromoModal({ isOpen, onClose }: ProjectPromoModal
                   {proj.links
                     .filter((link) => link.url)
                     .map((link, index) => {
-                      const isGithub = link.label.includes('GitHub');
+                      const Icon = LINK_ICONS[link.kind ?? 'download'] ?? Download;
                       return (
                         <a
                           key={index}
@@ -182,7 +191,7 @@ export default function ProjectPromoModal({ isOpen, onClose }: ProjectPromoModal
                           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.7'; }}
                           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
                         >
-                          {isGithub ? <Code2 className="w-3 h-3" /> : <Download className="w-3 h-3" />}
+                          <Icon className="w-3 h-3" />
                           {link.label}
                         </a>
                       );

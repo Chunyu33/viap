@@ -1,0 +1,304 @@
+/* ============================================
+   Viap - 液态玻璃外观（可选开关）
+   ============================================
+
+   设计约束（决定本文件的写法）：
+   1. 所有选择器一律以 `html.glass` 开头 —— 关闭开关时根节点没有 glass 类，
+      本文件全部选择器零匹配，因此「关闭态」等价于改动前的原样，可直接回归验证；
+   2. 以覆写 CSS 变量为主：项目四个模块的颜色/圆角/阴影全部走变量，
+      覆写变量即可整体换肤，无需改任何组件的类名或内联样式；
+   3. backdrop-filter 只挂少数几个「安全点」。原因是它会创建层叠上下文，
+      使内部的 position:fixed 改为相对该元素定位 —— 项目里 10 个弹窗遮罩
+      （fixed inset-0）都渲染在 <main> 内部，所以 main 绝不能加模糊，
+      否则遮罩会退化成只盖住内容区、露出标题栏。
+
+   分层方式的转变（本文件的核心）：原设计是「1px 边框 + 几乎没有阴影」的桌面工具风格，
+   玻璃形态则相反 —— 边框几乎不可见，改由柔和的投影承担分层。因此这里同时做两件事：
+   把 --border-color 压到近乎透明，并把 --shadow-* 显著加强。
+*/
+
+/* ========== 1. 圆角与投影：不随主题变化 ========== */
+html.glass {
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  --bg-app: transparent;
+
+  /* 三类「线」在玻璃外观下一律退场：行分隔线、分区线、控件描边。
+     分层改由投影、留白和悬浮高亮承担 —— 这正是「用阴影代替边框线」。
+     它们各自的默认值在 variables.css 里等于原来的 --border-color / --border-color-strong，
+     所以关掉开关后这套覆写失效、外观立刻回到改动前。 */
+  --border-color-row: transparent;
+  --border-color-divider: transparent;
+  --border-color-control: transparent;
+
+  /* 主内容区原本整块铺 --bg-content（浅色是 60% 白），玻璃外观下会留下一圈
+     「没吃到 backdrop-filter 的底色」—— 卡片四周的留白与四个圆角处最明显，
+     看起来像残留的背景块。这里让它透明，直接露出 body 的光斑层，
+     卡片才是真正浮在背景之上，而不是浮在一块白板上。 */
+  --bg-main: transparent;
+
+  /* 工具栏收到与卡片左边缘齐平：卡片本身已经有 12px 内边距，
+     工具栏再留 8px 就会比卡片往里缩一截，和下面另外两个模块的工具栏也不一致。 */
+  --toolbar-inset-x: 0px;
+
+  /* 卡片投影：实测只要卡片带投影，圆角外侧就会出现一圈发灰的弧
+     —— 卡片是半透明的，投影落在圆角弧外时没有任何东西盖住它，
+     而卡片内部被 60% 白底压淡，两者一对比就成了「残影」。
+     投影偏移越大弧越宽，负 spread 也压不住（试过 -6 / -12 都更差）。
+     结论是这里不要投影，卡片改由半透明浅色底与背景的对比来区分。
+     想换回层次感时把下面这行换成 0 4px 14px rgba(15, 23, 42, 0.07) 即可。 */
+  --glass-card-shadow: none;
+
+  color-scheme: dark light;
+}
+
+/* ========== 2. 深色主题：玻璃变量 ========== */
+html.glass[data-theme="dark"] {
+  --bg-content: rgba(255, 255, 255, 0.055);
+  --bg-row: rgba(255, 255, 255, 0.068);
+  --bg-row-hover: rgba(255, 255, 255, 0.105);
+  --bg-row-selected: rgba(7, 193, 96, 0.18);
+  --bg-hover: rgba(255, 255, 255, 0.085);
+  --bg-input: rgba(255, 255, 255, 0.075);
+  --bg-toolbar: rgba(255, 255, 255, 0.04);
+  /* 玻璃下标签栏轨道是 --bg-hover(0.085)，选中胶囊要明显更亮才是「浮起」的那一块 */
+  --bg-raised: rgba(255, 255, 255, 0.17);
+
+  /* 卡片内的底衬。它铺在同样半透明的卡片之上，两层 alpha 会相乘叠加：
+     卡片 0.055 + 原值（详情面板 0.105 / 分组标题行 0.055）≈ 0.11～0.15，
+     看起来就是一块贴上去的实色。压到 0.07 后合成约 0.11 —— 与卡片仍有区分，
+     但不再是一块实色；分组标题行沿用同一个值，两组用同一种「淡淡的提亮」。 */
+  --bg-inset: rgba(255, 255, 255, 0.07);
+  --bg-group: var(--bg-inset);
+  /* 图标按钮与下拉/输入框用同一种填充，工具栏一整行才是同一种设计语言 */
+  --bg-control: var(--bg-input);
+
+  /* 浮层必须足够实：磁盘状态这类下拉会盖在密集内容之上，
+     半透明度过低会让下层文字透出来、层级读不清（实测 0.78 就会糊成一片）。 */
+  --bg-modal: rgba(18, 23, 32, 0.95);
+  --bg-modal-overlay: rgba(2, 5, 10, 0.6);
+
+  /* 边框退居次要：仅保留一道极淡的轮廓，用来在深浅接近处提示边界 */
+  --border-color: rgba(255, 255, 255, 0.07);
+  --border-color-strong: rgba(255, 255, 255, 0.16);
+
+  /* 投影成为主要分层手段，因此比原设计更沉、更外扩 */
+  --shadow-xs: 0 1px 3px rgba(2, 6, 12, 0.5);
+  --shadow-sm: 0 4px 14px rgba(2, 6, 12, 0.45);
+  --shadow-md: 0 12px 34px rgba(2, 6, 12, 0.5), 0 2px 8px rgba(2, 6, 12, 0.35);
+  --shadow-lg: 0 24px 64px rgba(2, 6, 12, 0.62), 0 4px 14px rgba(2, 6, 12, 0.4);
+}
+
+/* ========== 3. 浅色主题：玻璃变量 ========== */
+html.glass[data-theme="light"] {
+  --bg-content: rgba(255, 255, 255, 0.6);
+  --bg-row: rgba(255, 255, 255, 0.7);
+  --bg-row-hover: rgba(255, 255, 255, 0.92);
+  --bg-row-selected: rgba(7, 193, 96, 0.16);
+  --bg-hover: rgba(255, 255, 255, 0.86);
+  --bg-input: rgba(255, 255, 255, 0.84);
+  --bg-toolbar: rgba(255, 255, 255, 0.54);
+  --bg-raised: rgba(255, 255, 255, 0.96);
+
+  /* 同深色：卡片 0.6 + 底衬 0.18 ≈ 0.67，是一层淡淡的提亮而不是白块。
+     这一档尤其重要 —— 原值 0.92 白叠在 0.6 的卡片上接近纯白，正是「实色块」的来源。 */
+  --bg-inset: rgba(255, 255, 255, 0.18);
+  --bg-group: var(--bg-inset);
+  --bg-control: var(--bg-input);
+
+  --bg-modal: rgba(255, 255, 255, 0.96);
+  --bg-modal-overlay: rgba(15, 23, 42, 0.24);
+
+  --border-color: rgba(15, 23, 42, 0.06);
+  --border-color-strong: rgba(15, 23, 42, 0.14);
+
+  /* 浅色下投影要轻，否则会显脏；靠蓝灰调而非纯黑，避免发闷 */
+  --shadow-xs: 0 1px 3px rgba(15, 23, 42, 0.07);
+  --shadow-sm: 0 4px 14px rgba(15, 23, 42, 0.09);
+  --shadow-md: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.16), 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+
+/* ========== 4. 背景光斑层 ========== */
+/* 多层 radial-gradient 模拟参考稿里的大面积柔光；background-attachment: fixed
+   让光斑不随内容滚动，视觉上像固定在窗口后方的光源。 */
+html.glass[data-theme="dark"] body {
+  background-color: #070b11;
+  background-image:
+    radial-gradient(120% 95% at 6% -10%, rgba(7, 193, 96, 0.24), transparent 62%),
+    radial-gradient(95% 80% at 96% 18%, rgba(48, 110, 255, 0.2), transparent 64%),
+    radial-gradient(85% 70% at 44% 118%, rgba(122, 74, 220, 0.15), transparent 60%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+html.glass[data-theme="light"] body {
+  background-color: #eef1f6;
+  background-image:
+    radial-gradient(115% 90% at 4% -8%, rgba(7, 193, 96, 0.15), transparent 60%),
+    radial-gradient(100% 85% at 98% 26%, rgba(74, 132, 255, 0.14), transparent 62%),
+    radial-gradient(90% 70% at 50% 116%, rgba(255, 255, 255, 0.9), transparent 58%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+html.glass body,
+html.glass #root {
+  transition: background-color 260ms ease;
+}
+
+/* ========== 5. backdrop-filter 挂点（仅 3 类，控制 WebView2 合成开销） ========== */
+
+/* 标题栏：backdrop-filter 会让它成为层叠上下文，此时它的 z-index 仍是 auto，
+   而内容区的 PageContainer 是 z-index:1 —— 后者会反过来盖住整个标题栏，
+   连带把标题栏内部的下拉弹层（磁盘状态等）一起压到内容之下。
+   所以这里必须把层级提到内容区之上，弹窗的 z-index 才在正确的上下文里生效。
+
+   注意 `[data-tauri-drag-region]` 在这个项目里被用了两次：标题栏根元素，以及
+   左上角的 Logo 容器。必须用 `.border-b` 限定到根元素 —— 否则会给 Logo 容器
+   也套上一道 inset 内高光和外部投影，在它周围糊出一圈亮边。 */
+html.glass [data-tauri-drag-region].border-b {
+  z-index: 1300;
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+}
+
+/* 标题栏的层次：Tab 槽用的是 --bg-hover(0.085)，与标题栏自身的 --bg-content(0.055)
+   几乎同亮度，玻璃形态下两者会糊成一片、看不出顶部是一条独立的工具栏。
+   这里补一道内高光 + 向下的投影，把它从内容区里"抬"起来。 */
+html.glass[data-theme="dark"] [data-tauri-drag-region].border-b {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055),
+              0 8px 24px rgba(2, 6, 12, 0.34);
+}
+
+html.glass[data-theme="light"] [data-tauri-drag-region].border-b {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85),
+              0 8px 22px rgba(15, 23, 42, 0.07);
+}
+
+/* 玻璃卡片：设置页的各个分组面板。
+   用显式类名 .glass-card 指定 —— 之前用工具类组合 `.rounded.border` 去猜，
+   把搜索框、工具栏图标按钮、列表勾选框、分页页码也一起当成了卡片
+   （它们同样带这两个类），每加一个新控件就误伤一次。 */
+html.glass .glass-card {
+  /* Tailwind 的 rounded 是固定 4px、不读 CSS 变量，所以这里显式接管圆角 */
+  border-radius: var(--radius-lg);
+  background: var(--bg-content);
+  box-shadow: var(--glass-card-shadow);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+/* 控件统一圆角：搜索框、下拉、按钮共用同一档。
+   玻璃形态下这三者的原始圆角分别是 4px(rounded) / 6px(rounded-md) / 8px(--radius-sm)，
+   同一行里并排时肉眼可辨，统一后才是同一种设计语言。
+   --radius-lg(14px) 在 28px 高的按钮上正好等于半高，观感接近胶囊。 */
+html.glass .btn,
+html.glass .ctrl-icon,
+html.glass input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+html.glass select,
+html.glass textarea,
+html.glass [aria-haspopup="listbox"] {
+  border-radius: var(--radius-lg);
+}
+
+/* 玻璃按钮：.btn 原本是「透明底 + 1px 边框」，描边在玻璃外观下退场后，
+   按钮就只剩文字、完全失去体积感。这里补半透明底 + 内高光 + 极轻投影，
+   让它像一块浮起来的小玻璃。已带自身配色语义的变体（primary / danger / ghost / link）
+   不参与，否则会把它们的颜色盖掉；但它们的 hover 仍会写回 --border-color-strong，
+   所以 hover 态要再压一次描边。 */
+html.glass .btn:not(.btn-primary):not(.btn-danger):not(.btn-ghost):not(.btn-link) {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(2, 6, 12, 0.22);
+}
+
+html.glass .btn:not(.btn-primary):not(.btn-danger):not(.btn-ghost):not(.btn-link):hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+html.glass[data-theme="light"] .btn:not(.btn-primary):not(.btn-danger):not(.btn-ghost):not(.btn-link) {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+html.glass[data-theme="light"] .btn:not(.btn-primary):not(.btn-danger):not(.btn-ghost):not(.btn-link):hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.98);
+}
+
+/* 输入框 / 下拉 / 文本域：与按钮同一套体积感。
+   搜索框的描边写在组件内联样式里，已经在组件侧改用 --border-color-control，
+   由上面的 token 归零；FilterSelect 的触发按钮则是类名写死的 --border-color，
+   需要在这里显式覆盖。两者都只保留填充 + 内高光 + 极轻投影。 */
+html.glass input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+html.glass select,
+html.glass textarea,
+html.glass .ctrl-icon,
+html.glass [aria-haspopup="listbox"] {
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 2px rgba(2, 6, 12, 0.2);
+}
+
+html.glass[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+html.glass[data-theme="light"] select,
+html.glass[data-theme="light"] textarea,
+html.glass[data-theme="light"] .ctrl-icon,
+html.glass[data-theme="light"] [aria-haspopup="listbox"] {
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 23, 42, 0.07);
+}
+
+/* 内容主体区 —— 应用管理列表、数据迁移内容、迁移历史列表。
+   普通模式下这些区域是平铺在页面上的（只有分隔线，没有容器感），
+   玻璃形态下让它们整体浮起一层，与上方工具栏拉开前后关系。
+   类名由各页面显式添加，不靠结构或工具类猜测。 */
+html.glass .glass-surface {
+  background: var(--bg-content);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-card-shadow);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  /* 卡片内边距：普通模式下这些内容区是平铺的、可以顶到边缘；
+     浮起成卡片后必须留出内边距，否则表头与首行会紧贴圆角，看着像被裁掉。 */
+  padding: var(--spacing-2) var(--spacing-3);
+}
+
+/* 弹窗面板：新增的语义类，只加在需要玻璃质感的浮层上。
+   浮层已经用高不透明度的 --bg-modal，模糊只是让边缘与背景衔接更自然。 */
+html.glass .glass-panel {
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+}
+
+/* ========== 6. 细节打磨 ========== */
+
+/* 滚动条在玻璃背景上需要提高对比度，否则几乎看不见 */
+html.glass ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+html.glass ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+html.glass[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+html.glass[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.3);
+}
+
+/* 输入类控件边框被压淡后，补一层极轻的内阴影，让可输入区域的边界仍然明确 */
+html.glass input:not([type="checkbox"]):not([type="radio"]),
+html.glass select,
+html.glass textarea {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}

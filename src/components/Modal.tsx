@@ -72,7 +72,7 @@ export default function Modal({ isOpen, onClose, title, children, width = 640 }:
       onClick={handleClose}
     >
       <div
-        className="rounded-lg flex flex-col overflow-hidden"
+        className="rounded-lg flex flex-col overflow-hidden glass-panel"
         style={panelStyle}
         onClick={(e) => e.stopPropagation()}
       >

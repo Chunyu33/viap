@@ -2,6 +2,12 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## Unreleased
+
+- Added a "Liquid Glass" appearance toggle (Settings → Appearance), off by default. Turning it on gives the window a translucent glass look with a soft glow; turning it off restores the previous appearance immediately, and it works with both light and dark themes.
+- More polish for the glass look: lists, toolbars and grouped blocks now look consistent with each other.
+- Easier to reach our websites: the Viap row in Settings now opens the official site, and both LightC and BinlockX in "More Tools" have a website button.
+
 ## v1.2.2
 
 - The portable build no longer reports a phantom update: it used to say "new version available" on every launch even when you were already on the latest package. The banner now appears only when a genuinely newer version exists, and tells you which version it is.

@@ -17,6 +17,8 @@ export interface UserSettings {
   autoBackupEnabled: boolean;
   /** 跳过迁移前的逐文件占用检测（大目录迁移更快） */
   skipLockCheck: boolean;
+  /** 启用液态玻璃外观；默认关闭，开启后整窗切换为半透明玻璃风格 */
+  glassEnabled: boolean;
 }
 
 interface UserSettingsLoadResult {
@@ -36,6 +38,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   theme: 'system',
   autoBackupEnabled: true,
   skipLockCheck: false,
+  glassEnabled: false,
 };
 
 function isThemeMode(value: unknown): value is UserThemeMode {
@@ -64,6 +67,8 @@ export function normalizeUserSettings(input: Partial<UserSettings>): UserSetting
     theme: isThemeMode(input.theme) ? input.theme : DEFAULT_USER_SETTINGS.theme,
     autoBackupEnabled: input.autoBackupEnabled !== false,
     skipLockCheck: input.skipLockCheck === true,
+    // 旧配置文件里没有该字段，缺省即关闭，确保升级后外观与原来完全一致
+    glassEnabled: input.glassEnabled === true,
   };
 }
 
