@@ -22,7 +22,7 @@ Viap is a Windows desktop application built with Tauri, React, TypeScript, and R
 - Uninstall applications and scan or clean related leftovers, with running-process handling, a before/after comparison report and matching services, drivers or scheduled tasks.
 - Show disk usage, application snapshots, lazy-loaded icons, and background scan progress.
 - Detect HDD cold-start cases and let users manually load slow application-data directories.
-- Support light and dark themes, font-size settings, portable mode, and WebView2 offline installers.
+- Support light and dark themes, an optional liquid-glass appearance, font-size settings, portable mode, and WebView2 offline installers.
 - Verify the running executable against the official GitHub Release signature.
 
 ## Safety Notes
@@ -50,7 +50,7 @@ On first launch, the portable build can copy missing data from an existing Viap 
 - Installed builds normally use `%APPDATA%\viap`.
 - Portable builds normally use the application directory's `data` folder.
 - The Settings page can change Viap's data directory and copies managed data before switching to the new location.
-- Themes, font size, default migration paths, recycle-bin preference, and scan settings are persisted with the user data.
+- Themes, the liquid-glass appearance, font size, default migration paths, recycle-bin preference, and scan settings are persisted with the user data.
 
 ## Integrity Verification
 
@@ -96,7 +96,7 @@ node scripts/generate-ico.js
 
 Please search existing issues first, then describe one problem per issue with a clear, factual title. Following the core principles of [How To Ask Questions The Smart Way](https://www.catb.org/esr/faqs/smart-questions.html) helps issues get understood and resolved faster:
 
-- **Bug reports** must include the exact reproduction steps, expected and actual behavior, LightC version, Windows version, selected interface language, and relevant logs or screenshots.
+- **Bug reports** must include the exact reproduction steps, expected and actual behavior, Viap version, Windows version, selected interface language, and relevant logs or screenshots.
 - Include the smallest reproducible example when possible. Redact personal paths, usernames, tokens, and other sensitive information before posting logs or screenshots.
 - **Feature requests** should explain the problem and intended outcome, rather than only demanding a specific implementation.
 - Keep the discussion concise, respectful, and open to clarification. Please avoid assumptions, insults, or orders; a clear report with useful context is far more effective.

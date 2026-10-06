@@ -198,6 +198,7 @@ export default function DiskUsageBar({ disks, loading, refreshing = false, onRef
 
       {open && (
         <div
+          className="glass-panel"
           style={{
             position: 'absolute',
             right: 0,

@@ -43,6 +43,9 @@
   /* 背景色 */
   --bg-app: #F3F4F6;
   --bg-content: #FFFFFF;
+  /* 抬升面：浮在 --bg-hover 这种「凹槽」之上的选中块（目前用于顶部标签栏的选中胶囊）。
+     必须比 --bg-hover 更亮，否则选中项看起来是凹进去的。 */
+  --bg-raised: #FFFFFF;
   --bg-row: #FFFFFF;
   --bg-row-hover: #F4F6F8;
   --bg-row-selected: #E8F8EF;
@@ -51,6 +54,15 @@
   --bg-toolbar: #F9FAFB;
   --bg-modal: #FFFFFF;
   --bg-modal-overlay: rgba(0, 0, 0, 0.4);
+  /* 卡片内部的两种「铺满整行的底衬」。之所以拆成两条，是因为它们在普通模式下
+     本来就不一样，共用一个 token 必然改到其中一个：
+       --bg-inset  展开的详情面板 —— 原来是一层浅灰，与行有区分；
+       --bg-group  列表里的分组标题行 —— 原来与普通行同色，靠字重和箭头区分。
+     两条的默认值都取自拆分前的实际取值，所以普通模式逐位不变。 */
+  --bg-inset: var(--bg-row-hover);
+  --bg-group: var(--bg-content);
+  /* 无文字的图标按钮底色。普通模式沿用原来的透明底。 */
+  --bg-control: transparent;
 
   /* 文字色 */
   --text-primary: #1F2937;
@@ -102,6 +114,8 @@
 
   --bg-app: #0A0A0A;
   --bg-content: #141414;
+  /* 抬升面：比凹槽 --bg-hover(#1C1C1C) 更亮，选中块才是「浮起来」的 */
+  --bg-raised: #2E2E2E;
   --bg-row: #141414;
   --bg-row-hover: #1C1C1C;
   --bg-row-selected: rgba(7, 193, 96, 0.08);
@@ -110,6 +124,10 @@
   --bg-toolbar: #101010;
   --bg-modal: #141414;
   --bg-modal-overlay: rgba(0, 0, 0, 0.7);
+  /* 同浅色：卡片内底衬、分组标题行、图标按钮底色，普通模式取值与拆分前一致 */
+  --bg-inset: var(--bg-row-hover);
+  --bg-group: var(--bg-content);
+  --bg-control: transparent;
 
   --text-primary: #EBEBEB;
   --text-secondary: #A0A0A0;
@@ -164,4 +182,23 @@
 
   /* 行高 */
   --row-height: calc(42px + (var(--font-size-base) - 13px) * 1.6);
+
+  /* ---- 分隔线与描边的语义 token ----
+     把「列表行线 / 分区线 / 控件描边」从通用的 --border-color 中拆出来。
+     默认取值与拆分前完全一致，所以普通模式的外观逐位不变；
+     液态玻璃外观只覆写这三个 token（见 glass.css），
+     因此不会波及弹窗、卡片等其它仍然需要边框的部件。 */
+  --border-color-row: var(--border-color);
+  --border-color-divider: var(--border-color-strong);
+  --border-color-control: var(--border-color);
+
+  /* 主内容区底色。原来 <main> 直接吃 --bg-content，与卡片共用一个变量，
+     结果液态玻璃下想「让内容区透明、露出背景光斑」就没有可覆写的入口。
+     单独给一条 token（默认仍等于 --bg-content，普通模式完全不变）。 */
+  --bg-main: var(--bg-content);
+
+  /* 页面级工具栏的左右内缩。普通模式下内容平铺，8px 正好与列表行的内边距对齐；
+     液态玻璃下内容装进卡片，卡片自带内边距，工具栏要收到 0
+     才能和卡片左边缘齐平（另外两个模块的工具栏本来就是这个位置）。 */
+  --toolbar-inset-x: 8px;
 }

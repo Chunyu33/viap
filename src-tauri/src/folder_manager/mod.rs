@@ -115,9 +115,14 @@ pub fn get_large_folders() -> Result<Vec<LargeFolder>, String> {
             let status = match all_statuses.iter().find(|s| s.name == template.id) {
                 Some(s) => s, None => continue,
             };
+            // 与上一分支保持一致：没有真实目录的内置项直接隐藏。
+            // 这类条目以前会带着一个「没找到」的默认路径常驻，社交软件分组因此全是不可用项；
+            // 实际原因往往只是没装这个应用、或数据不在已知位置，占位反而误导。
+            if !status.is_detected {
+                continue;
+            }
             let path = PathBuf::from(&status.current_path);
-            let exists = status.is_detected;
-            let is_junc = if exists { utils::is_junction(&path) } else { false };
+            let is_junc = utils::is_junction(&path);
             folders.push(LargeFolder {
                 id: status.name.clone(),
                 display_name: template.display_name.clone(),
@@ -127,14 +132,24 @@ pub fn get_large_folders() -> Result<Vec<LargeFolder>, String> {
                 junction_target: if is_junc { utils::get_junction_target(&path) } else { None },
                 app_process_names: template.process_names.clone(),
                 icon_id: template.icon_id.clone(),
-                exists,
+                exists: true,
             });
         }
     }
 
     // ========== 自定义文件夹 ==========
+    // 内置优先：同一个路径既被用户加进自定义、又刚好命中内置规则时只保留内置条目
+    // （内置带图标和进程名，信息更全）。这里只是不展示，用户配置里的记录仍然保留。
+    let builtin_paths: std::collections::HashSet<String> = folders
+        .iter()
+        .map(|folder| normalize_path_for_compare(&folder.path))
+        .collect();
+
     let custom = data_dir::load_custom_folders(&utils::custom_folders_path(&ensure_data_dir()));
     for cf in &custom {
+        if builtin_paths.contains(&normalize_path_for_compare(&cf.path)) {
+            continue;
+        }
         let path = PathBuf::from(&cf.path);
         let exists = path.exists();
         let is_junc = if exists { utils::is_junction(&path) } else { false };
@@ -247,6 +262,28 @@ pub async fn migrate_large_folder(
 /// 基于路径 + 时间戳生成自定义文件夹唯一 ID
 ///
 /// 抽出为公共函数，供链接识别重建时复用同一套 ID 规则，避免两处实现漂移。
+/// 比较路径时用的归一化形式：去掉尾部斜杠、统一分隔符与大小写。
+pub(crate) fn normalize_path_for_compare(path: &str) -> String {
+    path.trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase()
+}
+
+/// 若 `path` 已被内置规则覆盖，返回对应内置条目的显示名。
+///
+/// 直接复用 `get_large_folders` 的结果，而不是再抄一份系统目录与应用数据模板 ——
+/// 这样「判定是否内置」和「界面上能看到的条目」永远一致，不会因为两边逻辑漂移
+/// 出现「提示已内置、但列表里又找不到」的情况。
+fn builtin_folder_covering(path: &str) -> Option<String> {
+    let target = normalize_path_for_compare(path);
+    get_large_folders()
+        .ok()?
+        .into_iter()
+        .find(|folder| {
+            folder.folder_type != LargeFolderType::Custom
+                && normalize_path_for_compare(&folder.path) == target
+        })
+        .map(|folder| folder.display_name)
+}
+
 pub(crate) fn build_custom_folder_id(path: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -265,6 +302,12 @@ pub fn add_custom_folder(path: String) -> Result<(), String> {
     let folder_path = PathBuf::from(&path);
     if !folder_path.exists() || !folder_path.is_dir() {
         return Err(format!("路径不存在或不是文件夹: {}", path));
+    }
+
+    // 内置优先：命中内置规则时不再重复添加，直接把内置条目的名字告诉用户，
+    // 让他知道这个目录已经在列表里了（只是归在内置分组下）。
+    if let Some(name) = builtin_folder_covering(&path) {
+        return Err(format!("该目录已由内置的「{}」覆盖，无需重复添加", name));
     }
 
     let display_name = folder_path
@@ -505,5 +548,32 @@ pub fn restore_large_folder_by_history(
             message: "恢复功能仅支持 Windows 系统".to_string(),
             new_path: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_path_for_compare;
+
+    #[test]
+    fn normalize_path_ignores_case_separators_and_trailing_slash() {
+        // 用户从选择框拿到的路径与模板展开出来的路径，分隔符和大小写都可能不同，
+        // 判重必须把它们视作同一个目录。
+        assert_eq!(
+            normalize_path_for_compare("C:/Users/Test/.workbuddy/"),
+            normalize_path_for_compare("c:\\users\\test\\.workbuddy")
+        );
+        assert_eq!(
+            normalize_path_for_compare("D:\\Data\\"),
+            normalize_path_for_compare("D:\\Data")
+        );
+    }
+
+    #[test]
+    fn normalize_path_keeps_sibling_directories_apart() {
+        assert_ne!(
+            normalize_path_for_compare("C:\\Users\\a\\data"),
+            normalize_path_for_compare("C:\\Users\\a\\data2")
+        );
     }
 }

@@ -5,6 +5,7 @@ import App from "./App";
 import "./index.css";
 import { applyFontSize } from "./utils/fontSize";
 import { bootstrapUserSettings } from "./utils/userSettings";
+import { applyGlass } from "./utils/glassEffect";
 import { startWindowSizeTracking } from "./utils/windowState";
 
 // Tauri 是桌面应用，不需要浏览器默认右键菜单，统一禁用避免露出 WebView 调试感。
@@ -26,6 +27,8 @@ async function bootstrapApplication() {
   }
   const settings = await bootstrapUserSettings();
   applyFontSize(settings.fontSizePx);
+  // 在首帧渲染前应用玻璃外观，避免先按普通外观绘制一帧再切换产生的闪烁
+  applyGlass(settings.glassEnabled);
   // 窗口尺寸由后端在显示前恢复，这里只负责在用户拖动后防抖回写
   void startWindowSizeTracking();
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

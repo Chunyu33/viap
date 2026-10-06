@@ -2,6 +2,13 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.3.0
+
+- Added a "Liquid Glass" appearance toggle (Settings → Appearance), off by default. Turning it on gives the window a translucent glass look with a soft glow; turning it off restores the previous appearance immediately, and it works with both light and dark themes.
+- App data covers more ground: Telegram was added to the chat apps and newer WeChat is now found as well — it keeps its storage location in its own config file rather than the registry, so a folder that had been moved was never detected before. The "AI tools" group now includes WorkBuddy, DeepSeek Harness, Kimi, ZCode, Chatbox, LM Studio, Codeium and more, including the `.<tool>` folders kept in your user directory. Only folders that really exist are listed, and apps you don't have no longer appear as unavailable rows.
+- A folder no longer shows up twice: built-in rules take priority, and adding a custom folder that a built-in already covers now tells you so instead of adding a duplicate.
+- Easier to reach our websites: the Viap row in Settings now opens the official site, and both LightC and BinlockX in "More Tools" have a website button.
+
 ## v1.2.2
 
 - The portable build no longer reports a phantom update: it used to say "new version available" on every launch even when you were already on the latest package. The banner now appears only when a genuinely newer version exists, and tells you which version it is.

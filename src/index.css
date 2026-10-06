@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "./styles/variables.css";
 @import "./styles/components.css";
+/* 液态玻璃外观（可选开关）：全部规则限定在 html.glass 下，关闭时零匹配 */
+@import "./styles/glass.css";
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 *, *::before, *::after {

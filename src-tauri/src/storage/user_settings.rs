@@ -45,6 +45,9 @@ pub struct UserSettings {
     /// 跳过迁移前的逐文件占用检测（大目录迁移更快，但占用问题会在复制阶段才暴露）
     #[serde(default)]
     pub skip_lock_check: bool,
+    /// 启用液态玻璃外观；默认关闭，开启后整窗切换为半透明玻璃风格
+    #[serde(default)]
+    pub glass_enabled: bool,
     /// 窗口宽度（逻辑像素，随窗口拖动单独保存）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_width: Option<u32>,
@@ -85,6 +88,7 @@ impl Default for UserSettings {
             theme: default_theme(),
             auto_backup_enabled: true,
             skip_lock_check: false,
+            glass_enabled: false,
             window_width: None,
             window_height: None,
         }

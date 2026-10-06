@@ -14,7 +14,7 @@ import {
   AppWindow, Loader2, Sun, Moon, Monitor, Database,
   Github, ExternalLink, BookOpen, Heart, Rocket,
   Video, Users, MessageSquare, Activity,
-  ShieldCheck, FileCog, DatabaseBackup,
+  ShieldCheck, FileCog, DatabaseBackup, Sparkles,
 } from 'lucide-react';
 import { useThemeContext } from '../App';
 import type { ThemeMode } from '../hooks/useTheme';
@@ -24,6 +24,7 @@ import DonateModal from '../components/DonateModal';
 import ProjectPromoModal from '../components/ProjectPromoModal';
 import Modal from '../components/Modal';
 import FilterSelect from '../components/FilterSelect';
+import Switch from '../components/Switch';
 import type { ConfigFileEntry, DataDirConfig, DataDirSwitchResult, GhostLinkPreview, MirrorBackupInfo } from '../types';
 import {
   applyFontSize,
@@ -31,6 +32,7 @@ import {
   MIN_FONT_SIZE_PX,
   normalizeFontSizePx,
 } from '../utils/fontSize';
+import { applyGlass } from '../utils/glassEffect';
 import {
   DEFAULT_USER_SETTINGS,
   persistUserSettings,
@@ -434,6 +436,8 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     saveSettings(ns);
     // 字号是外观设置，保存后立即写入 CSS 变量，四个模块无需刷新即可生效。
     if (k === 'fontSizePx') applyFontSize(nextValue);
+    // 玻璃外观同属外观设置：切换根节点 class 即整窗生效，关闭时立即回到原样。
+    if (k === 'glassEnabled') applyGlass(nextValue === true);
   };
 
   /** 字号下拉切换：选预设立即生效，选「自定义」只切换编辑态 */
@@ -509,7 +513,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* appearance */}
         <section>
           <SectionHeader label="外观" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             <div className="setting-item" style={{ padding: '10px 14px' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
@@ -529,6 +533,23 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                 <ThemeButton mode="system" currentMode={themeState.mode} onClick={() => themeState.setTheme('system')}
                   icon={<Monitor className="w-4 h-4" />} label="系统" />
               </div>
+            </div>
+            {/* 液态玻璃外观：默认关闭，打开后整窗切换为半透明玻璃风格（外观设置，与主题独立） */}
+            <div className="setting-item" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
+                  <Sparkles className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+                </div>
+                <div className="min-w-0">
+                  <p className="setting-label">液态玻璃</p>
+                  <p className="setting-desc">半透明玻璃质感，可与浅色、深色主题搭配</p>
+                </div>
+              </div>
+              <Switch
+                checked={settings.glassEnabled}
+                onChange={(next) => updateSetting('glassEnabled', next)}
+                title="液态玻璃"
+              />
             </div>
             <div className="setting-item" style={{ padding: '10px 14px', borderTop: '1px solid var(--border-color)' }}>
               <div className="flex items-center gap-3">
@@ -580,7 +601,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* migration settings */}
         <section>
           <SectionHeader label="迁移设置" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             {/* 默认应用迁移目录 */}
             <button onClick={handleSelectAppTargetPath}
               className="setting-item setting-item-clickable w-full text-left"
@@ -654,7 +675,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* data management */}
         <section>
           <SectionHeader label="数据管理" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             <div className="setting-item" style={{ padding: '10px 14px' }}>
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ background: 'var(--bg-row-hover)' }}>
@@ -714,7 +735,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* other settings */}
         <section>
           <SectionHeader label="其他设置" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             <div className="setting-item" style={{ padding: '10px 14px' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
@@ -733,7 +754,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* maintenance */}
         <section>
           <SectionHeader label="存储维护" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             {/* 自动备份：数据目录被误删时的兜底；动作按钮统一放在右侧，信息按行堆叠在左侧 */}
             <div className="setting-item" style={{ padding: '10px 14px' }}>
               <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -889,7 +910,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* 更新 */}
         <section>
           <SectionHeader label="更新" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)', padding: '10px 14px' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)', padding: '10px 14px' }}>
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--bg-row-hover)' }}>
                 <RefreshCw className={`w-4 h-4 ${updateStatus === 'checking' || updateStatus === 'downloading' ? 'animate-spin' : ''}`}
@@ -943,7 +964,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* 安全：完整性校验属于独立的安全操作，避免与版本更新混在同一张卡片中。 */}
         <section>
           <SectionHeader label="安全" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             <div className="flex items-center gap-3" style={{ padding: '10px 14px' }}>
               <div className="w-8 h-8 rounded flex items-center justify-center" style={{ background: 'var(--color-primary-light)' }}>
                 <ShieldCheck className={`w-4 h-4 ${integrityChecking ? 'animate-pulse' : ''}`} style={{ color: 'var(--color-primary)' }} />
@@ -967,7 +988,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* help */}
         <section>
           <SectionHeader label="帮助" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
             <button onClick={() => setManualOpen(true)}
               className="setting-item setting-item-clickable w-full text-left"
               style={{ padding: '10px 14px', cursor: 'pointer' }}>
@@ -988,8 +1009,12 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
         {/* about */}
         <section>
           <SectionHeader label="关于" />
-          <div className="rounded border" style={{ borderColor: 'var(--border-color)' }}>
-            <div className="setting-item" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)' }}>
+          <div className="rounded border glass-card" style={{ borderColor: 'var(--border-color)' }}>
+            {/* Viap 官网 — 整行可点，右侧保留版本号并补一个外链图标，与下方 GitHub / 更新日志一致 */}
+            <a href="https://viap.evan666.cc/" target="_blank" rel="noopener noreferrer"
+              title="前往 Viap 官网"
+              className="setting-item no-underline"
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}>
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded flex items-center justify-center overflow-hidden">
                   <img src={AppIconSvg} alt="" className="w-8 h-8" />
@@ -999,8 +1024,11 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   <p className="setting-desc">{APP_INFO.description}</p>
                 </div>
               </div>
-              <span className="badge badge-primary">v{appVersion}</span>
-            </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="badge badge-primary">v{appVersion}</span>
+                <ExternalLink className="w-3 h-3" style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+            </a>
             {/* GitHub */}
             <a href="https://github.com/Chunyu33/viap" target="_blank" rel="noopener noreferrer"
               className="setting-item no-underline"

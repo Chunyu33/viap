@@ -172,19 +172,19 @@ function App() {
                     key={tab.id}
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
-                    className="relative flex items-center gap-1.5 h-7 px-3 rounded-md text-[12px] font-medium transition-all duration-200"
-                    style={{
-                      color: isActive ? 'var(--color-primary)' : 'var(--text-secondary)',
-                      background: isActive ? 'var(--bg-content)' : 'transparent',
+                    className="flex items-center gap-1.5 h-7 px-3 rounded-md text-[12px] font-medium transition-all duration-200"
+                    style={isActive ? {
+                      // 选中态只用「浮起的胶囊 + 柔和投影」表达，不再叠加配色：
+                      // 底色取比轨道(--bg-hover)更亮的 --bg-raised，投影把它从凹槽里抬起来；
+                      // 文字回到正文色，避免绿色文字 + 绿色小圆点 + 胶囊三层强调同时抢注意力。
+                      color: 'var(--text-primary)',
+                      background: 'var(--bg-raised)',
+                      boxShadow: 'var(--shadow-sm)',
+                    } : {
+                      color: 'var(--text-secondary)',
+                      background: 'transparent',
                     }}
                   >
-                    {/* 激活态左侧小圆点 */}
-                    {isActive && (
-                      <span
-                        className="absolute left-1.5 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full"
-                        style={{ background: 'var(--color-primary)' }}
-                      />
-                    )}
                     <Icon className="w-3.5 h-3.5" />
                     <span>{tab.label}</span>
                   </button>
@@ -215,7 +215,7 @@ function App() {
         />
 
         {/* 页面内容区域 — CSS display 切换，组件实例保持存活，opacity 过渡动画 */}
-        <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-content)', position: 'relative' }}>
+        <main className="flex-1 overflow-hidden" style={{ background: 'var(--bg-main)', position: 'relative' }}>
           {mountedTabs.has('migration') && (
             <PageContainer visible={activeTab === 'migration'}>
               <AppMigration visible={activeTab === 'migration'} />
