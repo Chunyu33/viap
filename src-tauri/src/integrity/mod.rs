@@ -1,7 +1,10 @@
 //! 当前运行文件的完整性校验。
 //!
-//! 发布流程会为不同发行形态的 exe 上传 Minisign 签名。校验时只下载签名文本，
+//! 发布流程会为不同发行形态的 **原始 exe** 上传 Minisign 签名。校验时只下载签名文本，
 //! 并让所有候选签名共享一次本地文件读取，避免大文件在机械盘上被重复读取。
+//!
+//! 这里校验的是「正在运行的 exe」的字节，所以签名对象必须是原始 exe ——
+//! 安装包与 zip 的签名对应的字节和运行中的 exe 永远不可能相同，不能拿来校验。
 
 use std::fs::File;
 use std::io::Read;
@@ -15,8 +18,19 @@ use serde::Serialize;
 // 该公钥与 tauri.conf.json 的 updater.pubkey 必须保持一致，避免完整性校验使用另一把密钥。
 const UPDATER_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxOURGMjI0MTFGMTE5NEEKUldSS0dmRVJKUEtkWVlEUjV1d3dvdVg4S2p6VUFLN1Q4enhraVVkZ01tcDU5MXpVRGEyNjN5R0UK";
 const GITHUB_RELEASE_BASE_URL: &str = "https://github.com/Chunyu33/viap/releases/download";
-const SIGNED_EXECUTABLE_SUFFIXES: [&str; 3] =
-    ["x64.exe", "x64-offline-webview2.exe", "x64-portable.exe"];
+
+/// 当前发行形态可能对应的原始 exe 资产后缀。
+///
+/// 便携版由 `--features portable` 单独构建，可以在编译期确定；
+/// 标准版与 WebView2 离线版的可执行文件来自两次独立构建，运行期无法区分，
+/// 因此只能把两个候选都试一遍（两者都是非便携构建，命中的那个即当前形态）。
+fn signed_executable_suffixes() -> &'static [&'static str] {
+    if cfg!(feature = "portable") {
+        &["x64-portable.exe"]
+    } else {
+        &["x64.exe", "x64-offline-webview2.exe"]
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +39,8 @@ pub enum IntegrityStatus {
     Tampered,
     NetworkError,
     SignatureNotFound,
+    /// 只下载到部分发行形态的签名，不足以对「未命中」下篡改的结论。
+    SignatureIncomplete,
     SignatureInvalid,
     LocalFileError,
     ConfigurationError,
@@ -121,21 +137,33 @@ async fn download_signature(
         .map_err(|error| SignatureFetchError::Network(error.to_string()))
 }
 
+/// 一次收集的结果：成功下载的签名，以及该发行形态下缺失的资产名。
+///
+/// 缺哪些必须记下来：只有候选签名「一个都不缺」时，校验未命中才能断言篡改；
+/// 否则运行的可能正是一个签名还没上传的发行形态。
+struct CollectedSignatures {
+    downloaded: Vec<DownloadedSignature>,
+    missing: Vec<String>,
+}
+
 async fn collect_signatures(
     client: &reqwest::Client,
     tag: &str,
-) -> Result<Vec<DownloadedSignature>, SignatureFetchError> {
-    let mut signatures = Vec::with_capacity(SIGNED_EXECUTABLE_SUFFIXES.len());
-    for suffix in SIGNED_EXECUTABLE_SUFFIXES {
+    suffixes: &[&str],
+) -> Result<CollectedSignatures, SignatureFetchError> {
+    let mut downloaded = Vec::with_capacity(suffixes.len());
+    let mut missing = Vec::new();
+    for suffix in suffixes {
         let asset_name = format!("viap_{tag}_{suffix}");
-        if let Some(content) = download_signature(client, tag, &asset_name).await? {
-            signatures.push(DownloadedSignature {
+        match download_signature(client, tag, &asset_name).await? {
+            Some(content) => downloaded.push(DownloadedSignature {
                 asset_name,
                 content,
-            });
+            }),
+            None => missing.push(asset_name),
         }
     }
-    Ok(signatures)
+    Ok(CollectedSignatures { downloaded, missing })
 }
 
 fn verify_local_file(
@@ -227,8 +255,9 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
         }
     };
 
-    let signatures = match collect_signatures(&client, &tag).await {
-        Ok(signatures) => signatures,
+    let suffixes = signed_executable_suffixes();
+    let collected = match collect_signatures(&client, &tag, suffixes).await {
+        Ok(collected) => collected,
         Err(SignatureFetchError::Network(error)) => {
             return result(
                 IntegrityStatus::NetworkError,
@@ -245,25 +274,21 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
         }
     };
 
-    if signatures.is_empty() {
+    let CollectedSignatures { downloaded, missing } = collected;
+
+    // 该发行形态一个签名都没拿到：正常发布渠道必然带签名，说明当前版本不是官方构建，
+    // 或发布流程漏传 —— 无论哪种都不能给出「安全」或「被篡改」的结论。
+    if downloaded.is_empty() {
         return result(
             IntegrityStatus::SignatureNotFound,
             format!("未找到版本 {tag} 对应的程序签名文件，请确认当前版本来自官方发布渠道"),
             None,
         );
     }
-    // 三种发行形态缺一时无法确认当前 exe 对应哪个构建，必须避免把缺失签名误报为篡改。
-    if signatures.len() != SIGNED_EXECUTABLE_SUFFIXES.len() {
-        return result(
-            IntegrityStatus::SignatureNotFound,
-            "当前 Release 的完整性签名不完整，无法可靠判断当前程序是否被篡改",
-            None,
-        );
-    }
 
     // exe 读取可能持续数秒，放入阻塞线程池避免机械盘校验阻塞 Tauri 异步运行时。
     let verification = match tauri::async_runtime::spawn_blocking(move || {
-        verify_local_file(&executable_path, &public_key, &signatures)
+        verify_local_file(&executable_path, &public_key, &downloaded)
     })
     .await
     {
@@ -283,9 +308,21 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
             "文件完整性校验通过，当前程序安全",
             Some(asset_name),
         ),
-        Ok(None) => result(
+        // 候选签名一个不缺、却全部不匹配，才能断定本地 exe 被改过。
+        Ok(None) if missing.is_empty() => result(
             IntegrityStatus::Tampered,
             "签名与当前程序内容不一致，当前程序可能已被篡改",
+            None,
+        ),
+        // 还有候选没下载到，就不能排除「运行的正是一个缺签名的发行形态」，
+        // 此时报篡改是误报，只能如实说明无法判断。
+        Ok(None) => result(
+            IntegrityStatus::SignatureIncomplete,
+            format!(
+                "当前 Release 缺少 {} 个发行形态的程序签名（{}），无法可靠判断当前程序是否被篡改",
+                missing.len(),
+                missing.join("、")
+            ),
             None,
         ),
         Err(LocalVerificationError::File(error)) => {
@@ -299,7 +336,37 @@ pub async fn verify_file_integrity(app_handle: tauri::AppHandle) -> IntegrityChe
 
 #[cfg(test)]
 mod tests {
-    use super::decode_signature_content;
+    use super::{decode_signature_content, signed_executable_suffixes};
+
+    #[test]
+    fn signature_candidates_are_raw_executables_only() {
+        // 安装包 / 压缩包的签名对应的字节与运行中的 exe 不同，混进候选只会永远不命中，
+        // 并把「签名缺失」掩盖成「校验不通过」。这条断言防的就是发布资产改名后再次跑偏。
+        for suffix in signed_executable_suffixes() {
+            assert!(
+                suffix.ends_with(".exe"),
+                "签名候选必须是原始 exe：{suffix}"
+            );
+            assert!(
+                !suffix.contains("setup"),
+                "安装包签名不能用于校验运行中的 exe：{suffix}"
+            );
+            assert!(
+                !suffix.contains("zip"),
+                "压缩包签名不能用于校验运行中的 exe：{suffix}"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_candidates_are_ordered_and_deduplicated() {
+        let suffixes = signed_executable_suffixes();
+        assert!(!suffixes.is_empty(), "至少要有一个签名候选");
+        let mut seen = suffixes.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), suffixes.len(), "签名候选不应重复");
+    }
 
     #[test]
     fn decodes_tauri_outer_base64_signature() {

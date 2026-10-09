@@ -188,7 +188,14 @@ jobs:
           $installer = Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*.exe' | Select-Object -First 1
           if (-not $installer) { throw '未找到 WebView2 离线安装包' }
           Copy-Item $installer.FullName "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe"
+          # 完整性校验的对象是安装后实际运行的 exe，因此必须另存一份原始 exe 供签名；
+          # 这一步必须抢在便携版构建之前 —— 那个构建会覆盖同一个 release 目录下的 viap.exe。
           $builtExe = 'src-tauri/target/x86_64-pc-windows-msvc/release/viap.exe'
+          if (-not (Test-Path $builtExe)) { throw '未找到 WebView2 离线版原始 exe' }
+          $offlineExe = "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe"
+          Copy-Item $builtExe $offlineExe -Force
+          # 离线版同样是 NSIS 安装包，安装后 exe 的 bundle 标记会变成 NSS，签名前需同步替换。
+          pwsh -NoProfile -File scripts/prepare-integrity-exe.ps1 -Path $offlineExe
 
       - name: Build portable package
         shell: pwsh
@@ -210,6 +217,11 @@ jobs:
           - Windows 10/11 通常已内置 WebView2；如果系统缺少 WebView2，请先安装微软官方运行环境。
           '@ | Set-Content -Encoding UTF8 (Join-Path $portableDir '便携版说明.txt')
           Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath "viap_${env:RELEASE_TAG}_x64-portable.zip" -Force
+          # 便携版不经安装器，解压后直接运行 viap.exe，所以打包进 zip 的那个 exe 就是运行中的 exe。
+          # zip 自身的签名对应的字节与之不同，无法用于校验，必须单独签名这份 exe。
+          # 便携版不走 NSIS，bundle 标记保持原样，因此不做 NSS 替换。
+          $portableExe = "viap_${env:RELEASE_TAG}_x64-portable.exe"
+          Copy-Item (Join-Path $portableDir 'viap.exe') $portableExe -Force
 
       - name: Sign extra release assets
         shell: pwsh
@@ -220,7 +232,9 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new()
           $files = @(
             "viap_${env:RELEASE_TAG}_x64-offline-webview2-setup.exe",
-            "viap_${env:RELEASE_TAG}_x64-portable.zip"
+            "viap_${env:RELEASE_TAG}_x64-offline-webview2.exe",
+            "viap_${env:RELEASE_TAG}_x64-portable.zip",
+            "viap_${env:RELEASE_TAG}_x64-portable.exe"
           )
           foreach ($file in $files) {
             if (-not (Test-Path $file)) { throw "未找到待签名文件: $file" }
@@ -236,5 +250,9 @@ jobs:
           files: |
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2-setup.exe.sig
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-offline-webview2.exe.sig
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip
             viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.zip.sig
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe
+            viap_${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}_x64-portable.exe.sig

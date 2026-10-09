@@ -2,6 +2,11 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## v1.3.1
+
+- Polished the Liquid Glass appearance: the launch screen has its full background back, and dialogs, dropdowns and context menus now read as real translucent glass instead of stacked white patches. The Data Migration category rows no longer carry a background either.
+- Fixed "Verify file integrity" (Settings → Security) reporting an incomplete signature on every official build.
+
 ## v1.3.0
 
 - Added a "Liquid Glass" appearance toggle (Settings → Appearance), off by default. Turning it on gives the window a translucent glass look with a soft glow; turning it off restores the previous appearance immediately, and it works with both light and dark themes.

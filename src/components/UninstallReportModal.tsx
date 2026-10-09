@@ -165,7 +165,7 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
     <Modal isOpen={isOpen} onClose={onClose} title="卸载报告" width={560}>
       {data && (
         <div className="flex flex-col gap-3 text-[12px]">
-          <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-row)' }}>
+          <div className="rounded border px-3 py-2" style={{ borderColor: 'var(--border-color)', background: 'var(--bg-panel-block)' }}>
             <p style={{ color: 'var(--text-primary)' }}>{data.appName}</p>
             <p className="mt-1 break-all" style={{ color: 'var(--text-tertiary)' }}>{data.installLocation || '未知安装目录'}</p>
           </div>
@@ -297,7 +297,7 @@ export default function UninstallReportModal({ isOpen, onClose, data }: Uninstal
             <summary className="cursor-pointer text-[11px]" style={{ color: 'var(--text-tertiary)' }}>查看可复制报告</summary>
             <pre
               className="mt-2 max-h-[160px] overflow-auto rounded px-2 py-2 text-[11px] whitespace-pre-wrap break-all"
-              style={{ background: 'var(--bg-row)', color: 'var(--text-secondary)' }}
+              style={{ background: 'var(--bg-panel-block)', color: 'var(--text-secondary)' }}
             >
               {reportText}
             </pre>

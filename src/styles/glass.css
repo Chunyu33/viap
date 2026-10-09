@@ -44,6 +44,15 @@ html.glass {
      工具栏再留 8px 就会比卡片往里缩一截，和下面另外两个模块的工具栏也不一致。 */
   --toolbar-inset-x: 0px;
 
+  /* 弹窗底栏在玻璃下不铺底色：面板本身就是一片玻璃，
+     再在底部垫一条实色会把「整块玻璃」切成两段。分隔交给已有的极淡描边。 */
+  --bg-modal-footer: transparent;
+
+  /* 弹窗内的分组块统一改用「卡片内底衬」那一档淡提亮。
+     原来用的 --bg-row / --bg-row-hover 在玻璃下是 0.7～0.92 的白，
+     叠在 0.6 的面板上会合成 0.88～0.97 —— 那就是用户看到的「一块块贴上去的白」。 */
+  --bg-panel-block: var(--bg-inset);
+
   /* 卡片投影：实测只要卡片带投影，圆角外侧就会出现一圈发灰的弧
      —— 卡片是半透明的，投影落在圆角弧外时没有任何东西盖住它，
      而卡片内部被 60% 白底压淡，两者一对比就成了「残影」。
@@ -70,16 +79,38 @@ html.glass[data-theme="dark"] {
   /* 卡片内的底衬。它铺在同样半透明的卡片之上，两层 alpha 会相乘叠加：
      卡片 0.055 + 原值（详情面板 0.105 / 分组标题行 0.055）≈ 0.11～0.15，
      看起来就是一块贴上去的实色。压到 0.07 后合成约 0.11 —— 与卡片仍有区分，
-     但不再是一块实色；分组标题行沿用同一个值，两组用同一种「淡淡的提亮」。 */
+     但不再是一块实色。 */
   --bg-inset: rgba(255, 255, 255, 0.07);
-  --bg-group: var(--bg-inset);
+
+  /* 分组标题行（应用数据手风琴的分类行）在玻璃下必须完全透明。
+     它和卡片同样是两层叠加：卡片 0.055 + 底衬 0.07 ≈ 0.12 —— 正好是卡片的两倍亮，
+     整行看起来就是贴上去的一条色带。普通模式下这条 token 等于 --bg-content
+     （与卡片同色、看不出色块），所以玻璃下取 transparent 才与普通模式一致。
+     分类行靠箭头、字重和数量徽标区分，本来也不需要底色。 */
+  --bg-group: transparent;
   /* 图标按钮与下拉/输入框用同一种填充，工具栏一整行才是同一种设计语言 */
   --bg-control: var(--bg-input);
 
-  /* 浮层必须足够实：磁盘状态这类下拉会盖在密集内容之上，
-     半透明度过低会让下层文字透出来、层级读不清（实测 0.78 就会糊成一片）。 */
-  --bg-modal: rgba(18, 23, 32, 0.95);
-  --bg-modal-overlay: rgba(2, 5, 10, 0.6);
+  /* 浮层（下拉、右键菜单、扫描耗时面板）。它们直接盖在密集文字之上，
+     所以比弹窗面板实一些；配合 .glass-popover 的背景模糊，0.8 已足够看清文字，
+     再实就退回「一块白板」了 —— 0.95 那档在浅色下和普通弹窗几乎没有区别。 */
+  --bg-modal: rgba(20, 26, 36, 0.8);
+
+  /* 弹窗面板则可以更透：它背后是压暗的遮罩层，不与内容直接混在一起。
+     原来的 0.95 其实是「磨砂塑料」，压到 0.62 配合 backdrop-filter 才有透光感。 */
+  --bg-modal-panel: rgba(24, 30, 41, 0.62);
+  /* 遮罩同步加深：面板越透，越需要更暗的底把前景托起来 */
+  --bg-modal-overlay: rgba(2, 5, 10, 0.66);
+
+  /* 面板投影：内描边高光勾出玻璃边缘，外部大投影把它抬离背景 */
+  --panel-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 24px 70px rgba(2, 6, 12, 0.5),
+    0 6px 20px rgba(2, 6, 12, 0.3);
+
+  /* 启动页底色：必须不透明，且与 body 同色，切换时才不会闪一下 */
+  --bg-startup: #070b11;
 
   /* 边框退居次要：仅保留一道极淡的轮廓，用来在深浅接近处提示边界 */
   --border-color: rgba(255, 255, 255, 0.07);
@@ -106,11 +137,28 @@ html.glass[data-theme="light"] {
   /* 同深色：卡片 0.6 + 底衬 0.18 ≈ 0.67，是一层淡淡的提亮而不是白块。
      这一档尤其重要 —— 原值 0.92 白叠在 0.6 的卡片上接近纯白，正是「实色块」的来源。 */
   --bg-inset: rgba(255, 255, 255, 0.18);
-  --bg-group: var(--bg-inset);
+  /* 同深色：分组标题行透明，理由见上面深色块的注释。 */
+  --bg-group: transparent;
   --bg-control: var(--bg-input);
 
-  --bg-modal: rgba(255, 255, 255, 0.96);
-  --bg-modal-overlay: rgba(15, 23, 42, 0.24);
+  /* 浮层（理由同深色）。0.95 在浅色下就是一块实心白板，
+     压到 0.74 并叠上模糊后，背后的光透得出来、文字仍然清楚。 */
+  --bg-modal: rgba(255, 255, 255, 0.74);
+
+  /* 弹窗面板：浅色下透明度不能压得像深色那么低，否则整块会发灰。
+     0.6 叠在压暗的遮罩上合出约 0.73 的白，正文对比度仍然够。 */
+  --bg-modal-panel: rgba(255, 255, 255, 0.6);
+  --bg-modal-overlay: rgba(15, 23, 42, 0.32);
+
+  /* 浅色下高光要更实（白底叠白），投影要更柔，否则显脏 */
+  --panel-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 24px 64px rgba(15, 23, 42, 0.16),
+    0 6px 18px rgba(15, 23, 42, 0.08);
+
+  /* 启动页底色：必须不透明，且与 body 同色，切换时才不会闪一下 */
+  --bg-startup: #eef1f6;
 
   --border-color: rgba(15, 23, 42, 0.06);
   --border-color-strong: rgba(15, 23, 42, 0.14);
@@ -125,8 +173,12 @@ html.glass[data-theme="light"] {
 /* ========== 4. 背景光斑层 ========== */
 /* 多层 radial-gradient 模拟参考稿里的大面积柔光；background-attachment: fixed
    让光斑不随内容滚动，视觉上像固定在窗口后方的光源。 */
-html.glass[data-theme="dark"] body {
-  background-color: #070b11;
+/* 启动页与 body 共用同一层光斑：启动页是不透明的全屏层，
+   只给纯色的话，从启动页切到主界面时背景会明显跳一下。
+   background-color 走 --bg-startup，与启动页自身底色保持同一个来源。 */
+html.glass[data-theme="dark"] body,
+html.glass[data-theme="dark"] .startup-screen {
+  background-color: var(--bg-startup);
   background-image:
     radial-gradient(120% 95% at 6% -10%, rgba(7, 193, 96, 0.24), transparent 62%),
     radial-gradient(95% 80% at 96% 18%, rgba(48, 110, 255, 0.2), transparent 64%),
@@ -135,8 +187,9 @@ html.glass[data-theme="dark"] body {
   background-attachment: fixed;
 }
 
-html.glass[data-theme="light"] body {
-  background-color: #eef1f6;
+html.glass[data-theme="light"] body,
+html.glass[data-theme="light"] .startup-screen {
+  background-color: var(--bg-startup);
   background-image:
     radial-gradient(115% 90% at 4% -8%, rgba(7, 193, 96, 0.15), transparent 60%),
     radial-gradient(100% 85% at 98% 26%, rgba(74, 132, 255, 0.14), transparent 62%),
@@ -269,11 +322,31 @@ html.glass .glass-surface {
   padding: var(--spacing-2) var(--spacing-3);
 }
 
-/* 弹窗面板：新增的语义类，只加在需要玻璃质感的浮层上。
-   浮层已经用高不透明度的 --bg-modal，模糊只是让边缘与背景衔接更自然。 */
+/* 浮层（下拉、右键菜单、扫描耗时面板）：只补一层背景模糊，
+   底色与投影仍由各自的 token / 内联值决定。
+   刻意不复用 .glass-panel —— 那条规则会连底色和投影一起接管，
+   而浮层需要比弹窗面板更实、圆角也更小。 */
+html.glass .glass-popover {
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+
+/* 弹窗面板：真正的「液态玻璃」。
+   原先只是把 --bg-modal 压到 95% 不透明再补一点模糊 —— 那是磨砂塑料，不是玻璃：
+   既看不出背后的光，边缘也不亮，观感和普通白色弹窗几乎没区别。
+   玻璃要成立，三件事必须同时到位：
+     ① 底色足够透（--bg-modal-panel，约 60%）；
+     ② 背景强模糊，把背后内容化开成色块、而不是能读出来的文字（blur 40px）；
+     ③ 边缘有一圈内描边高光 —— 这是玻璃与空气的折射界面，也是「玻璃感」真正的来源
+        （由 --panel-shadow 提供，普通模式下它等于 --shadow-lg）。
+   注意内联样式优先级高于本规则：各弹窗面板的 background / boxShadow
+   必须写成 var(--bg-modal-panel) / var(--panel-shadow)，否则会被自己的内联值盖掉。 */
 html.glass .glass-panel {
-  backdrop-filter: blur(26px) saturate(170%);
-  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  background: var(--bg-modal-panel);
+  box-shadow: var(--panel-shadow);
+  border-color: transparent;
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
 }
 
 /* ========== 6. 细节打磨 ========== */

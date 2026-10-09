@@ -7,7 +7,11 @@ export default function StartupScreen() {
   return (
     <div
       className="startup-screen fixed inset-0 z-[100] flex items-center justify-center overflow-hidden"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      // 必须走独立 token：液态玻璃外观下 --bg-app 被设为 transparent（让内容区露出背景光斑），
+      // 启动页跟着用就会整层透明，直接看到底下已经渲染好的界面。
+      // 用 backgroundColor 而不是 background 简写 —— 简写会连带把 background-image 重置为 none，
+      // 那样玻璃外观下 body 那层光斑（复用自同一条 CSS 规则）就透不过来了。
+      style={{ backgroundColor: 'var(--bg-startup)', color: 'var(--text-primary)' }}
       role="status"
       aria-label="Viap 正在启动"
     >

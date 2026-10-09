@@ -71,7 +71,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[1200] min-w-[140px] overflow-hidden rounded-md py-1"
+      className="glass-popover fixed z-[1200] min-w-[140px] overflow-hidden rounded-md py-1"
       style={{
         left: position.left,
         top: position.top,

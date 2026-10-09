@@ -110,7 +110,7 @@ export default function FilterSelect<T extends string>({
       {open && menuPosition && createPortal(
         <div
           ref={menuRef}
-          className={`absolute top-[calc(100%+6px)] left-0 z-50 overflow-hidden rounded-md bg-[var(--bg-modal)] shadow-[var(--shadow-md)] ring-1 ring-[var(--border-color)] ${menuClassName}`}
+          className={`glass-popover absolute top-[calc(100%+6px)] left-0 z-50 overflow-hidden rounded-md bg-[var(--bg-modal)] shadow-[var(--shadow-md)] ring-1 ring-[var(--border-color)] ${menuClassName}`}
           style={{
             position: 'fixed',
             top: menuPosition.top,
