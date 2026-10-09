@@ -43,10 +43,10 @@ export default function AppDataAccordion({ folders, renderFolder }: AppDataAccor
               className="flex items-center justify-between w-full px-2.5 text-left"
               style={{
                 color: 'var(--text-primary)',
-                // 分类行就长在列表卡片里，底色必须比卡片只高一点点。
-                // 普通模式下 --bg-group 等于 --bg-content —— 与普通行同色，看不出色块；
-                // 液态玻璃下卡片本身是半透明的，原来那层 60% 白叠上去会变成 84%，
-                // 整行糊成一块实色，所以由 --bg-group 单独给一个很低的透明度。
+                // 分类行长在列表卡片里，本身不该有底色：
+                // 普通模式下 --bg-group 等于 --bg-content（与卡片同色 = 看不出色块）；
+                // 液态玻璃下卡片是半透明的，任何额外一层白都会叠出比卡片亮一截的色带，
+                // 所以玻璃下这条 token 取 transparent，两套外观的表现才一致。
                 background: 'var(--bg-group)',
                 // 分类行沿用普通文件夹记录的行高，避免展开区域出现不一致的节奏。
                 height: 'var(--row-height)',
