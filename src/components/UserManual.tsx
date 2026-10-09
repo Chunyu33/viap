@@ -321,7 +321,9 @@ export default function UserManual({ isOpen, onClose }: UserManualProps) {
       {/* ==================== 6. 使用协议 ==================== */}
       <SectionLast title="七、使用协议">
         <div className="rounded p-4 text-[11px] leading-relaxed"
-          style={{ background: 'var(--bg-row-hover)', border: '1px solid var(--border-color-strong)' }}>
+          // 面板内的底衬：普通模式下 --bg-inset 就是原来的 --bg-row-hover，
+          // 玻璃下换成很淡的一档，避免叠出「贴上去的白块」
+          style={{ background: 'var(--bg-inset)', border: '1px solid var(--border-color-strong)' }}>
           <p className="mb-2 font-semibold" style={{ color: 'var(--text-primary)' }}>
             使用本软件即表示您已阅读并同意以下条款：
           </p>

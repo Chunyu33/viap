@@ -2,6 +2,12 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## Unreleased
+
+- Fixed the launch screen under the Liquid Glass appearance: it used to show only the logo and text floating over the interface, and the full opaque background is back.
+- Dialogs under the Liquid Glass appearance are now genuinely translucent glass: the panel reads as one sheet instead of several near-white patches stacked on top of each other, and they no longer close from a stray overlay click or Escape while a scan or migration is running.
+- Popovers such as the disk-status panel, dropdowns and context menus are translucent with a blurred backdrop too, instead of solid white slabs.
+
 ## v1.3.0
 
 - Added a "Liquid Glass" appearance toggle (Settings → Appearance), off by default. Turning it on gives the window a translucent glass look with a soft glow; turning it off restores the previous appearance immediately, and it works with both light and dark themes.

@@ -314,7 +314,11 @@ export default function AppMigration({ visible }: { visible: boolean }) {
       new Promise((resolve) => {
         setWarningDialog({
           isOpen: true, warningInfo,
-          resolve: (confirmed) => { setWarningDialog(null); resolve(confirmed); },
+          // 只置 isOpen=false、保留对象：清空会让组件立刻卸载，Modal 来不及播关闭动画
+          resolve: (confirmed) => {
+            setWarningDialog(prev => (prev ? { ...prev, isOpen: false } : prev));
+            resolve(confirmed);
+          },
         });
       }),
     [],

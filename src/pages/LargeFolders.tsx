@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import Toast, { useToast } from '../components/Toast';
 import EmptyState from '../components/EmptyState';
+import Modal from '../components/Modal';
 import MigrationModal from '../components/MigrationModal';
 import TargetPickerDialog from '../components/TargetPickerDialog';
 import { useDangerousPathCheck, WarningInfo } from '../hooks/useDangerousPathCheck';
@@ -143,12 +144,12 @@ function RiskConfirmModal({
 }: {
   isOpen: boolean; folder: LargeFolder | null; onConfirm: () => void; onCancel: () => void;
 }) {
-  if (!isOpen || !folder) return null;
+  if (!folder) return null;
   const isSystem = folder.folder_type === 'System';
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center" style={{ background: 'var(--bg-modal-overlay)' }}>
-      <div className="animate-modal-in rounded-lg p-6 w-[440px]" style={{ background: 'var(--bg-modal)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-lg)' }}>
+    // 图标与标题属于内容的一部分，不单独占一条标题栏；关闭入口是底部的「取消」
+    <Modal isOpen={isOpen} onClose={onCancel} width={440} bodyClassName="flex-1 overflow-y-auto p-6">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-9 h-9 rounded flex items-center justify-center" style={{ background: isSystem ? 'var(--color-danger-light)' : 'var(--color-warning-light)' }}>
             <AlertTriangle className="w-5 h-5" style={{ color: isSystem ? 'var(--color-danger)' : 'var(--color-warning)' }} />
@@ -190,8 +191,7 @@ function RiskConfirmModal({
             {isSystem ? '我了解风险，继续' : '确认迁移'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -377,7 +377,12 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
         // 包装 resolve：先清除 dialog 状态再 resolve，避免 isOpen 永为 true 导致死循环
         setPickerDialog({
           isOpen: true, defaultPath, itemName,
-          resolve: (action) => { setPickerDialog(null); resolve(action); }
+          // 只关闭、不清空：清空会让组件立刻卸载，Modal 来不及播关闭动画。
+          // 参数保留到下次打开时被覆盖，代价只是一个很小的常驻对象。
+          resolve: (action) => {
+            setPickerDialog(prev => (prev ? { ...prev, isOpen: false } : prev));
+            resolve(action);
+          },
         });
       }),
     [],
@@ -395,7 +400,11 @@ export default function LargeFolders({ visible }: { visible: boolean }) {
       new Promise((resolve) => {
         setWarningDialog({
           isOpen: true, warningInfo,
-          resolve: (confirmed) => { setWarningDialog(null); resolve(confirmed); },
+          // 同 pickerDialog：只置 isOpen=false，保留对象让 Modal 能播完关闭动画
+          resolve: (confirmed) => {
+            setWarningDialog(prev => (prev ? { ...prev, isOpen: false } : prev));
+            resolve(confirmed);
+          },
         });
       }),
     [],

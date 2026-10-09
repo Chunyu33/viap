@@ -849,7 +849,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
             <div className="absolute inset-x-0 z-10 flex justify-center pointer-events-none"
               style={{ bottom: 'var(--spacing-2)' }}>
               <div
-                className="flex flex-wrap items-center justify-center gap-1.5 px-3 py-1.5 pointer-events-auto"
+                className="glass-popover flex flex-wrap items-center justify-center gap-1.5 px-3 py-1.5 pointer-events-auto"
                 style={{
                   width: 'fit-content',
                   minWidth: '208px',

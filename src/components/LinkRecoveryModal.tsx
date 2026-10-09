@@ -8,11 +8,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { AnimatePresence, motion, type Variants } from 'framer-motion';
 import {
   AlertTriangle, Check, CheckCircle2, FolderSearch, HardDriveDownload,
   Info, Link2, LoaderCircle, RefreshCw, X,
 } from 'lucide-react';
+import Modal from './Modal';
 import type {
   LinkRecoveryImportResult, LinkRecoveryProgressEvent, LinkRecoveryScanResult,
   MigrationRecordType, MirrorBackupInfo, MirrorImportResult, RecoveredLinkEntry,
@@ -27,20 +27,6 @@ interface LinkRecoveryModalProps {
   /** 导入成功后回调：父页面据此刷新迁移记录与目录列表 */
   onImported: () => void;
 }
-
-/** 弹窗过渡：缓动与 PageTransition 保持一致，避免各处动画手感不同 */
-const overlayVariants: Variants = {
-  initial: { opacity: 0 },
-  animate: { opacity: 1, transition: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } },
-  exit: { opacity: 0, transition: { duration: 0.15, ease: [0.4, 0, 1, 1] } },
-};
-
-/** 面板过渡：子级不写 initial/animate，由父级状态向下传播，保证开合同步 */
-const panelVariants: Variants = {
-  initial: { opacity: 0, scale: 0.96, y: 10 },
-  animate: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.22, ease: [0.22, 1, 0.36, 1] } },
-  exit: { opacity: 0, scale: 0.97, y: 6, transition: { duration: 0.16, ease: [0.4, 0, 1, 1] } },
-};
 
 /** 可选的扫描深度：默认 4 覆盖 C:\Users\<用户>\AppData\Local\Programs\<应用> */
 const SCAN_DEPTH_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -306,37 +292,17 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
   const allSelectableSelected = selectableCount > 0 && selectedCount === selectableCount;
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          key="link-recovery-dialog"
-          className="fixed inset-0 z-50 grid place-items-center p-4"
-          variants={overlayVariants}
-          initial="initial"
-          animate="animate"
-          exit="exit"
-        >
-          <div
-            className="absolute inset-0"
-            style={{
-              background: 'linear-gradient(180deg, rgba(15,23,42,0.42), rgba(2,6,23,0.62))',
-              backdropFilter: 'blur(12px)',
-            }}
-            onClick={scanning || importing ? undefined : onClose}
-          />
-
-          <motion.div
-            className="relative w-full overflow-hidden rounded-xl shadow-2xl flex flex-col"
-            variants={panelVariants}
-            style={{
-              // 弹窗宽度跟随窗口（宽屏时给出更多候选空间），仍保留滚动条与最大高度约束
-              maxWidth: 'min(1040px, calc(100vw - 264px))',
-              maxHeight: 'min(680px, calc(100vh - 64px))',
-              background: 'var(--bg-modal)',
-              border: '1px solid var(--border-color)',
-            }}
-          >
-        {/* 头部 */}
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      // 宽度与最大高度都跟随窗口：宽屏时给候选列表更多空间，窄屏时仍留出滚动条
+      width="min(1040px, calc(100vw - 264px))"
+      maxHeight="min(680px, calc(100vh - 64px))"
+      // 体部自己管滚动、底栏固定在底部：内容容器改成整列 flex，由子元素分配空间
+      bodyClassName="flex-1 flex flex-col min-h-0 overflow-hidden"
+      // 扫描或导入进行中不允许点遮罩 / 按 Esc 退出，避免中断正在进行的写操作
+      closeOnOverlay={!scanning && !importing}
+      header={
         <div className="flex items-start justify-between px-5 pt-4 pb-3 flex-shrink-0" style={{ borderBottom: '1px solid var(--border-color)' }}>
           <div className="pr-4 min-w-0">
             <h2 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -355,14 +321,15 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        {/* 体部 */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
+      }
+    >
+      {/* 体部 */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 min-h-0">
           {/* 自动备份入口：数据目录被误删时最省事的一条路 */}
           {mirrorInfo?.exists && (
             <div
               className="rounded-lg border px-3 py-2.5 mb-3"
-              style={{ borderColor: 'var(--border-color)', background: 'var(--bg-row)' }}
+              style={{ borderColor: 'var(--border-color)', background: 'var(--bg-panel-block)' }}
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
@@ -545,7 +512,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
                         className={`flex items-start rounded-lg border px-3 py-2 transition-all ${disabled ? 'cursor-default opacity-70' : 'cursor-pointer'}`}
                         style={{
                           borderColor: checked ? 'var(--color-primary)' : 'var(--border-color)',
-                          background: checked ? 'var(--color-primary-light)' : 'var(--bg-row)',
+                          background: checked ? 'var(--color-primary-light)' : 'var(--bg-panel-block)',
                         }}
                       >
                         <div className="flex-shrink-0 mt-0.5">
@@ -619,7 +586,7 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
           className="flex items-center justify-between px-5 py-3 flex-shrink-0"
           style={{
             borderTop: '1px solid var(--border-color)',
-            background: 'color-mix(in srgb, var(--color-gray-50) 74%, transparent)',
+            background: 'var(--bg-modal-footer)',
           }}
         >
           <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
@@ -637,9 +604,6 @@ export default function LinkRecoveryModal({ isOpen, onClose, onImported }: LinkR
             </button>
           </div>
         </div>
-        </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    </Modal>
   );
 }

@@ -1,8 +1,8 @@
 // 项目推介弹窗组件
 // 展示 LightC 和 BinlockX 两个关联项目的简介与下载信息
 
-import { useEffect, useState, useCallback } from 'react';
-import { X, Code2, Download, Globe } from 'lucide-react';
+import { Code2, Download, Globe } from 'lucide-react';
+import Modal from './Modal';
 import lightcIcon from '../assets/imgs/lightc.svg';
 import binlockxIcon from '../assets/imgs/binlockx.svg';
 
@@ -30,7 +30,6 @@ interface ProjectInfo {
   summary: string;
   icon: React.ReactNode;
   iconColor: string;
-  // iconBg?: string;
   links: ProjectLink[];
 }
 
@@ -60,34 +59,6 @@ const projects: ProjectInfo[] = [
 ];
 
 export default function ProjectPromoModal({ isOpen, onClose }: ProjectPromoModalProps) {
-  const [visible, setVisible] = useState(false);
-  const [leaving, setLeaving] = useState(false);
-
-  useEffect(() => {
-    if (isOpen) {
-      setVisible(true);
-      setLeaving(false);
-    } else if (visible) {
-      setLeaving(true);
-      const timer = setTimeout(() => {
-        setVisible(false);
-        setLeaving(false);
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [isOpen, visible]);
-
-  const handleAnimatedClose = useCallback(() => {
-    setLeaving(true);
-    setTimeout(() => {
-      setVisible(false);
-      setLeaving(false);
-      onClose();
-    }, 150);
-  }, [onClose]);
-
-  if (!visible) return null;
-
   return (
     <>
       {/* SVG 图标在亮/暗主题下的兼容样式 */}
@@ -106,109 +77,72 @@ export default function ProjectPromoModal({ isOpen, onClose }: ProjectPromoModal
         }
       `}</style>
 
-      <div
-        className="fixed inset-0 z-50 grid place-items-center p-4"
-        style={{
-          animation: leaving ? 'fadeOut 150ms ease-in forwards' : 'fadeIn 150ms ease-out',
-        }}
-      >
-        {/* 半透明遮罩 */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background: 'var(--bg-modal-overlay)',
-            backdropFilter: 'blur(8px)',
-          }}
-          onClick={handleAnimatedClose}
-        />
-
-        {/* 弹窗主体 */}
-        <div
-          className={`relative w-full overflow-hidden rounded-xl shadow-lg ${leaving ? 'animate-modal-out' : 'animate-modal-in'}`}
-          style={{
-            maxWidth: '460px',
-            background: 'var(--bg-modal)',
-            border: '1px solid var(--border-color)',
-          }}
-        >
-          {/* 标题栏 */}
-          <div
-            className="flex items-center justify-between px-5 pt-3.5 pb-3"
-            style={{ borderBottom: '1px solid var(--border-color)' }}
-          >
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-              更多实用工具
-            </h2>
-            <button onClick={handleAnimatedClose} className="btn btn-ghost btn-icon" aria-label="关闭">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-
-          {/* 内容区 */}
-          <div className="px-5 py-4 space-y-4" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-            {projects.map((proj) => (
-              <div
-                key={proj.name}
-                className="rounded-lg p-4"
-                style={{ border: '1px solid var(--border-color)', background: 'var(--bg-row-hover)' }}
-              >
-                {/* 项目名 */}
-                <div className="flex items-center gap-2 mb-2">
-                  <div
-                    className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0"
-                    style={{ color: proj.iconColor }}
-                  >
-                    {proj.icon}
-                  </div>
-                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    {proj.name}
-                  </span>
+      <Modal isOpen={isOpen} onClose={onClose} title="更多实用工具" width={460}>
+        <div className="space-y-4">
+          {projects.map((proj) => (
+            <div
+              key={proj.name}
+              className="rounded-lg p-4"
+              // 面板内的底衬：普通模式下 --bg-inset 就是原来的 --bg-row-hover，
+              // 玻璃下换成很淡的一档，避免叠出「贴上去的白块」
+              style={{ border: '1px solid var(--border-color)', background: 'var(--bg-inset)' }}
+            >
+              {/* 项目名 */}
+              <div className="flex items-center gap-2 mb-2">
+                <div
+                  className="w-7 h-7 rounded flex items-center justify-center flex-shrink-0"
+                  style={{ color: proj.iconColor }}
+                >
+                  {proj.icon}
                 </div>
-
-                {/* 简介 */}
-                <p className="text-xs mb-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                  {proj.summary}
-                </p>
-
-                {/* 下载按钮区 */}
-                <div className="flex items-center gap-2">
-                  {proj.links
-                    .filter((link) => link.url)
-                    .map((link, index) => {
-                      const Icon = LINK_ICONS[link.kind ?? 'download'] ?? Download;
-                      return (
-                        <a
-                          key={index}
-                          href={link.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs font-medium no-underline rounded px-3 py-1.5 transition-opacity duration-150"
-                          style={{
-                            color: 'var(--text-primary)',
-                            background: 'var(--bg-toolbar)',
-                            border: '1px solid var(--border-color)',
-                          }}
-                          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.7'; }}
-                          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
-                        >
-                          <Icon className="w-3 h-3" />
-                          {link.label}
-                        </a>
-                      );
-                    })}
-                  {proj.links.every((link) => !link.url) && (
-                    <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>即将上线，敬请期待</span>
-                  )}
-                </div>
+                <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {proj.name}
+                </span>
               </div>
-            ))}
 
-            <p className="text-[10px] text-center" style={{ color: 'var(--text-tertiary)' }}>
-              以上同为我维护的工具，欢迎试试看
-            </p>
-          </div>
+              {/* 简介 */}
+              <p className="text-xs mb-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                {proj.summary}
+              </p>
+
+              {/* 下载按钮区 */}
+              <div className="flex items-center gap-2">
+                {proj.links
+                  .filter((link) => link.url)
+                  .map((link, index) => {
+                    const Icon = LINK_ICONS[link.kind ?? 'download'] ?? Download;
+                    return (
+                      <a
+                        key={index}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs font-medium no-underline rounded px-3 py-1.5 transition-opacity duration-150"
+                        style={{
+                          color: 'var(--text-primary)',
+                          background: 'var(--bg-toolbar)',
+                          border: '1px solid var(--border-color)',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.7'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                      >
+                        <Icon className="w-3 h-3" />
+                        {link.label}
+                      </a>
+                    );
+                  })}
+                {proj.links.every((link) => !link.url) && (
+                  <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>即将上线，敬请期待</span>
+                )}
+              </div>
+            </div>
+          ))}
+
+          <p className="text-[10px] text-center" style={{ color: 'var(--text-tertiary)' }}>
+            以上同为我维护的工具，欢迎试试看
+          </p>
         </div>
-      </div>
+      </Modal>
     </>
   );
 }

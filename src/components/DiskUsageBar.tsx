@@ -198,7 +198,7 @@ export default function DiskUsageBar({ disks, loading, refreshing = false, onRef
 
       {open && (
         <div
-          className="glass-panel"
+          className="glass-popover"
           style={{
             position: 'absolute',
             right: 0,
