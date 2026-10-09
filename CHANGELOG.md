@@ -7,6 +7,7 @@
 - Fixed the launch screen under the Liquid Glass appearance: it used to show only the logo and text floating over the interface, and the full opaque background is back.
 - Dialogs under the Liquid Glass appearance are now genuinely translucent glass: the panel reads as one sheet instead of several near-white patches stacked on top of each other, and they no longer close from a stray overlay click or Escape while a scan or migration is running.
 - Popovers such as the disk-status panel, dropdowns and context menus are translucent with a blurred backdrop too, instead of solid white slabs.
+- Fixed "Verify file integrity" under Settings → Security always reporting an incomplete signature on official builds: the release pipeline only signed the raw executable for some of the distribution forms, which is now covered.
 
 ## v1.3.0
 
