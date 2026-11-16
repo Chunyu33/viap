@@ -128,6 +128,12 @@ function App() {
       });
   }, []);
 
+  useEffect(() => {
+    // 旧版本迁出去的应用目录缺少沙箱读取权限，后端用标记文件保证只修一次。
+    // 只发不等结果：修复失败不该影响启动，也不该给用户弹提示。
+    invoke('repair_migrated_app_permissions').catch(() => {});
+  }, []);
+
   // 队列里的第一条用 toast 展示；关闭后自动展示下一条
   useEffect(() => {
     if (startupNotices.length === 0) return;

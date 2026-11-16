@@ -60,6 +60,10 @@ pub fn default_app_data_templates() -> Vec<AppDataTemplate> {
         template("openai_desktop", "ChatGPT / Codex 桌面版", "ai_data", &["ChatGPT.exe", "codex.exe"], Some(r"%LOCALAPPDATA%\OpenAI")),
         template("yuanbao_data", "腾讯元宝数据", "ai_data", &["Yuanbao.exe"], Some(r"%LOCALAPPDATA%\com.tencent.yuanbao")),
         template("zcode_data", "ZCode 数据", "ai_data", &["ZCode.exe"], Some(r"%APPDATA%\ZCode")),
+        // Trae 桌面端：国内版与国际版落在不同目录，两条都列（路径不存在会自动隐藏）。
+        // 进程名留空：可执行文件名随版本变化，写错反而会让条目直接不显示。
+        template("trae_cn_data", "Trae CN 数据", "ai_data", &[], Some(r"%USERPROFILE%\.trae-cn")),
+        template("trae_data", "Trae 数据", "ai_data", &[], Some(r"%USERPROFILE%\.trae")),
         template("cherry_studio", "Cherry Studio 数据", "ai_data", &["Cherry Studio.exe"], Some(r"%APPDATA%\CherryStudio")),
         template("chatbox_data", "Chatbox 数据", "ai_data", &["Chatbox.exe"], Some(r"%APPDATA%\Chatbox")),
         template("jan_data", "Jan 数据", "ai_data", &["Jan.exe"], Some(r"%USERPROFILE%\jan")),

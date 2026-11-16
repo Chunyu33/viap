@@ -329,7 +329,7 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
     try {
       const info = await invoke<MirrorBackupInfo>('backup_now');
       setBackupInfo(info);
-      showToast('迁移数据已备份', 'success');
+      showToast('迁移记录已备份', 'success');
     } catch (error) {
       showToast(`备份失败: ${error}`, 'error');
     } finally {
@@ -744,11 +744,12 @@ export default function Settings({ visible: _visible }: { visible: boolean }) {
                   <DatabaseBackup className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="setting-label">自动备份</p>
+                  <p className="setting-label">迁移记录备份</p>
+                  {/* 只备份记录、不备份应用文件：复制应用数据与「释放空间」的定位正好相反 */}
                   <p className="setting-desc">
                     {settings.autoBackupEnabled
-                      ? '每次改动迁移数据后自动备份一份到数据目录之外，误删数据目录时可一键导回。'
-                      : '已关闭：仅在手动点击「立即备份」时备份。'}
+                      ? '只备份迁移记录（不含应用文件），存在数据目录之外，数据目录被误删时可一键导回。默认与应用数据在同一块磁盘，建议定期复制到其他磁盘。'
+                      : '已关闭：仅在手动点击「立即备份」时备份记录。'}
                   </p>
                   {backupInfo?.exists && (
                     <p className="text-[11px] truncate" style={{ color: 'var(--text-tertiary)' }}>

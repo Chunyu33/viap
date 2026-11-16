@@ -996,6 +996,8 @@ pub fn restore_app(history_id: String, app_handle: tauri::AppHandle) -> Result<M
             target_path,
             &record.original_path,
             &app_handle,
+            // 应用恢复后要能重新在沙箱里启动，补一次读取权限
+            true,
         )?;
 
         // 步骤 6: 更新记录

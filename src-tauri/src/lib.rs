@@ -211,6 +211,19 @@ fn cancel_migration(state: tauri::State<'_, MigrationState>) -> Result<(), Strin
     Ok(())
 }
 
+/// 一次性修复历史迁移记录的目标目录权限。
+///
+/// v1.3.2 及更早版本跨盘迁移出的应用目录缺少 ALL APPLICATION PACKAGES 权限，
+/// Electron/Chromium 应用迁移后双击无反应。源路径这时已经变成目录链接，
+/// 重新迁移修不好，只能就地补。前端启动时调用一次，后端用标记文件保证幂等。
+#[tauri::command]
+async fn repair_migrated_app_permissions() -> Result<migration::AclRepairReport, String> {
+    // 每条记录都要起一次 icacls 子进程，放到阻塞线程池执行，不占用 async 运行时
+    tauri::async_runtime::spawn_blocking(migration::repair_migrated_app_permissions)
+        .await
+        .map_err(|e| format!("权限修复线程异常: {}", e))
+}
+
 // ============================================================================
 // Tauri 命令 — 卸载（委托给 app_manager::uninstaller）
 // ============================================================================
@@ -463,6 +476,8 @@ pub fn run() {
             storage::history::clean_ghost_links,
             storage::history::preview_ghost_links,
             storage::history::get_migration_stats,
+            // 迁移目录权限的一次性修复（旧版本迁移过的 Electron 应用缺沙箱读取权限）
+            repair_migrated_app_permissions,
             storage::history::start_recovered_size_scan,
             storage::history::export_history,
             storage::history::import_history,
