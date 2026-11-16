@@ -927,7 +927,7 @@ export default function MigrationHistory({ visible: _visible }: { visible: boole
               <span>
                 同时从自动备份中删除这条记录
                 <span className="block text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                  不勾选（默认）：备份里仍留着它，之后可用「从备份导入」找回
+                  不勾选（默认）：备份里仍保留这条记录，之后可从备份导入找回
                 </span>
               </span>
             </label>
