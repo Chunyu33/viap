@@ -411,6 +411,8 @@ fn restore_large_folder_inner(
         &target_path,
         &junction_path.to_string_lossy(),
         app_handle,
+        // 用户文件夹恢复不补沙箱读取权限，避免把权限扩散到文档/下载这类目录
+        false,
     )?;
 
     // 步骤 4: 更新迁移记录状态
@@ -517,6 +519,8 @@ pub fn restore_large_folder_by_history(
             &target_path,
             &record.original_path,
             &app_handle,
+            // 同上：大文件夹恢复不补沙箱读取权限
+            false,
         )?;
 
         // 按 ID 更新 history 记录状态

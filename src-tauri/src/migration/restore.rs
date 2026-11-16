@@ -23,6 +23,8 @@ pub(crate) fn restore_directory_with_progress(
     target_path: &Path,
     task_id: &str,
     app_handle: &tauri::AppHandle,
+    // 仅应用恢复需要补沙箱读取权限；用户文件夹恢复时传 false，避免权限扩散
+    apply_app_container_acl: bool,
 ) -> Result<RestoreDirectoryResult, String> {
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let reporter = |step: &str, percent: f64, message: &str, copied: u64, total: u64| {
@@ -66,6 +68,15 @@ pub(crate) fn restore_directory_with_progress(
             format_bytes(restored_size),
             rollback
         ));
+    }
+
+    // 恢复同样走文件复制：若原安装位置本来就在非系统盘（首次安装就没进 C 盘），
+    // 复制出来的目录同样缺 ALL APPLICATION PACKAGES，需要一并补。
+    // 失败只记录，不阻断恢复 —— 数据已经完整写回，回滚代价更大。
+    if apply_app_container_acl {
+        if let Err(e) = crate::migration::ensure_app_container_access(original_path) {
+            log_warn!("migration", "恢复后目录权限补全失败 {}: {}", original_path.display(), e);
+        }
     }
 
     emit_progress(app_handle, task_id, 96.0, "linking", "正在清理目标副本...", restored_size, total_size);

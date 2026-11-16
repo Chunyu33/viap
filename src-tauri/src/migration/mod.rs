@@ -3,6 +3,9 @@
 // 该能力同时被 folder_manager（大文件夹迁移/恢复）与 storage/history（应用还原）复用，
 // 因此作为独立顶层模块，不归属 app_manager。
 
+// 权限修复仅 Windows 有意义（icacls + NTFS ACL），非 Windows 走下方空实现
+#[cfg(windows)]
+mod acl;
 mod cleanup;
 mod copy_engine;
 mod danger_rules;
@@ -11,6 +14,9 @@ mod occupancy;
 mod restore;
 
 pub(crate) use restore::restore_directory_with_progress;
+// 权限修复实现放在 acl 子模块；非 Windows 的等价函数定义在下方
+#[cfg(windows)]
+pub(crate) use acl::{ensure_app_container_access, repair_migrated_app_permissions};
 
 use std::fs;
 use std::path::Path;
@@ -23,6 +29,29 @@ use tauri::Emitter;
 
 use crate::models::{MigrationRecordType, MigrationResult};
 use crate::utils;
+
+/// 迁移目录访问权限批量修复的结果（供启动时的一次性修复使用）
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AclRepairReport {
+    /// 本次成功补齐权限的目录数
+    pub repaired: u32,
+    /// 修复失败的目录数；失败不阻断使用，下次启动会重试
+    pub failed: u32,
+    /// 此前已修复过而跳过
+    pub skipped: bool,
+}
+
+/// 非 Windows 下没有 ACL 概念，权限修复直接视为成功。
+#[cfg(not(windows))]
+pub(crate) fn ensure_app_container_access(_dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// 非 Windows 下不做批量修复。
+#[cfg(not(windows))]
+pub(crate) fn repair_migrated_app_permissions() -> AclRepairReport {
+    AclRepairReport { skipped: true, ..Default::default() }
+}
 
 // 子模块能力导入（父模块经 use 引入，保持 migrate_app 调用处简洁）
 pub(crate) use cleanup::{remove_directory_robust, schedule_remove_on_reboot};
@@ -692,6 +721,28 @@ pub fn migrate_app(
             });
         }
 
+        // 步骤 3.5：补齐沙箱进程所需的目录权限
+        // 跨盘复制只继承目标父目录的 ACL，而非系统盘根目录没有
+        // ALL APPLICATION PACKAGES 这条 ACE，Electron/Chromium 应用迁过去后
+        // 沙箱子进程读不到安装目录里的 DLL，表现为双击无反应。
+        // 只对应用迁移补：用户文件夹（桌面/文档/下载）补上等于让所有
+        // AppContainer 应用都能读，那是权限扩散，必须避免。
+        // 失败不中止迁移 —— 数据已经复制完成，源目录尚未删除，此刻回滚代价远大于收益。
+        let acl_warning = if matches!(record_type, MigrationRecordType::App) {
+            ensure_app_container_access(&target_path).err().map(|e| {
+                format!(
+                    "目标目录权限补全失败，Electron 类应用可能无法启动。\n\
+                     如遇到应用双击没反应，请为 {} 手动添加\
+                     「ALL APPLICATION PACKAGES」的读取权限。\n\
+                     失败原因：{}",
+                    target_path.display(),
+                    e
+                )
+            })
+        } else {
+            None
+        };
+
         // 步骤 4：原子切换源目录
         // 不能直接 remove_dir_all：目录删除不是事务操作，遇到 uTools 等被占用文件时，
         // Windows 可能已经删掉部分文件才返回失败。先改名为同父目录临时备份，失败时
@@ -831,11 +882,19 @@ pub fn migrate_app(
 
                 emit_progress(app_handle, &source, 100.0, "done", "迁移完成", source_size, source_size);
 
+                // 备份清理与权限补全的警告合并成一段，避免成功文案里出现多个独立告警块
+                let extra_warning = match (cleanup_warning.as_deref(), acl_warning.as_deref()) {
+                    (None, None) => None,
+                    (Some(cleanup), None) => Some(cleanup.to_string()),
+                    (None, Some(acl)) => Some(acl.to_string()),
+                    (Some(cleanup), Some(acl)) => Some(format!("{}\n\n{}", cleanup, acl)),
+                };
+
                 let success_msg = migration_success_message(
                     &source,
                     &target_path_str,
                     has_updater,
-                    cleanup_warning.as_deref(),
+                    extra_warning.as_deref(),
                 );
 
                 Ok(MigrationResult {

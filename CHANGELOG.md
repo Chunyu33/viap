@@ -2,6 +2,11 @@
 
 > English is the default changelog. See the [Chinese changelog](CHANGELOG-zh.md).
 
+## Unreleased
+
+- Fixed apps that would not start after being moved to another drive: apps such as VS Code, Cursor and Discord could not read their own files once moved. Migration now handles this, and apps moved by earlier versions are repaired automatically on the next launch.
+- Added the Trae / Trae CN data directories to Data Migration.
+
 ## v1.3.2
 
 - The update prompt is now a dialog: read the release notes and decide in the same window, instead of a bar taking up the top of the app.
