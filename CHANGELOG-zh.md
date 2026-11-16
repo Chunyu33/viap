@@ -2,7 +2,7 @@
 
 > 中文更新日志。See the [English changelog](CHANGELOG.md).
 
-## 未发布
+## v1.3.3
 
 - 修复部分应用迁移到其他磁盘后双击没反应：这类应用（VS Code、Cursor、Discord 等）迁移后读不到自己的文件，现在迁移时会一并处理好，之前迁移过的也会在下次启动时自动修复。
 - 数据迁移新增 Trae / Trae CN 的数据目录。
